@@ -1,0 +1,36 @@
+[Unit]
+Description=Charon Autonomous Daemon Engine
+After=network.target local-fs.target target.target
+
+[Service]
+Type=simple
+User=charon
+Group=charon
+ExecStart=/usr/bin/python3 -m charon.daemon
+Restart=always
+RestartSec=5
+
+# --- Hardware & Serial Port Access ---
+# Grants membership to dialout (serial ports) and plugdev (USB devices)
+SupplementaryGroups=dialout plugdev
+
+# Allows access to raw character devices for serial communication
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/ttyUSB* rwx
+DeviceAllow=/dev/ttyACM* rwx
+DeviceAllow=/dev/ttyS* rwx
+DeviceAllow=char-ttyUSB rwx
+DeviceAllow=char-ttyACM rwx
+
+# --- Sandbox Security Boundary ---
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/charon/.charon /tmp /run/user/1000
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+{
+  "skill_id": "generalist_system_executor",
+  "version": "1.0.0",
+  "description": "Translates natural language requests into bash commands via LLM and executes shell commands safely.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": ["os", "shell", "bash", "execute", "generalist", "llm"],
+  "system_requirements": ["python3", "bash", "ollama"],
+  "supported_actions": {
+    "translate_and_execute_system_command": {
+      "description": "Translates NL directives to CLI syntax via LLM and executes shell tasks.",
+      "parameters": {
+        "command": {
+          "type": "string",
+          "description": "The shell command or natural language request to run.",
+          "required": true
+        },
+        "model_name": {
+          "type": "string",
+          "description": "Ollama model identifier to use for translation (defaults to llama3.1).",
+          "required": false
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Execution timeout limit in seconds (defaults to 30.0).",
+          "required": false
+        }
+      }
+    }
+  }
+}

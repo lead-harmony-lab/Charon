@@ -1,0 +1,92 @@
+{
+  "role_name": "system_planner",
+  "agent_id": "agent_planner",
+  "display_name": "The Planner",
+  "description": "Strategist and metacognitive supervisor responsible for multi-agent task breakdown (DAG generation), build sequence drafting, error log diagnostics, and sandbox code execution.",
+  "system_requirements": [
+    "python3",
+    "ollama"
+  ],
+  "system_prompt": "You are The Planner, a Metacognitive Supervisor and Chief Mechatronics Architect.\nYour task is to draft clean, precise, and structured engineering specifications, perform multi-agent task breakdown, diagnose execution errors, and run sandbox code tasks.\n\nFocus strictly on providing actionable execution blueprints, diagnostic answers, and code verification without conversational filler.",
+  "default_action": "draft_build_sequence",
+  "action_alias_map": {
+    "decompose_task": "decompose_task",
+    "decompose": "decompose_task",
+    "decompose_plan": "decompose_task",
+    "build_dag": "decompose_task",
+    "dag": "decompose_task",
+    "task_breakdown": "decompose_task",
+    "draft_build_sequence": "draft_build_sequence",
+    "draft_sequence": "draft_build_sequence",
+    "build_sequence": "draft_build_sequence",
+    "sequence": "draft_build_sequence",
+    "plan": "draft_build_sequence",
+    "draft_plan": "draft_build_sequence",
+    "analyze_error_logs": "analyze_error_logs",
+    "analyze_logs": "analyze_error_logs",
+    "diagnose": "analyze_error_logs",
+    "diagnose_error": "analyze_error_logs",
+    "debug_logs": "analyze_error_logs",
+    "execute_sandbox_code": "execute_sandbox_code",
+    "execute_code": "execute_sandbox_code",
+    "run_sandbox": "execute_sandbox_code",
+    "sandbox": "execute_sandbox_code",
+    "execute_sandbox": "execute_sandbox_code"
+  },
+  "equipped_skills": [
+    "plan_task_decomposer",
+    "sys_log_analyzer",
+    "code_sandbox_executor"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "plan_task_decomposer",
+      "display_name": "Task Decomposer & Sequence Drafter",
+      "category": "Autonomous Execution",
+      "system_requirements": [
+        "python3",
+        "ollama"
+      ],
+      "actions": {
+        "decompose_task": {
+          "description": "Decomposes user objectives into multi-agent DAG execution sequences.",
+          "source": "charon/agents/planner/dag.py:decompose_task"
+        },
+        "draft_build_sequence": {
+          "description": "Drafts structured engineering build sequences and specification blueprints.",
+          "source": "charon/agents/planner/sequencing.py:draft_build_sequence"
+        }
+      }
+    },
+    {
+      "skill_id": "sys_log_analyzer",
+      "display_name": "System & Error Log Analyzer",
+      "category": "System",
+      "system_requirements": [
+        "python3",
+        "ollama"
+      ],
+      "actions": {
+        "analyze_error_logs": {
+          "description": "Parses compilation/system error logs to diagnose failure root causes and output fixes.",
+          "source": "charon/agents/planner/diagnostics.py:analyze_error_logs"
+        }
+      }
+    },
+    {
+      "skill_id": "code_sandbox_executor",
+      "display_name": "Sandbox Code Generator & Executor",
+      "category": "Execution",
+      "system_requirements": [
+        "python3",
+        "ollama"
+      ],
+      "actions": {
+        "execute_sandbox_code": {
+          "description": "Generates Python code via Ollama and executes it in an isolated subshell sandbox with file audit checks.",
+          "source": "charon/agents/planner/sandbox.py:execute_sandbox_code"
+        }
+      }
+    }
+  ]
+}

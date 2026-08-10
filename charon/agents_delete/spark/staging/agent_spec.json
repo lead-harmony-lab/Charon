@@ -1,0 +1,68 @@
+{
+  "role_name": "role_spark",
+  "agent_id": "agent_spark",
+  "display_name": "TheSpark",
+  "description": "Electrical engineering and firmware agent responsible for KiCad EDA automation, PlatformIO firmware compilation, hardware flashing, and Gerber/BOM generation.",
+  "system_requirements": [
+    "python3",
+    "pio",
+    "kicad-cli"
+  ],
+  "system_prompt": "You are TheSpark, a specialist agent driving electrical engineering workflows, KiCad EDA exports, and PlatformIO embedded firmware compilation and flashing.",
+  "default_action": "compile_firmware",
+  "action_alias_map": {
+    "compile_firmware": "compile_firmware",
+    "compile": "compile_firmware",
+    "build": "compile_firmware",
+    "build_firmware": "compile_firmware",
+    "flash_hardware": "flash_hardware",
+    "flash": "flash_hardware",
+    "upload": "flash_hardware",
+    "upload_firmware": "flash_hardware",
+    "export_gerbers": "export_gerbers",
+    "gerbers": "export_gerbers",
+    "export_pcb": "export_gerbers",
+    "plot_gerbers": "export_gerbers",
+    "export_bom": "export_bom",
+    "generate_bom": "export_bom",
+    "bom": "export_bom"
+  },
+  "equipped_skills": [
+    "hw_firmware_pio",
+    "hw_eda_kicad"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "hw_firmware_pio",
+      "display_name": "Hardware Firmware PlatformIO",
+      "category": "Execution",
+      "system_requirements": ["python3", "pio"],
+      "actions": {
+        "compile_firmware": {
+          "description": "Compiles firmware source code for a target microcontroller project via PlatformIO.",
+          "source": "charon/agents/spark/firmware.py:handle_compile_firmware"
+        },
+        "flash_hardware": {
+          "description": "Flashes compiled binary payloads to hardware over serial, USB, or OTA.",
+          "source": "charon/agents/spark/firmware.py:handle_flash_hardware"
+        }
+      }
+    },
+    {
+      "skill_id": "hw_eda_kicad",
+      "display_name": "Hardware EDA KiCad",
+      "category": "Execution",
+      "system_requirements": ["python3", "kicad-cli"],
+      "actions": {
+        "export_gerbers": {
+          "description": "Plots Gerber layers and drill files from a KiCad PCB layout file.",
+          "source": "charon/agents/spark/eda.py:handle_export_gerbers"
+        },
+        "export_bom": {
+          "description": "Exports Bill of Materials CSV datasheet from KiCad schematic/PCB designs.",
+          "source": "charon/agents/spark/eda.py:handle_export_bom"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "role_name": "default_system_engineer",
+  "agent_id": "agent_system_engineer",
+  "display_name": "System Engineer",
+  "description": "Diagnostic, repair, and skill-gap resolution agent.",
+  "system_requirements": [
+    "python3"
+  ],
+  "system_prompt": "You are Charon's System Engineer. Your domain covers system diagnostics, iterative bug resolution, dynamic Python code generation, subshell sandbox execution, and dynamic capability gap engineering. Handle exceptions gracefully and audit disk side effects.",
+  "default_action": "execute_diagnostic",
+  "action_alias_map": {
+    "execute_diagnostic": "solve_edge_case",
+    "diagnostic": "solve_edge_case",
+    "solve": "solve_edge_case",
+    "repair": "solve_edge_case",
+    "run_repair": "solve_edge_case",
+    "solve_coding_task": "solve_edge_case",
+    "generate_script_only": "generate_script",
+    "write_script": "generate_script",
+    "draft_script": "generate_script",
+    "run_script": "run_existing_script",
+    "sandbox_code": "execute_sandbox_code",
+    "run_sandbox": "execute_sandbox_code",
+    "sandbox": "execute_sandbox_code",
+    "open_pdf": "launch_gui_viewer",
+    "view_pdf": "launch_gui_viewer",
+    "launch_viewer": "launch_gui_viewer",
+    "system_command": "execute_system_command",
+    "run_cmd": "execute_system_command"
+  },
+  "equipped_skills": [
+    "code_self_healing_solver",
+    "code_python_interpreter",
+    "code_script_generator",
+    "sys_os_control"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "code_self_healing_solver",
+      "display_name": "Self-Healing Script Solver",
+      "category": "Autonomous Execution",
+      "system_requirements": ["python3"],
+      "actions": {
+        "solve_edge_case": {
+          "description": "Generates, runs, and iteratively fixes Python code in a closed loop until verification passes or max attempts are reached.",
+          "source": "solver.py:handle_solve_edge_case"
+        }
+      }
+    },
+    {
+      "skill_id": "code_python_interpreter",
+      "display_name": "Python Sandbox Interpreter",
+      "category": "Execution",
+      "system_requirements": ["python3"],
+      "actions": {
+        "execute_sandbox_code": {
+          "description": "Executes dynamic code in a guarded subprocess with AST validation and artifact auditing.",
+          "source": "runner.py:handle_execute_sandbox_code"
+        },
+        "run_existing_script": {
+          "description": "Executes an existing script file on disk in a subprocess sandbox.",
+          "source": "runner.py:handle_run_existing_script"
+        }
+      }
+    },
+    {
+      "skill_id": "code_script_generator",
+      "display_name": "Python Script Generator",
+      "category": "Drafting",
+      "system_requirements": [],
+      "actions": {
+        "generate_script": {
+          "description": "Drafts a production-grade Python script for a given task without executing it.",
+          "source": "generat or.py:handle_generate_script_only"
+        }
+      }
+    },
+    {
+      "skill_id": "sys_os_control",
+      "display_name": "OS System Control & GUI Launcher",
+      "category": "System",
+      "system_requirements": ["bash"],
+      "actions": {
+        "execute_system_command": {
+          "description": "Executes lightweight synchronous system commands.",
+          "source": "agent.py:_handle_execute_system_command"
+        },
+        "launch_gui_viewer": {
+          "description": "Launches default desktop application (xdg-open) for target file path.",
+          "source": "agent.py:_handle_launch_gui_viewer"
+        }
+      }
+    }
+  ]
+}

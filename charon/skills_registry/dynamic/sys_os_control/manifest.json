@@ -1,0 +1,41 @@
+{
+  "skill_id": "sys_os_control",
+  "version": "1.0.0",
+  "description": "Operating system command runner and GUI viewer integration tool.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": ["system", "os", "bash", "gui", "xdg"],
+  "system_requirements": ["bash"],
+  "supported_actions": {
+    "execute_system_command": {
+      "description": "Executes lightweight synchronous system shell commands directly.",
+      "parameters": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to run.",
+          "required": true
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for execution context.",
+          "required": false
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Execution timeout in seconds (defaults to 30.0).",
+          "required": false
+        }
+      }
+    },
+    "launch_gui_viewer": {
+      "description": "Spawns the default desktop application to open target files.",
+      "parameters": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to file to open.",
+          "required": true
+        }
+      }
+    }
+  }
+}

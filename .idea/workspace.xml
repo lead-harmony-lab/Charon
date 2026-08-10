@@ -1,0 +1,615 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="7c3fc1c5-a868-4567-8aa8-0c4a9ea5f8b6" name="Changes" comment="Completed wiring of skill to dynamic routing table.">
+      <change afterPath="$PROJECT_DIR$/charon/cli/librarian.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/charon/cli/librarian_tui.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/scripts/remediate_spec_drift.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/scripts/restore_missing_sources.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon.egg-info/PKG-INFO" beforeDir="false" afterPath="$PROJECT_DIR$/charon.egg-info/PKG-INFO" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon.egg-info/SOURCES.txt" beforeDir="false" afterPath="$PROJECT_DIR$/charon.egg-info/SOURCES.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon.egg-info/top_level.txt" beforeDir="false" afterPath="$PROJECT_DIR$/charon.egg-info/top_level.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/__version__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/__version__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/cli/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/cli/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/cli/__main__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/cli/__main__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/cli/interactive.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/cli/interactive.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/cli/ui.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/cli/ui.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/config/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/config/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/config/logging.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/config/logging.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/config/settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/config/settings.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/core/coordinator/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/core/coordinator/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/core/engine/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/core/engine/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/gateway/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/gateway/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/nodes/workshop_hud.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/nodes/workshop_hud.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/telemetry/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/telemetry/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/telemetry/trace.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/telemetry/trace.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/telemetry/viewer.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/telemetry/viewer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/cad.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/cad.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/code.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/code.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/eda.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/eda.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/firmware.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/firmware.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/git.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/git.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/iot.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/iot.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/math.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/math.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/pdf.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/pdf.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/system.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/system.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/tools/web.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/tools/web.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/utils/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/utils/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/charon/utils/memory.py" beforeDir="false" afterPath="$PROJECT_DIR$/charon/utils/memory.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/adrs/adr-001-multi-agent-architecture.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/adrs/adr-001-multi-agent-architecture.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/adrs/adr-002-systemd-process-isolation.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/adrs/adr-002-systemd-process-isolation.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/adrs/adr-003-tiered-risk-matrix.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/adrs/adr-003-tiered-risk-matrix.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/adrs/adr-004-event-driven-gateway.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/adrs/adr-004-event-driven-gateway.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/adrs/adr-005-dag-task-decomposition.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/adrs/adr-005-dag-task-decomposition.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/00_system_overview.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/00_system_overview.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/02_gateway_and_ipc.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/02_gateway_and_ipc.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/_matrix.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/_matrix.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/archivist.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/archivist.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/cleaner.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/cleaner.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/engineer.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/engineer.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/machinist.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/machinist.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/planner.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/planner.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/quartermaster.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/quartermaster.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/scout.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/scout.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/spark.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/spark.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/agents/steward.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/agents/steward.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/guides/SYSTEM_VERSIONING_AND_TESTING.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/guides/SYSTEM_VERSIONING_AND_TESTING.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/init_eks.sh" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/logs/charond.log" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/memory/0e5f1126-860c-4978-b325-78edfc887f87/data_level0.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/memory/0e5f1126-860c-4978-b325-78edfc887f87/header.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/memory/0e5f1126-860c-4978-b325-78edfc887f87/length.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/memory/chroma.sqlite3" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/bump_version.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/bump_version.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/charon_db_admin.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/charon_db_admin.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/generate_notebook_sources.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/generate_notebook_sources.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/map_dependencies.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/map_dependencies.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/artifact_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/artifact_manager.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/conftest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/conftest.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_cad.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_cad.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_cleaner.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_cleaner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_logs.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_logs.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_workspaces.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/cleaner/test_workspaces.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/conftest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/conftest.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/quartermaster/test_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/quartermaster/test_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/quartermaster/test_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/quartermaster/test_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/scout/test_scout.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/scout/test_scout.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/scout/test_scraping.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/scout/test_scraping.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/scout/test_search.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/scout/test_search.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/spark/test_spark.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/spark/test_spark.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/spark/test_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/spark/test_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/test_archivist.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/test_archivist.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/test_engineer.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/test_engineer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/test_generalist.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/test_generalist.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/test_machinist.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/test_machinist.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/test_planner.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/test_planner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/agents/test_steward.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/agents/test_steward.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/config/test_logging.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/config/test_logging.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/config/test_settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/config/test_settings.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/core/test_concierge.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/core/test_concierge.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/core/test_dispatcher.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/core/test_dispatcher.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/core/test_e2e_engine_integration.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/core/test_e2e_engine_integration.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/core/test_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/core/test_engine.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/core/test_engine_self_healing.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/core/test_engine_self_healing.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/core/test_parser.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/core/test_parser.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/core/test_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/core/test_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/gateway/test_bridge.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/gateway/test_bridge.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/gateway/test_emitter.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/gateway/test_emitter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/gateway/test_gatekeeper.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/gateway/test_gatekeeper.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/gateway/test_middleware.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/gateway/test_middleware.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/gateway/test_models.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/gateway/test_models.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/gateway/test_routes.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/gateway/test_routes.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/gateway/test_telemetry.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/gateway/test_telemetry.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/gateway/test_ws.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/gateway/test_ws.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/intent/test_base.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/intent/test_base.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/intent/test_hardware.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/intent/test_hardware.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/intent/test_intent.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/intent/test_intent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/intent/test_knowledge.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/intent/test_knowledge.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/test_cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/test_cli.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/test_daemon.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/test_daemon.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/test_dbus_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/test_dbus_server.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/test_sdk.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/test_sdk.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/test_sdk_integration.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/test_sdk_integration.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_cad.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_cad.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_code.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_code.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_eda.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_eda.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_firmware.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_firmware.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_git.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_git.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_iot.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_iot.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_math.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_math.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_pdf.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_pdf.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_system.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_system.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/tools/test_web.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/tools/test_web.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/pytest/utils/test_memory.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/pytest/utils/test_memory.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Markdown File" />
+        <option value="HTML File" />
+        <option value="CSS File" />
+        <option value="JavaScript File" />
+        <option value="Python Script" />
+      </list>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <excluded-from-favorite>
+      <branch-storage>
+        <map>
+          <entry type="LOCAL">
+            <value>
+              <list>
+                <branch-info repo="$PROJECT_DIR$" source="main" />
+              </list>
+            </value>
+          </entry>
+        </map>
+      </branch-storage>
+    </excluded-from-favorite>
+    <option name="RECENT_BRANCH_BY_REPOSITORY">
+      <map>
+        <entry key="$PROJECT_DIR$" value="main" />
+      </map>
+    </option>
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="HighlightingSettingsPerFile">
+    <setting file="file://$PROJECT_DIR$/charon/core/dispatcher.py" root0="FORCE_HIGHLIGHTING" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 7,
+  &quot;fromUser&quot;: false
+}</component>
+  <component name="ProjectId" id="3H1DKjrHEjwi3Ol1R9Ssas41KFI" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "DefaultHtmlFileTemplate": "HTML File",
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.ledger.executor": "Run",
+    "Python.test.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "git-widget-placeholder": "Dynamic-Skill-Bus",
+    "last_opened_file_path": "/home/godvalve/Projects/Tools/Charon/charon/agents/spark/staging/skills",
+    "list.type.of.created.stylesheet": "CSS",
+    "node.js.detected.package.jshint": "true",
+    "node.js.selected.package.jshint": "",
+    "nodejs_package_manager_path": "npm",
+    "run.code.analysis.last.selected.profile": "aDefault",
+    "settings.editor.selected.configurable": "preferences.externalTools"
+  }
+}]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/charon/agents/spark/staging/skills" />
+      <recent name="$PROJECT_DIR$/charon/agents/scout/staging/skills" />
+      <recent name="$PROJECT_DIR$/charon/agents/steward/staging/skills" />
+      <recent name="$PROJECT_DIR$/charon/agents/machinist/staging/skills" />
+      <recent name="$PROJECT_DIR$/charon/agents/overseer/staging/skills" />
+    </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/charon/agents" />
+      <recent name="$PROJECT_DIR$/charon/agents/engineer" />
+      <recent name="$PROJECT_DIR$/charon/agents/archivist/staging/skills/code_self_healing_solver/" />
+      <recent name="$PROJECT_DIR$/docs/planning" />
+      <recent name="$PROJECT_DIR$/docs/guides" />
+    </key>
+  </component>
+  <component name="RunManager">
+    <configuration name="ledger" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="charon" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/charon/core" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/charon/core/ledger.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Python.ledger" />
+        <item itemvalue="Python.ledger" />
+        <item itemvalue="Python.ledger" />
+        <item itemvalue="Python.ledger" />
+        <item itemvalue="Python.ledger" />
+      </list>
+    </recent_temporary>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-6fa658e1df1a-5bd6d13a2a75-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-262.8665.369" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="SvnConfiguration">
+    <configuration>$USER_HOME$/.subversion</configuration>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="7c3fc1c5-a868-4567-8aa8-0c4a9ea5f8b6" name="Changes" comment="" />
+      <created>1785026619226</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1785026619226</updated>
+    </task>
+    <task id="LOCAL-00001" summary="Revision 1">
+      <option name="closed" value="true" />
+      <created>1785468353853</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1785468353853</updated>
+    </task>
+    <task id="LOCAL-00002" summary="Refactor loop architecture">
+      <option name="closed" value="true" />
+      <created>1785529313313</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1785529313313</updated>
+    </task>
+    <task id="LOCAL-00003" summary="Integrated SemVer system tracking">
+      <option name="closed" value="true" />
+      <created>1785533991079</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1785533991079</updated>
+    </task>
+    <task id="LOCAL-00004" summary="Added basic header information to project files">
+      <option name="closed" value="true" />
+      <created>1785535784818</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1785535784818</updated>
+    </task>
+    <task id="LOCAL-00005" summary="Automated alignment of comment headers">
+      <option name="closed" value="true" />
+      <created>1785536682080</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1785536682080</updated>
+    </task>
+    <task id="LOCAL-00006" summary="Unified System version and file version protocol applied across all code files.">
+      <option name="closed" value="true" />
+      <created>1785538275365</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1785538275365</updated>
+    </task>
+    <task id="LOCAL-00007" summary="Renamed to __version__.py">
+      <option name="closed" value="true" />
+      <created>1785541200291</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1785541200291</updated>
+    </task>
+    <task id="LOCAL-00008" summary="Moved database access to DXG compliant locations">
+      <option name="closed" value="true" />
+      <created>1785562052885</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1785562052885</updated>
+    </task>
+    <task id="LOCAL-00009" summary="Added base class to agents">
+      <option name="closed" value="true" />
+      <created>1785570104364</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1785570104364</updated>
+    </task>
+    <task id="LOCAL-00010" summary="Added ability to reason through opening PDF viewer.">
+      <option name="closed" value="true" />
+      <created>1785634132480</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1785634132480</updated>
+    </task>
+    <task id="LOCAL-00011" summary="Removed references to previous systemd bus requirement">
+      <option name="closed" value="true" />
+      <created>1785637302718</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1785637302718</updated>
+    </task>
+    <task id="LOCAL-00012" summary="Enabled CoT streaming and agent task actions to the Telemetry viewer.">
+      <option name="closed" value="true" />
+      <created>1785648258541</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1785648258541</updated>
+    </task>
+    <task id="LOCAL-00013" summary="updated git ignore with notebook_sources">
+      <option name="closed" value="true" />
+      <created>1785648389409</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1785648389409</updated>
+    </task>
+    <task id="LOCAL-00014" summary="Removed updated information from roadmaps.">
+      <option name="closed" value="true" />
+      <created>1785700035208</created>
+      <option name="number" value="00014" />
+      <option name="presentableId" value="LOCAL-00014" />
+      <option name="project" value="LOCAL" />
+      <updated>1785700035208</updated>
+    </task>
+    <task id="LOCAL-00015" summary="Removed outdated documentation and organized directory structure">
+      <option name="closed" value="true" />
+      <created>1785707108044</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1785707108044</updated>
+    </task>
+    <task id="LOCAL-00016" summary="Added librarian cli helper">
+      <option name="closed" value="true" />
+      <created>1785731703446</created>
+      <option name="number" value="00016" />
+      <option name="presentableId" value="LOCAL-00016" />
+      <option name="project" value="LOCAL" />
+      <updated>1785731703446</updated>
+    </task>
+    <task id="LOCAL-00017" summary="Refactored Gnome Shell Extension.">
+      <option name="closed" value="true" />
+      <created>1785794527956</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1785794527956</updated>
+    </task>
+    <task id="LOCAL-00018" summary="extracted template files from librarian logic">
+      <option name="closed" value="true" />
+      <created>1785794577219</created>
+      <option name="number" value="00018" />
+      <option name="presentableId" value="LOCAL-00018" />
+      <option name="project" value="LOCAL" />
+      <updated>1785794577219</updated>
+    </task>
+    <task id="LOCAL-00019" summary="Completed implementation of emitter callback for agent stack.">
+      <option name="closed" value="true" />
+      <created>1785811159696</created>
+      <option name="number" value="00019" />
+      <option name="presentableId" value="LOCAL-00019" />
+      <option name="project" value="LOCAL" />
+      <updated>1785811159696</updated>
+    </task>
+    <task id="LOCAL-00020" summary="Corrected db schema drift resulting from upgrades to the PartVault app.">
+      <option name="closed" value="true" />
+      <created>1785817938504</created>
+      <option name="number" value="00020" />
+      <option name="presentableId" value="LOCAL-00020" />
+      <option name="project" value="LOCAL" />
+      <updated>1785817938504</updated>
+    </task>
+    <task id="LOCAL-00021" summary="Add telemetry output from agents to be picked up by the shell extension.">
+      <option name="closed" value="true" />
+      <created>1785865689830</created>
+      <option name="number" value="00021" />
+      <option name="presentableId" value="LOCAL-00021" />
+      <option name="project" value="LOCAL" />
+      <updated>1785865689830</updated>
+    </task>
+    <task id="LOCAL-00022" summary="Add telemetry output from agents to be picked up by the shell extension.">
+      <option name="closed" value="true" />
+      <created>1785865700949</created>
+      <option name="number" value="00022" />
+      <option name="presentableId" value="LOCAL-00022" />
+      <option name="project" value="LOCAL" />
+      <updated>1785865700949</updated>
+    </task>
+    <task id="LOCAL-00023" summary="Updated agent fleet for new DynamicActionPayload connections">
+      <option name="closed" value="true" />
+      <created>1785874555694</created>
+      <option name="number" value="00023" />
+      <option name="presentableId" value="LOCAL-00023" />
+      <option name="project" value="LOCAL" />
+      <updated>1785874555694</updated>
+    </task>
+    <task id="LOCAL-00024" summary="Updated agent fleet for new DynamicActionPayload connections">
+      <option name="closed" value="true" />
+      <created>1785892276536</created>
+      <option name="number" value="00024" />
+      <option name="presentableId" value="LOCAL-00024" />
+      <option name="project" value="LOCAL" />
+      <updated>1785892276536</updated>
+    </task>
+    <task id="LOCAL-00025" summary="Add routing table for dispatcher.">
+      <option name="closed" value="true" />
+      <created>1785899477302</created>
+      <option name="number" value="00025" />
+      <option name="presentableId" value="LOCAL-00025" />
+      <option name="project" value="LOCAL" />
+      <updated>1785899477302</updated>
+    </task>
+    <task id="LOCAL-00026" summary="Add routing table for dispatcher.">
+      <option name="closed" value="true" />
+      <created>1785900339380</created>
+      <option name="number" value="00026" />
+      <option name="presentableId" value="LOCAL-00026" />
+      <option name="project" value="LOCAL" />
+      <updated>1785900339380</updated>
+    </task>
+    <task id="LOCAL-00027" summary="Clean up dispatcher use of routing table.">
+      <option name="closed" value="true" />
+      <created>1785902816812</created>
+      <option name="number" value="00027" />
+      <option name="presentableId" value="LOCAL-00027" />
+      <option name="project" value="LOCAL" />
+      <updated>1785902816812</updated>
+    </task>
+    <task id="LOCAL-00028" summary="Clean up references to AgentEnum">
+      <option name="closed" value="true" />
+      <created>1785905814669</created>
+      <option name="number" value="00028" />
+      <option name="presentableId" value="LOCAL-00028" />
+      <option name="project" value="LOCAL" />
+      <updated>1785905814669</updated>
+    </task>
+    <task id="LOCAL-00029" summary="DB DAL layer">
+      <option name="closed" value="true" />
+      <created>1785953807554</created>
+      <option name="number" value="00029" />
+      <option name="presentableId" value="LOCAL-00029" />
+      <option name="project" value="LOCAL" />
+      <updated>1785953807554</updated>
+    </task>
+    <task id="LOCAL-00030" summary="Modified dispatcher db connection">
+      <option name="closed" value="true" />
+      <created>1785954948187</created>
+      <option name="number" value="00030" />
+      <option name="presentableId" value="LOCAL-00030" />
+      <option name="project" value="LOCAL" />
+      <updated>1785954948187</updated>
+    </task>
+    <task id="LOCAL-00031" summary="Packaged up agent skills">
+      <option name="closed" value="true" />
+      <created>1786050715427</created>
+      <option name="number" value="00031" />
+      <option name="presentableId" value="LOCAL-00031" />
+      <option name="project" value="LOCAL" />
+      <updated>1786050715427</updated>
+    </task>
+    <task id="LOCAL-00032" summary="Refined manifest.json">
+      <option name="closed" value="true" />
+      <created>1786074564421</created>
+      <option name="number" value="00032" />
+      <option name="presentableId" value="LOCAL-00032" />
+      <option name="project" value="LOCAL" />
+      <updated>1786074564421</updated>
+    </task>
+    <task id="LOCAL-00033" summary="Updated indexer method">
+      <option name="closed" value="true" />
+      <created>1786078285770</created>
+      <option name="number" value="00033" />
+      <option name="presentableId" value="LOCAL-00033" />
+      <option name="project" value="LOCAL" />
+      <updated>1786078285770</updated>
+    </task>
+    <task id="LOCAL-00034" summary="Added Agent Skills">
+      <option name="closed" value="true" />
+      <created>1786215726140</created>
+      <option name="number" value="00034" />
+      <option name="presentableId" value="LOCAL-00034" />
+      <option name="project" value="LOCAL" />
+      <updated>1786215726140</updated>
+    </task>
+    <task id="LOCAL-00035" summary="Icon for Dynamic Router control plane">
+      <option name="closed" value="true" />
+      <created>1786215759554</created>
+      <option name="number" value="00035" />
+      <option name="presentableId" value="LOCAL-00035" />
+      <option name="project" value="LOCAL" />
+      <updated>1786215759554</updated>
+    </task>
+    <task id="LOCAL-00036" summary="Alignment with database schema">
+      <option name="closed" value="true" />
+      <created>1786238179146</created>
+      <option name="number" value="00036" />
+      <option name="presentableId" value="LOCAL-00036" />
+      <option name="project" value="LOCAL" />
+      <updated>1786238179146</updated>
+    </task>
+    <task id="LOCAL-00037" summary="Completed wiring of skill to dynamic routing table.">
+      <option name="closed" value="true" />
+      <created>1786299807053</created>
+      <option name="number" value="00037" />
+      <option name="presentableId" value="LOCAL-00037" />
+      <option name="project" value="LOCAL" />
+      <updated>1786299807053</updated>
+    </task>
+    <option name="localTasksCounter" value="38" />
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="Added ability to reason through opening PDF viewer." />
+    <MESSAGE value="Removed references to previous systemd bus requirement" />
+    <MESSAGE value="Enabled CoT streaming and agent task actions to the Telemetry viewer." />
+    <MESSAGE value="updated git ignore with notebook_sources" />
+    <MESSAGE value="Removed updated information from roadmaps." />
+    <MESSAGE value="Removed outdated documentation and organized directory structure" />
+    <MESSAGE value="Added librarian cli helper" />
+    <MESSAGE value="Refactored Gnome Shell Extension." />
+    <MESSAGE value="extracted template files from librarian logic" />
+    <MESSAGE value="Completed implementation of emitter callback for agent stack." />
+    <MESSAGE value="Corrected db schema drift resulting from upgrades to the PartVault app." />
+    <MESSAGE value="Add telemetry output from agents to be picked up by the shell extension." />
+    <MESSAGE value="Updated agent fleet for new DynamicActionPayload connections" />
+    <MESSAGE value="Add routing table for dispatcher." />
+    <MESSAGE value="Clean up dispatcher use of routing table." />
+    <MESSAGE value="Clean up references to AgentEnum" />
+    <MESSAGE value="DB DAL layer" />
+    <MESSAGE value="Modified dispatcher db connection" />
+    <MESSAGE value="Packaged up agent skills" />
+    <MESSAGE value="Refined manifest.json" />
+    <MESSAGE value="Updated indexer method" />
+    <MESSAGE value="Added Agent Skills" />
+    <MESSAGE value="Icon for Dynamic Router control plane" />
+    <MESSAGE value="Alignment with database schema" />
+    <MESSAGE value="Completed wiring of skill to dynamic routing table." />
+    <option name="LAST_COMMIT_MESSAGE" value="Completed wiring of skill to dynamic routing table." />
+  </component>
+</project>

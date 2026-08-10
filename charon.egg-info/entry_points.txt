@@ -1,0 +1,6 @@
+[console_scripts]
+charon = charon.cli.main:main
+charon-cli = charon.cli.main:main
+charon-forge = charon.skill_forge_cli:main
+charon-librarian = charon.cli.librarian:main
+charond = charon.daemon:main

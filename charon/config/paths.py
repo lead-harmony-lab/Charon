@@ -1,0 +1,109 @@
+"""
+charon/config/paths.py
+System Version: v0.1.0 | File Revision: 1.4.0
+
+Module: Application & Ecosystem XDG Path Resolver
+Defines canonical XDG-compliant storage paths for Charon background daemon runtime,
+logs, state machines, vector stores, dynamic skill registries, task sandboxes, and
+external PartVault integrations.
+"""
+
+import os
+from pathlib import Path
+from typing import Union
+
+# =============================================================================
+# 0. Repository & Package Base Directories
+# =============================================================================
+CHARON_PKG_DIR = Path(__file__).resolve().parent.parent  # .../Charon/charon
+BASE_DIR = CHARON_PKG_DIR.parent                          # .../Charon
+
+# =============================================================================
+# 1. XDG Base Directory Specification Standards
+# =============================================================================
+XDG_DATA_HOME = Path(
+    os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share")
+).resolve()
+
+XDG_CONFIG_HOME = Path(
+    os.getenv("XDG_CONFIG_HOME", Path.home() / ".config")
+).resolve()
+
+XDG_STATE_HOME = Path(
+    os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state")
+).resolve()
+
+XDG_CACHE_HOME = Path(
+    os.getenv("XDG_CACHE_HOME", Path.home() / ".cache")
+).resolve()
+
+# =============================================================================
+# 2. Application-Specific XDG Directories & Databases
+# =============================================================================
+# System Configuration
+USER_CONFIG_DIR = XDG_CONFIG_HOME / "charon"
+CHARON_ENV_FILE = USER_CONFIG_DIR / "env"
+KICAD_DBL_PATH = USER_CONFIG_DIR / "partvault.kicad_dbl"
+
+# Charon Runtime Data & Memory Storage
+CHARON_DATA_DIR = XDG_DATA_HOME / "charon"
+DATA_DIR = CHARON_DATA_DIR
+PROJECT_MEMORY_DIR = CHARON_DATA_DIR / "chroma_db"
+CHROMA_DB_DIR = PROJECT_MEMORY_DIR
+
+# Persistent Daemon Databases
+STATE_DB_PATH = CHARON_DATA_DIR / "charon_state.db"
+LEDGER_DB_PATH = CHARON_DATA_DIR / "charon_ledger.db"
+TASK_QUEUE_DB_PATH = STATE_DB_PATH  # Task queue state shares StateManager DB
+
+# Dynamic Skill & Task Sandbox Directories
+DYNAMIC_SKILLS_DIR = CHARON_DATA_DIR / "skills_registry"
+WORKSPACES_DIR = CHARON_DATA_DIR / "workspaces"
+
+# Repository-Internal Skill Paths (Ingestion & Staging)
+PKG_DYNAMIC_SKILLS_DIR = CHARON_PKG_DIR / "skills_registry" / "dynamic"
+PKG_STAGED_SKILLS_DIR = CHARON_PKG_DIR / "skills_registry" / "staged"
+
+# Charon Logging & Cache State
+PROJECT_LOGS_DIR = XDG_STATE_HOME / "charon" / "logs"
+LOGS_DIR = PROJECT_LOGS_DIR
+MAIN_LOG_FILE = LOGS_DIR / "charond.log"
+ERROR_LOG_FILE = LOGS_DIR / "charond.error.log"
+
+# =============================================================================
+# 3. External Integration Directories (PartVault & Workspace)
+# =============================================================================
+# Shared PartVault Data & Datasheet Storage
+PARTVAULT_DATA_DIR = XDG_DATA_HOME / "partvault"
+PARTVAULT_DB_PATH = PARTVAULT_DATA_DIR / "partvault.db"
+QUARTERMASTER_DB_PATH = PARTVAULT_DB_PATH  # Legacy alias for Quartermaster queries
+DATASHEETS_DIR = PARTVAULT_DATA_DIR / "datasheets"
+DATASHEET_DIR = DATASHEETS_DIR
+
+# User Workspace Roots
+PROJECTS_DIR = Path(
+    os.getenv("CHARON_PROJECTS_DIR", Path.home() / "Projects")
+).resolve()
+
+
+def ensure_ecosystem_directories() -> None:
+    """Ensures all XDG user directories and workspace runtime folders exist."""
+    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CHARON_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROJECT_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    DYNAMIC_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
+    PKG_DYNAMIC_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    PKG_STAGED_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    PROJECT_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    PARTVAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DATASHEETS_DIR.mkdir(parents=True, exist_ok=True)
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_project_path(target: Union[str, Path]) -> Path:
+    """Resolves a path relative to PROJECTS_DIR if not absolute."""
+    path = Path(os.path.expanduser(str(target))).resolve()
+    if path.exists():
+        return path
+    return (PROJECTS_DIR / str(target)).resolve()

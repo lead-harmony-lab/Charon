@@ -1,0 +1,56 @@
+{
+  "skill_id": "hw_firmware_pio",
+  "version": "1.0.0",
+  "description": "Automated embedded firmware compilation and microcontroller flashing using PlatformIO CLI.",
+  "category": "Execution",
+  "author": "Charon Librarian",
+  "shelf_tags": ["firmware", "platformio", "embedded", "hardware", "microcontroller"],
+  "system_requirements": ["python3", "pio"],
+  "supported_actions": {
+    "compile_firmware": {
+      "description": "Compiles firmware source code for a target microcontroller project via PlatformIO.",
+      "parameters": {
+        "project_directory": {
+          "type": "string",
+          "description": "Path or identifier for the PlatformIO project directory.",
+          "required": true
+        },
+        "environment": {
+          "type": "string",
+          "description": "Specific PlatformIO environment tag defined in platformio.ini (e.g., 'esp32dev').",
+          "required": false
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Simulate build step without executing CLI commands.",
+          "required": false
+        }
+      }
+    },
+    "flash_hardware": {
+      "description": "Flashes compiled binary payloads to hardware over serial, USB, or OTA.",
+      "parameters": {
+        "project_directory": {
+          "type": "string",
+          "description": "Path or identifier for the PlatformIO project directory.",
+          "required": true
+        },
+        "port": {
+          "type": "string",
+          "description": "Hardware upload port path (e.g., '/dev/ttyUSB0', 'COM3', or 'auto').",
+          "required": false
+        },
+        "environment": {
+          "type": "string",
+          "description": "Target build environment identifier.",
+          "required": false
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Simulate upload execution without writing to target hardware.",
+          "required": false
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="JsonSchemaMappingsProjectConfiguration">
+    <state>
+      <map>
+        <entry key="Foxx Manifest">
+          <value>
+            <SchemaInfo>
+              <option name="name" value="Foxx Manifest" />
+              <option name="relativePathToSchema" value="https://www.schemastore.org/foxx-manifest.json" />
+              <option name="applicationDefined" value="true" />
+              <option name="patterns">
+                <list>
+                  <Item>
+                    <option name="path" value="charon/skills/dynamic/kicad_bom_exporter/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills/dynamic/pdf_ocr_extractor/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills/dynamic/extract_pdf_ocr_skill/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills/templates/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills/dynamic/task_tracker_manage/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/templates/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/archivist/staging/skills/code_self_healing_solver/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/archivist/staging/skills/code_python_interpreter/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/archivist/staging/skills/code_script_generator/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/archivist/staging/skills/sys_os_control/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/archivist/staging/skills/archivist_datasheet_rag/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/quartermaster/staging/skills/quartermaster_inventory_manager/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/quartermaster/staging/skills/quartermaster_bom_auditor/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/quartermaster/staging/skills/quartermaster_datasheet_fetcher/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/cleaner/staging/skills/cleaner_cad_sweeper/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/cleaner/staging/skills/cleaner_log_pruner/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/cleaner/staging/skills/cleaner_workspace_deleter/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/cleaner/staging/skills/skill_name/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/cleaner/staging/skills/cleaner_git_manager/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/cleaner/staging/skills/cleaner_workspace_inspector/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/cleaner/staging/skills/cleaner_workspace_scaffolder/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/generalist/staging/skills/generalist_query_handler/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/generalist/staging/skills/generalist_rag_synthesizer/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/generalist/staging/skills/generalist_math_evaluator/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/generalist/staging/skills/generalist_system_inspector/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/generalist/staging/skills/generalist_system_executor/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/planner/staging/skills/plan_task_decomposer/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/planner/staging/skills/skill_name/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/planner/staging/skills/sys_log_analyzer/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/planner/staging/skills/code_sandbox_executor/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/overseer/staging/skills/sys_asset_pruner/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/overseer/staging/skills/sys_health_auditor/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/machinist/staging/skills/fab_cad_tools/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/machinist/staging/skills/fab_cam_slicer/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/machinist/staging/skills/fab_printer_transmitter/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/steward/staging/skills/iot_home_assistant/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/steward/staging/skills/iot_mqtt_publisher/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/scout/staging/skills/web_search/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/scout/staging/skills/web_scraper/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/spark/staging/skills/skill_name/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/spark/staging/skills/hw_eda_kicad/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/spark/staging/skills/hw_firmware_pio/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/extract_pdf_ocr_skill/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/task_tracker_manage/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/skill_builder/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/kicad_bom_exporter/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/archivist/staging/skills/archivist_vector_ledger/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/engineer/staging/skills/code_script_generator/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/engineer/staging/skills/code_python_interpreter/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/engineer/staging/skills/code_self_healing_solver/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/agents/engineer/staging/skills/sys_os_control/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/code_sandbox_executor/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/code_python_interpreter/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/generalist_system_executor/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/sys_os_control/manifest.json" />
+                  </Item>
+                  <Item>
+                    <option name="path" value="charon/skills_registry/dynamic/cleaner_workspace_inspector/manifest.json" />
+                  </Item>
+                </list>
+              </option>
+            </SchemaInfo>
+          </value>
+        </entry>
+      </map>
+    </state>
+  </component>
+</project>

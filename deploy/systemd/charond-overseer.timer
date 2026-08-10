@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Charon Overseer Maintenance Daily
+
+[Timer]
+# Run daily at 03:30 AM local time
+OnCalendar=*-*-* 03:30:00
+# Prevent load spikes on system boot if missed
+Persistent=true
+# Spread out execution within a 15-minute window
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

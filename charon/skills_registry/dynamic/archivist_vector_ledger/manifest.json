@@ -1,0 +1,55 @@
+{
+  "skill_id": "archivist_vector_ledger",
+  "version": "1.0.0",
+  "description": "Provides persistent vector memory capabilities including rule/fact storage with deduplication, semantic retrieval, two-pass expunging, and ledger summarization.",
+  "category": "Data",
+  "author": "Charon Librarian",
+  "shelf_tags": ["vector_store", "memory", "ledger", "chromadb", "rules"],
+  "system_requirements": ["python3"],
+  "supported_actions": {
+    "store_record": {
+      "description": "Stores an operational rule or fact into ChromaDB with deduplication validation.",
+      "parameters": {
+        "fact": {
+          "type": "string",
+          "description": "The exact rule, memory candidate, or text fact to commit.",
+          "required": true
+        },
+        "category": {
+          "type": "string",
+          "description": "Classification category for the stored record.",
+          "required": false
+        }
+      }
+    },
+    "search_ledger": {
+      "description": "Retrieves semantic or exact rule matches from the vector memory ledger.",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "description": "The search query or prompt to match against stored ledger rules.",
+          "required": true
+        },
+        "n_results": {
+          "type": "integer",
+          "description": "Maximum number of matched records to retrieve.",
+          "required": false
+        }
+      }
+    },
+    "expunge_record": {
+      "description": "Locates and deletes rules using literal substring match or semantic similarity fallback.",
+      "parameters": {
+        "target_concept": {
+          "type": "string",
+          "description": "Substring or semantic target concept to locate and remove.",
+          "required": true
+        }
+      }
+    },
+    "summarize_ledger": {
+      "description": "Generates a high-level categorized count and status report of active ledger records.",
+      "parameters": {}
+    }
+  }
+}

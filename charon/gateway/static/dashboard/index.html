@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Charon Dynamic Router Control Panel</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header class="top-bar">
+        <div class="logo">⚡ CHARON CONTROL PLANE :: DYNAMIC ROUTER</div>
+        <div class="status-badge" id="ws-status">WebSocket: Connecting...</div>
+    </header>
+
+    <main class="dashboard-grid">
+        <!-- Panel 1: Registered Agents & Tuning -->
+        <section class="card agent-panel">
+            <h2>🤖 Agent Manifest Registry</h2>
+            <div id="agent-list" class="agent-list">
+                <div class="loading">Loading agent manifests...</div>
+            </div>
+        </section>
+
+        <!-- Panel 2: Triage WebSocket Telemetry Stream -->
+        <section class="card telemetry-panel">
+            <h2>📊 Real-Time Triage Stream</h2>
+            <div id="triage-stream" class="stream-box">
+                <div class="log-line text-muted">Listening for live triage decisions...</div>
+            </div>
+        </section>
+
+        <!-- Panel 3: Dynamic Shortcut Rules -->
+        <section class="card rules-panel">
+            <h2>⚡ Shortcut Override Rules</h2>
+            <form id="rule-form" class="rule-form">
+                <input type="text" id="rule-trigger" placeholder="Trigger (e.g. #archivist)" required>
+                <input type="text" id="rule-target" placeholder="Target Agent ID" required>
+                <input type="text" id="rule-desc" placeholder="Notes (Optional)">
+                <button type="submit" class="btn">Add Override Rule</button>
+            </form>
+            <table class="rules-table">
+                <thead>
+                    <tr>
+                        <th>Trigger</th>
+                        <th>Target Agent</th>
+                        <th>Description</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="rules-list">
+                    <tr><td colspan="4" class="text-muted">Loading active shortcut rules...</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <script src="js/dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+{
+  "role_name": "system_overseer",
+  "agent_id": "agent_overseer",
+  "display_name": "The Overseer",
+  "description": "Responsible for managing system limits, triggering database vacuums, pruning obsolete execution logs, and auditing system health.",
+  "system_requirements": [
+    "python3",
+    "psutil"
+  ],
+  "system_prompt": "You are The Overseer. Your primary objective is maintaining system stability. Monitor memory via the resource guard before complex deployments. Regularly trigger system sweeps to clear orphaned IPC assets, stale workspaces, and database dead tuples. Ground all optimizations in actual telemetry metrics.",
+  "default_action": "get_system_health",
+  "action_alias_map": {
+    "get_system_health": "get_system_health",
+    "vacuum_db": "optimize_databases",
+    "sweep_workspaces": "prune_stale_workspaces",
+    "clear_logs": "prune_logs_and_cache"
+  },
+  "equipped_skills": [
+    "sys_health_auditor",
+    "sys_asset_pruner"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "sys_health_auditor",
+      "display_name": "System Health Auditor",
+      "category": "System",
+      "system_requirements": ["python3", "psutil"],
+      "actions": {
+        "optimize_databases": {
+          "description": "Runs SQLite PRAGMA and VACUUM optimizations.",
+          "source": "databases.py:vacuum_db_file"
+        },
+        "get_system_health": {
+          "description": "Gathers host telemetry and system database file sizes.",
+          "source": "telemetry.py:get_health_sync"
+        }
+      }
+    },
+    {
+      "skill_id": "sys_asset_pruner",
+      "display_name": "System Asset Pruner",
+      "category": "System",
+      "system_requirements": ["python3"],
+      "actions": {
+        "prune_stale_workspaces": {
+          "description": "Prunes stale task sandboxes.",
+          "source": "pruning.py:prune_stale_workspaces_sync"
+        },
+        "prune_logs_and_cache": {
+          "description": "Prunes old logs and cache files.",
+          "source": "pruning.py:prune_logs_sync"
+        }
+      }
+    }
+  ]
+}

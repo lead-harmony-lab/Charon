@@ -1,0 +1,31 @@
+{
+  "skill_id": "web_scraper",
+  "version": "1.0.0",
+  "description": "HTML web page scraper and clean text/markdown extraction module.",
+  "category": "Web",
+  "author": "Charon Librarian",
+  "shelf_tags": ["web", "scraping", "html", "markdown", "parser"],
+  "system_requirements": ["python3", "requests", "beautifulsoup4"],
+  "supported_actions": {
+    "scrape_page_content": {
+      "description": "Fetches target URL content and returns sanitized formatted Markdown text.",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "description": "Target webpage URL to scrape.",
+          "required": true
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "Maximum character limit for extracted text (default 4000).",
+          "required": false
+        },
+        "headers": {
+          "type": "object",
+          "description": "Optional HTTP headers dictionary (e.g. custom User-Agent).",
+          "required": false
+        }
+      }
+    }
+  }
+}

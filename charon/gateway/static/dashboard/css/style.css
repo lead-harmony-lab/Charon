@@ -1,0 +1,158 @@
+:root {
+    --bg-dark: #0f111a;
+    --card-bg: #1a1d2e;
+    --border-color: #2e344e;
+    --text-main: #e2e8f0;
+    --text-muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent-hover: #0284c7;
+    --success: #22c55e;
+    --danger: #ef4444;
+}
+
+body {
+    margin: 0;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-dark);
+    color: var(--text-main);
+}
+
+.top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 2rem;
+    background: #090a10;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.logo {
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--accent);
+}
+
+.status-badge {
+    font-size: 0.85rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    background: var(--border-color);
+}
+
+.status-badge.online { background: #15803d; color: #fff; }
+.status-badge.offline { background: #991b1b; color: #fff; }
+
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    padding: 1.5rem;
+}
+
+.rules-panel {
+    grid-column: span 2;
+}
+
+.card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.25rem;
+}
+
+h2 {
+    margin-top: 0;
+    font-size: 1.1rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.5rem;
+}
+
+.agent-card {
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    background: #141625;
+}
+
+.agent-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.agent-title { font-weight: 600; font-size: 1.05rem; }
+
+.weight-input {
+    width: 60px;
+    padding: 0.2rem;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    color: #fff;
+    border-radius: 4px;
+}
+
+.tool-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin: 0.2rem;
+    padding: 0.2rem 0.5rem;
+    background: var(--border-color);
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.stream-box {
+    height: 350px;
+    overflow-y: auto;
+    background: var(--bg-dark);
+    padding: 1rem;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 0.85rem;
+}
+
+.log-entry {
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px dashed var(--border-color);
+}
+
+.rule-form {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.rule-form input {
+    padding: 0.5rem;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    color: #fff;
+    border-radius: 4px;
+    flex: 1;
+}
+
+.btn {
+    padding: 0.5rem 1rem;
+    background: var(--accent);
+    color: #000;
+    font-weight: 600;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.btn:hover { background: var(--accent-hover); }
+
+.rules-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.rules-table th, .rules-table td {
+    padding: 0.5rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}

@@ -1,0 +1,109 @@
+{
+  "role_name": "system_cleaner",
+  "agent_id": "agent_cleaner",
+  "display_name": "The Cleaner",
+  "description": "Automated workspace and asset maintenance agent responsible for scaffolding project structures, archiving legacy CAD versions, pruning system logs, managing workspace Git commits, and safety-checking directory deletion.",
+  "system_requirements": [
+    "python3",
+    "git"
+  ],
+  "system_prompt": "You are The Cleaner, a precise maintenance and workspace operations agent within the Charon ecosystem. Your primary duties are maintaining clean directory hygiene, pruning outdated logs, archiving legacy CAD iterations, initializing standard mechatronics project scaffolding, and performing safe version control commits.",
+  "default_action": "manage_workspace",
+  "action_alias_map": {
+    "manage_workspace": "list_workspaces",
+    "inspect_workspace": "list_workspaces",
+    "list_projects": "list_workspaces",
+    "sweep_cad": "sweep_cad_iterations",
+    "archive_cad": "sweep_cad_iterations",
+    "prune_logs": "prune_logs",
+    "clean_logs": "prune_logs",
+    "delete_workspace": "delete_project_workspace",
+    "purge_workspace": "delete_project_workspace",
+    "commit_workspace": "commit_workspace",
+    "git_commit": "commit_workspace",
+    "scaffold_workspace": "initialize_project_workspace",
+    "initialize_workspace": "initialize_project_workspace"
+  },
+  "equipped_skills": [
+    "cleaner_cad_sweeper",
+    "cleaner_log_pruner",
+    "cleaner_workspace_deleter",
+    "cleaner_git_manager",
+    "cleaner_workspace_inspector",
+    "cleaner_workspace_scaffolder"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "cleaner_cad_sweeper",
+      "display_name": "CAD Version Sweeper",
+      "category": "Data",
+      "system_requirements": ["python3"],
+      "actions": {
+        "sweep_cad_iterations": {
+          "description": "Scans project CAD subdirectories for versioned CAD files and archives non-latest iterations into dedicated archive directories.",
+          "source": "cad.py:CADManager.sweep_cad_iterations"
+        }
+      }
+    },
+    {
+      "skill_id": "cleaner_log_pruner",
+      "display_name": "System Log Pruner",
+      "category": "System",
+      "system_requirements": ["python3"],
+      "actions": {
+        "prune_logs": {
+          "description": "Removes expired log files from system log directories based on max retention age while protecting active log streams.",
+          "source": "logs.py:LogManager.prune_logs"
+        }
+      }
+    },
+    {
+      "skill_id": "cleaner_workspace_deleter",
+      "display_name": "Workspace Deleter",
+      "category": "System",
+      "system_requirements": ["python3"],
+      "actions": {
+        "delete_project_workspace": {
+          "description": "Permanently purges project directory paths after validating target resolution and confirmation flags.",
+          "source": "workspaces/deleter.py:WorkspaceDeleter.delete_project_workspace"
+        }
+      }
+    },
+    {
+      "skill_id": "cleaner_git_manager",
+      "display_name": "Workspace Git Manager",
+      "category": "System",
+      "system_requirements": ["python3", "git"],
+      "actions": {
+        "commit_workspace": {
+          "description": "Stages uncommitted workspace directory changes and performs local Git commits.",
+          "source": "workspaces/git_ops.py:WorkspaceGitHandler.commit_workspace"
+        }
+      }
+    },
+    {
+      "skill_id": "cleaner_workspace_inspector",
+      "display_name": "Workspace Inspector & Profiler",
+      "category": "System",
+      "system_requirements": ["python3"],
+      "actions": {
+        "list_workspaces": {
+          "description": "Indexes active workspace directories or generates heuristic file type summaries for target project paths.",
+          "source": "workspaces/inspector.py:WorkspaceInspector.list_workspaces"
+        }
+      }
+    },
+    {
+      "skill_id": "cleaner_workspace_scaffolder",
+      "display_name": "Workspace Scaffolder",
+      "category": "System",
+      "system_requirements": ["python3", "git"],
+      "actions": {
+        "initialize_project_workspace": {
+          "description": "Scaffolds standard mechatronics project directory structures, subfolders, `.gitkeep` placeholders, and initializes Git repositories.",
+          "source": "workspaces/scaffolder.py:WorkspaceScaffolder.initialize_project_workspace"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+.charon-panel-label {
+    font-weight: bold;
+    padding-left: 6px;
+    padding-right: 6px;
+}
+
+.charon-prompt-entry {
+    min-width: 280px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.charon-prompt-entry:focus {
+    border: 1px solid #3584e4;
+}

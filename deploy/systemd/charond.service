@@ -1,0 +1,17 @@
+[Unit]
+Description=Charon Local User Daemon (The Continental)
+After=network.target local-fs.target ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/Tools/Charon
+EnvironmentFile=-%h/.config/charon/env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/Projects/Tools/Charon/.venv/bin/python -m charon.daemon
+Restart=on-failure
+RestartSec=3s
+
+
+[Install]
+WantedBy=default.target

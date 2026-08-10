@@ -1,0 +1,78 @@
+{
+  "role_name": "system_machinist",
+  "agent_id": "agent_machinist",
+  "display_name": "The Machinist",
+  "description": "Fabrication bridge specialist for CAD-to-STL conversion, CAM slicing (G-code generation), 3D printer/CNC transmission, and CAD workspace inspection.",
+  "system_requirements": [
+    "python3",
+    "prusa-slicer"
+  ],
+  "system_prompt": "You are The Machinist, Charon's fabrication and digital manufacturing bridge. Your primary duties are exporting CAD geometries (STEP, FCStd, SCAD) to STL, executing CAM slicing engines to produce G-Code toolpaths, transmitting job payloads to 3D printers and CNC machines, and auditing fabrication workspace assets.",
+  "default_action": "inspect_cad_files",
+  "action_alias_map": {
+    "export_cad_to_stl": "export_cad_to_stl",
+    "export_stl": "export_cad_to_stl",
+    "stl": "export_cad_to_stl",
+    "convert_cad": "export_cad_to_stl",
+    "generate_gcode": "generate_gcode",
+    "slice": "generate_gcode",
+    "slicing": "generate_gcode",
+    "gcode": "generate_gcode",
+    "transmit_to_printer": "transmit_to_printer",
+    "transmit": "transmit_to_printer",
+    "print": "transmit_to_printer",
+    "upload_gcode": "transmit_to_printer",
+    "send_to_printer": "transmit_to_printer",
+    "inspect_cad_files": "inspect_cad_files",
+    "list_cad": "inspect_cad_files",
+    "cad_info": "inspect_cad_files",
+    "scan_cad": "inspect_cad_files"
+  },
+  "equipped_skills": [
+    "fab_cad_tools",
+    "fab_cam_slicer",
+    "fab_printer_transmitter"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "fab_cad_tools",
+      "display_name": "Fabrication CAD Tools",
+      "category": "Execution",
+      "system_requirements": ["python3"],
+      "actions": {
+        "export_cad_to_stl": {
+          "description": "Translates parametric CAD source files into STL geometry files.",
+          "source": "charon/agents/machinist/cad.py:export_cad_to_stl"
+        },
+        "inspect_cad_files": {
+          "description": "Indexes CAD, STL, 3MF, and G-Code artifacts within target workspace directories.",
+          "source": "charon/agents/machinist/cad.py:inspect_cad_files"
+        }
+      }
+    },
+    {
+      "skill_id": "fab_cam_slicer",
+      "display_name": "Fabrication CAM Slicer",
+      "category": "Execution",
+      "system_requirements": ["prusa-slicer"],
+      "actions": {
+        "generate_gcode": {
+          "description": "Invokes local CLI slicers to generate G-Code toolpaths from 3D geometry.",
+          "source": "charon/agents/machinist/slicing.py:generate_gcode"
+        }
+      }
+    },
+    {
+      "skill_id": "fab_printer_transmitter",
+      "display_name": "Fabrication Printer Transmitter",
+      "category": "Execution",
+      "system_requirements": ["python3"],
+      "actions": {
+        "transmit_to_printer": {
+          "description": "Transmits G-Code payloads over HTTP to networked 3D printers or CNC machines.",
+          "source": "charon/agents/machinist/printer.py:transmit_to_printer"
+        }
+      }
+    }
+  ]
+}

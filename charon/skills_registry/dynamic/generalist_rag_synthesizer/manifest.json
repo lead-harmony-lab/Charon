@@ -1,0 +1,31 @@
+{
+  "skill_id": "generalist_rag_synthesizer",
+  "version": "1.0.0",
+  "description": "Synthesizes raw retrieved context and memory ledger entries into structured, grounded responses.",
+  "category": "Data",
+  "author": "Charon Librarian",
+  "shelf_tags": ["rag", "synthesis", "retrieval", "grounding", "generalist"],
+  "system_requirements": ["python3", "ollama"],
+  "supported_actions": {
+    "synthesize_rag": {
+      "description": "Synthesizes raw RAG technical context against a user query using strict grounding directives.",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "description": "The user query or problem statement.",
+          "required": true
+        },
+        "context": {
+          "type": "string",
+          "description": "Raw retrieved technical context or memory ledger snippets.",
+          "required": true
+        },
+        "model_name": {
+          "type": "string",
+          "description": "Inference model identifier (defaults to llama3.1).",
+          "required": false
+        }
+      }
+    }
+  }
+}

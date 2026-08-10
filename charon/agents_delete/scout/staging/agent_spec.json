@@ -1,0 +1,61 @@
+{
+  "role_name": "role_scout",
+  "agent_id": "agent_scout",
+  "display_name": "The Scout",
+  "description": "Pure, domain-agnostic web reconnaissance agent specializing in multi-engine search execution, link parsing, domain filtering, and web page content extraction.",
+  "system_requirements": [
+    "python3",
+    "requests",
+    "beautifulsoup4"
+  ],
+  "system_prompt": "You are The Scout, Charon's web reconnaissance specialist. Your duties include executing multi-engine web searches, filtering domain results, parsing links, and scraping URL content to extract sanitized markdown context.",
+  "default_action": "web_search",
+  "action_alias_map": {
+    "web_search": "search_web",
+    "search_web": "search_web",
+    "search": "search_web",
+    "query_web": "search_web",
+    "google_search": "search_web",
+    "search_links": "search_links",
+    "scrape_page_content": "scrape_page_content",
+    "scrape": "scrape_page_content",
+    "fetch_url": "scrape_page_content",
+    "scrape_url": "scrape_page_content",
+    "read_page": "scrape_page_content",
+    "fetch": "scrape_page_content"
+  },
+  "equipped_skills": [
+    "web_search",
+    "web_scraper"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "web_search",
+      "display_name": "Web Search Engine",
+      "category": "Web",
+      "system_requirements": ["python3", "requests", "beautifulsoup4"],
+      "actions": {
+        "search_web": {
+          "description": "Performs a multi-engine web search and returns formatted markdown for LLM ingestion.",
+          "source": "charon/agents/scout/search.py:perform_web_search"
+        },
+        "search_links": {
+          "description": "Performs a web search and returns raw result objects ({title, link, snippet}) for programmatic consumption.",
+          "source": "charon/agents/scout/search.py:search_links"
+        }
+      }
+    },
+    {
+      "skill_id": "web_scraper",
+      "display_name": "Web Scraper",
+      "category": "Web",
+      "system_requirements": ["python3", "requests", "beautifulsoup4"],
+      "actions": {
+        "scrape_page_content": {
+          "description": "Fetches target URL content and returns sanitized formatted Markdown text.",
+          "source": "charon/agents/scout/scraping.py:scrape_url_content"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.charon" path="/org/gnome/shell/extensions/charon/">
+    <key name="toggle-shortcut" type="as">
+      <default>['&lt;Super&gt;&lt;Alt&gt;c']</default>
+      <summary>Toggle Charon prompt overlay</summary>
+      <description>Shortcut key combination to open the Charon concierge menu and focus input.</description>
+    </key>
+    <key name="api-url" type="s">
+      <default>'http://127.0.0.1:8000'</default>
+      <summary>Charon Daemon API Endpoint</summary>
+      <description>Base URL for the Charon REST and WebSocket daemon.</description>
+    </key>
+    <key name="api-key" type="s">
+      <default>'f026286a1cd2556b7bfd1e5af643e6e4b4b095aa8d9c02c4e1ee918cc827647c'</default>
+      <summary>Charon API Key</summary>
+      <description>Secret token for API authentication.</description>
+    </key>
+    <key name="api-key-header" type="s">
+      <default>'X-API-Key'</default>
+      <summary>API Key Header Name</summary>
+      <description>HTTP header name used for transmitting the API key.</description>
+    </key>
+  </schema>
+</schemalist>

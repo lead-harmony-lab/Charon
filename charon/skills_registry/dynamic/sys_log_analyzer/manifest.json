@@ -1,0 +1,26 @@
+{
+  "skill_id": "sys_log_analyzer",
+  "version": "1.0.0",
+  "description": "Log parsing and failure diagnostics for system and compilation errors.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": ["diagnostics", "logs", "error_analysis", "debugging"],
+  "system_requirements": ["python3", "ollama"],
+  "supported_actions": {
+    "analyze_error_logs": {
+      "description": "Parses complex compilation or system logs to diagnose failure root causes and provide solutions.",
+      "parameters": {
+        "log_content": {
+          "type": "string",
+          "description": "Raw log data or stack trace content to analyze.",
+          "required": true
+        },
+        "model_name": {
+          "type": "string",
+          "description": "Ollama model identifier to use for inference.",
+          "required": false
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "tests/gateway/test_routes.py::test_websocket_unauthorized_missing_token": true,
+  "tests/gateway/test_routes.py::test_websocket_unauthorized_invalid_token": true,
+  "tests/agents/test_steward.py::TestExecuteRouterAndAliases::test_unknown_action_raises_error": true,
+  "tests/core/test_utils.py::TestNormalizeAgent::test_normalize_with_valid_string_value": true,
+  "tests/core/test_dispatcher.py::test_dispatch_dict_payload": true,
+  "tests/intent/test_knowledge.py::TestArchivistPayload::test_fact_fallback_when_action_is_empty": true,
+  "tests/gateway/test_gateway.py::TestTelemetryReporter::test_start_loop_single_iteration": true,
+  "tests/pytest/agents/test_steward.py": true,
+  "tests/pytest/core/test_concierge.py": true,
+  "tests/pytest/core/test_engine_self_healing.py": true,
+  "tests/pytest/intent/test_hardware.py": true,
+  "tests/pytest/intent/test_intent.py": true,
+  "tests/pytest/test_cli.py": true
+}

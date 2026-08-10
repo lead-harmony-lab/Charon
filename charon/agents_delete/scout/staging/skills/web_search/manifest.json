@@ -1,0 +1,51 @@
+{
+  "skill_id": "web_search",
+  "version": "1.0.0",
+  "description": "Multi-engine web search capability providing formatted markdown search results and programmatic link arrays.",
+  "category": "Web",
+  "author": "Charon Librarian",
+  "shelf_tags": ["web", "search", "reconnaissance", "google", "duckduckgo"],
+  "system_requirements": ["python3", "requests", "beautifulsoup4"],
+  "supported_actions": {
+    "search_web": {
+      "description": "Performs a multi-engine web search and returns formatted markdown for LLM ingestion.",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "description": "Search query text or keywords.",
+          "required": true
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Maximum number of search results to return. Defaults to 5.",
+          "required": false
+        },
+        "ignored_domains": {
+          "type": "array",
+          "description": "Optional list of domains to filter out from search results.",
+          "required": false
+        }
+      }
+    },
+    "search_links": {
+      "description": "Performs a web search and returns raw result objects ({title, link, snippet}) for programmatic consumption.",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "description": "Search query text or keywords.",
+          "required": true
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Maximum number of search results to return. Defaults to 5.",
+          "required": false
+        },
+        "ignored_domains": {
+          "type": "array",
+          "description": "Optional list of domains to filter out.",
+          "required": false
+        }
+      }
+    }
+  }
+}

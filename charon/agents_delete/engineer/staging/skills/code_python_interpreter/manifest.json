@@ -1,0 +1,36 @@
+{
+  "skill_id": "code_python_interpreter",
+  "version": "1.0.0",
+  "description": "Subprocess sandbox runner for raw Python code strings and existing script files.",
+  "category": "Execution",
+  "author": "Charon Librarian",
+  "shelf_tags": ["python", "sandbox", "interpreter", "runner"],
+  "system_requirements": ["python3"],
+  "supported_actions": {
+    "execute_sandbox_code": {
+      "description": "Validates and executes dynamic Python code in an isolated subshell.",
+      "parameters": {
+        "code": {
+          "type": "string",
+          "description": "Python source code string.",
+          "required": true
+        },
+        "target_dir": {
+          "type": "string",
+          "description": "Directory context for process execution.",
+          "required": false
+        }
+      }
+    },
+    "run_existing_script": {
+      "description": "Executes a python script file located on disk.",
+      "parameters": {
+        "script_path": {
+          "type": "string",
+          "description": "Relative or absolute path to script.",
+          "required": true
+        }
+      }
+    }
+  }
+}

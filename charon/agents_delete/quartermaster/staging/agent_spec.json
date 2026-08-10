@@ -1,0 +1,82 @@
+{
+  "role_name": "system_quartermaster",
+  "agent_id": "agent_system_quartermaster",
+  "display_name": "The Quartermaster",
+  "description": "Logistics and documentation agent responsible for bill-of-materials (BOM) generation and auditing, SQLite inventory tracking, and electronic component datasheet retrieval.",
+  "system_requirements": [
+    "python3",
+    "sqlite3"
+  ],
+  "system_prompt": "You are The Quartermaster, responsible for physical inventory tracking in PartVault, project assembly BOM stock audits, component shortage detection, and PDF datasheet acquisition.",
+  "default_action": "check_inventory",
+  "action_alias_map": {
+    "check_inventory": "check_inventory",
+    "inventory": "check_inventory",
+    "check_stock": "check_inventory",
+    "log_inventory": "log_inventory",
+    "add_inventory": "log_inventory",
+    "log_part": "log_inventory",
+    "generate_bom": "generate_bom",
+    "audit_bom": "generate_bom",
+    "check_bom": "generate_bom",
+    "fetch_datasheet": "fetch_datasheet",
+    "get_datasheet": "fetch_datasheet",
+    "download_datasheet": "fetch_datasheet"
+  },
+  "equipped_skills": [
+    "quartermaster_inventory_manager",
+    "quartermaster_bom_auditor",
+    "quartermaster_datasheet_fetcher"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "quartermaster_inventory_manager",
+      "display_name": "PartVault Inventory & Stock Manager",
+      "category": "Data",
+      "system_requirements": [
+        "python3",
+        "sqlite3"
+      ],
+      "actions": {
+        "check_inventory": {
+          "description": "Queries PartVault SQLite database for stock levels, bin locations, and technical metadata.",
+          "source": "charon/agents/quartermaster/inventory.py:check_inventory"
+        },
+        "log_inventory": {
+          "description": "Logs incoming component stock, updates bin locations, and records footprint metadata in PartVault.",
+          "source": "charon/agents/quartermaster/inventory.py:log_inventory"
+        }
+      }
+    },
+    {
+      "skill_id": "quartermaster_bom_auditor",
+      "display_name": "Assembly BOM Auditor & Shortage Detector",
+      "category": "Execution",
+      "system_requirements": [
+        "python3",
+        "sqlite3"
+      ],
+      "actions": {
+        "generate_bom": {
+          "description": "Audits project assembly BOM CSV files against PartVault inventory to report component availability and stock shortages.",
+          "source": "charon/agents/quartermaster/bom.py:generate_bom"
+        }
+      }
+    },
+    {
+      "skill_id": "quartermaster_datasheet_fetcher",
+      "display_name": "Datasheet Retrieval & PartVault Sync",
+      "category": "Web",
+      "system_requirements": [
+        "python3",
+        "sqlite3"
+      ],
+      "actions": {
+        "fetch_datasheet": {
+          "description": "Searches local storage or scrapes web mirrors for component PDF datasheets, verifies SHA-256 integrity, and registers files in PartVault.",
+          "source": "charon/agents/quartermaster/datasheets.py:fetch_datasheet"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "uuid": "charon@continental.com",
+  "name": "Charon Concierge",
+  "description": "Interactive top-bar panel and Gatekeeper approval interface for the Charon Engine.",
+  "shell-version": [ "50" ],
+  "settings-schema": "org.gnome.shell.extensions.charon",
+  "url": ""
+}

@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "charon"
+dynamic = ["version"]
+description = "Autonomous Mechatronics & Hardware Engineering Assistant Engine"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "chromadb",
+    "pypdf",
+    "pydantic",
+    "pygobject-stubs>=2.17.0",
+    "httpx",
+    "websockets",
+    "prompt-toolkit",
+    "rich",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.51.0",
+    "ollama>=0.6.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+charon = "charon.cli.main:main"
+charon-cli = "charon.cli.main:main"
+charon-forge = "charon.skill_forge_cli:main"
+charon-librarian = "charon.cli.librarian:main"
+charond = "charon.daemon:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "charon.__version__.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+# =========================================================================
+# PYTEST CONFIGURATION
+# =========================================================================
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-v --cov=charon --cov-report=term-missing --cov-report=html"
+asyncio_mode = "strict"
+
+# =========================================================================
+# COVERAGE CONFIGURATION
+# =========================================================================
+[tool.coverage.run]
+branch = true
+source = ["charon"]
+omit = [
+    "tests/*",
+    "*/site-packages/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+precision = 2
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+    "@overload",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

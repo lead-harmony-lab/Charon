@@ -1,0 +1,34 @@
+{
+  "skill_id": "extract_pdf_ocr_skill",
+  "version": "0.1.0",
+  "description": "Extracts text content from PDF documents using Tesseract OCR.",
+  "category": "Document Processing",
+  "author": "Charon Librarian",
+  "allowed_agents": [
+    "agent_system_archivist",
+    "agent_system_engineer"
+  ],
+  "shelf_tags": [
+    "pdf",
+    "ocr",
+    "tesseract"
+  ],
+  "system_requirements": [
+    "tesseract"
+  ],
+  "consumed_artifacts": [],
+  "produced_artifacts": [],
+  "supported_actions": {
+    "extract_pdf_ocr": {
+      "description": "Executes OCR text extraction on target PDF file.",
+      "handler": "execute",
+      "parameters": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to target PDF file.",
+          "required": true
+        }
+      }
+    }
+  }
+}

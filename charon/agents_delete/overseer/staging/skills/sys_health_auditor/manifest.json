@@ -1,0 +1,37 @@
+{
+  "skill_id": "sys_health_auditor",
+  "version": "1.0.0",
+  "description": "System health auditing capability handling database optimization, vector store integrity checks, resource guarding, telemetry gathering, and automated skill gap resolution.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": ["telemetry", "database", "health", "resources", "maintenance"],
+  "system_requirements": ["python3", "psutil", "httpx", "pynvml"],
+  "supported_actions": {
+    "optimize_databases": {
+      "description": "Runs SQLite PRAGMA and VACUUM optimizations on target databases.",
+      "parameters": {
+        "target_db": {
+          "type": "string",
+          "description": "Optional explicit path or directory to target for database optimization.",
+          "required": false
+        }
+      }
+    },
+    "audit_vector_store": {
+      "description": "Audits Chroma vector store directory, collection structures, and SQLite integrity.",
+      "parameters": {}
+    },
+    "get_system_health": {
+      "description": "Gathers host telemetry, CPU/RAM utilization, and system database file sizes.",
+      "parameters": {}
+    },
+    "audit_resource_guard": {
+      "description": "Audits process memory, disk utilization, GPU usage, and verifies system limits for LLM execution.",
+      "parameters": {}
+    },
+    "resolve_skill_gaps": {
+      "description": "Sweeps for open skill gaps, notifies the IPC daemon, and triggers charon-forge automated scaffolding.",
+      "parameters": {}
+    }
+  }
+}

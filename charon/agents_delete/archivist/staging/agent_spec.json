@@ -1,0 +1,84 @@
+{
+  "role_name": "system_archivist",
+  "agent_id": "agent_system_archivist",
+  "display_name": "The Archivist",
+  "description": "Specialist agent for persistent vector memory management, rule retrieval, PDF datasheet indexing, and technical specification RAG search.",
+  "system_requirements": [
+    "python3"
+  ],
+  "system_prompt": "You are The Archivist, guardian of system memory and technical knowledge. Manage vector memory ledgers, operational rules, and PDF technical datasheets with full RAG capability.",
+  "default_action": "search_ledger",
+  "action_alias_map": {
+    "store_record": "store_record",
+    "record_rule": "store_record",
+    "add_rule": "store_record",
+    "save_fact": "store_record",
+    "search_ledger": "search_ledger",
+    "query_ledger": "search_ledger",
+    "get_rule": "search_ledger",
+    "expunge_record": "expunge_record",
+    "delete_rule": "expunge_record",
+    "delete_ledger_rule": "expunge_record",
+    "remove_rule": "expunge_record",
+    "summarize_ledger": "summarize_ledger",
+    "get_summary": "summarize_ledger",
+    "list_rules": "summarize_ledger",
+    "index_datasheet": "index_datasheet",
+    "index_pdf": "index_datasheet",
+    "ingest_datasheet": "index_datasheet",
+    "search_datasheets": "search_datasheets",
+    "query_datasheet": "search_datasheets",
+    "search_knowledge": "search_datasheets",
+    "get_datasheet_info": "search_datasheets"
+  },
+  "equipped_skills": [
+    "archivist_vector_ledger",
+    "archivist_datasheet_rag"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "archivist_vector_ledger",
+      "display_name": "Vector Memory & System Rule Ledger",
+      "category": "Data",
+      "system_requirements": [
+        "python3"
+      ],
+      "actions": {
+        "store_record": {
+          "description": "Stores operational rules or facts into ChromaDB with deduplication validation.",
+          "source": "charon/agents/archivist/ledger.py:store_record"
+        },
+        "search_ledger": {
+          "description": "Retrieves exact or semantic operational rule matches from vector memory, falling back to datasheet search if empty.",
+          "source": "charon/agents/archivist/ledger.py:search_ledger"
+        },
+        "expunge_record": {
+          "description": "Locates and deletes records using literal substring matching or semantic similarity fallback.",
+          "source": "charon/agents/archivist/ledger.py:expunge_record"
+        },
+        "summarize_ledger": {
+          "description": "Returns a categorized count and status summary of active memory records and vector chunks.",
+          "source": "charon/agents/archivist/ledger.py:summarize_ledger"
+        }
+      }
+    },
+    {
+      "skill_id": "archivist_datasheet_rag",
+      "display_name": "Technical Datasheet RAG & Inventory Sync",
+      "category": "Autonomous Execution",
+      "system_requirements": [
+        "python3"
+      ],
+      "actions": {
+        "index_datasheet": {
+          "description": "Extracts text from PDF datasheets, chunks & embeds vectors into ChromaDB, and syncs MPN records with SQLite PartVault.",
+          "source": "charon/agents/archivist/datasheets.py:index_datasheet_action"
+        },
+        "search_datasheets": {
+          "description": "Performs vector RAG query across indexed datasheet text chunks with optional MPN filtering.",
+          "source": "charon/agents/archivist/datasheets.py:search_datasheets"
+        }
+      }
+    }
+  ]
+}

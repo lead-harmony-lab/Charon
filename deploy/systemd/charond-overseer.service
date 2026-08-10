@@ -1,0 +1,22 @@
+[Unit]
+Description=Charon Overseer Background Maintenance & Diagnostics
+Documentation=https://github.com/your-repo/charon
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Projects/Tools/Charon
+Environment=PYTHONPATH=%h/Projects/Tools/Charon
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/Projects/Tools/Charon/.venv/bin/python %h/Projects/Tools/Charon/scripts/overseer_runner.py --action run_full_maintenance
+StandardOutput=journal
+StandardError=journal
+
+# --- System Security & Root Protection ---
+ProtectSystem=strict
+ReadWritePaths=%h /tmp /run/user/%U
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=default.target

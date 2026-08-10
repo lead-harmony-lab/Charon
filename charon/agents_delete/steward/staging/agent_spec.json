@@ -1,0 +1,74 @@
+{
+  "role_name": "system_steward",
+  "agent_id": "agent_steward",
+  "display_name": "The Steward",
+  "description": "Home automation and IoT agent responsible for Home Assistant REST API integrations, direct MQTT message publishing, network sensor reading, and device discovery.",
+  "system_requirements": [
+    "python3",
+    "requests",
+    "paho-mqtt"
+  ],
+  "system_prompt": "You are The Steward, Charon's home automation and IoT domain specialist. Your duties include controlling smart home appliances and entities via Home Assistant, publishing operational commands and telemetry via MQTT brokers, reading real-time sensor network state, and discovering network-connected devices.",
+  "default_action": "read_sensor_net",
+  "action_alias_map": {
+    "control_appliance": "control_appliance",
+    "control": "control_appliance",
+    "turn_on": "control_appliance",
+    "turn_off": "control_appliance",
+    "toggle": "control_appliance",
+    "appliance": "control_appliance",
+    "set_state": "control_appliance",
+    "publish_mqtt": "publish_mqtt",
+    "publish": "publish_mqtt",
+    "mqtt": "publish_mqtt",
+    "mqtt_publish": "publish_mqtt",
+    "read_sensor_net": "read_sensor_net",
+    "read_sensor": "read_sensor_net",
+    "sensor": "read_sensor_net",
+    "get_state": "read_sensor_net",
+    "sensor_net": "read_sensor_net",
+    "read": "read_sensor_net",
+    "discover_devices": "discover_devices",
+    "discover": "discover_devices",
+    "list_devices": "discover_devices",
+    "devices": "discover_devices"
+  },
+  "equipped_skills": [
+    "iot_home_assistant",
+    "iot_mqtt_publisher"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "iot_home_assistant",
+      "display_name": "IoT Home Assistant",
+      "category": "Execution",
+      "system_requirements": ["python3", "requests"],
+      "actions": {
+        "control_appliance": {
+          "description": "Controls a Home Assistant entity (switch, light, climate, relay, etc.) via REST API.",
+          "source": "charon/agents/steward/home_assistant.py:control_appliance"
+        },
+        "read_sensor_net": {
+          "description": "Queries state and attributes for a specific entity or reads full sensor network.",
+          "source": "charon/agents/steward/home_assistant.py:read_sensor_net"
+        },
+        "discover_devices": {
+          "description": "Fetches all active entities and state objects registered in Home Assistant.",
+          "source": "charon/agents/steward/home_assistant.py:discover_devices"
+        }
+      }
+    },
+    {
+      "skill_id": "iot_mqtt_publisher",
+      "display_name": "IoT MQTT Publisher",
+      "category": "Execution",
+      "system_requirements": ["python3", "paho-mqtt"],
+      "actions": {
+        "publish_mqtt": {
+          "description": "Publishes a text or structured JSON payload to a specified MQTT topic.",
+          "source": "charon/agents/steward/mqtt.py:publish_mqtt"
+        }
+      }
+    }
+  ]
+}

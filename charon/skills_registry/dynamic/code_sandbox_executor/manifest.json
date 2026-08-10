@@ -1,0 +1,31 @@
+{
+  "skill_id": "code_sandbox_executor",
+  "version": "1.0.0",
+  "description": "Generates and safely executes Python code via LLM in an isolated subshell environment.",
+  "category": "Execution",
+  "author": "Charon Librarian",
+  "shelf_tags": ["code_execution", "sandbox", "python", "dynamic_code"],
+  "system_requirements": ["python3", "ollama"],
+  "supported_actions": {
+    "generate_and_execute_code": {
+      "description": "Generates Python script from prompt and executes it in an isolated subshell sandbox.",
+      "parameters": {
+        "prompt": {
+          "type": "string",
+          "description": "Task description or coding intent for the dynamic script execution.",
+          "required": true
+        },
+        "model_name": {
+          "type": "string",
+          "description": "Ollama model identifier to use for inference.",
+          "required": false
+        },
+        "target_cwd": {
+          "type": "string",
+          "description": "Optional working directory path where execution should take place.",
+          "required": false
+        }
+      }
+    }
+  }
+}

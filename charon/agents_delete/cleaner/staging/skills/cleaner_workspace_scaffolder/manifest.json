@@ -1,0 +1,37 @@
+{
+  "skill_id": "cleaner_workspace_scaffolder",
+  "version": "1.0.0",
+  "description": "Scaffolds standard project folder structures and initializes Git repositories.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": ["scaffold", "init", "workspace", "mechatronics", "cleaner"],
+  "system_requirements": ["python3", "git"],
+  "supported_actions": {
+    "initialize_project_workspace": {
+      "description": "Creates a structured project workspace directory with default subfolders and initial Git tracking.",
+      "parameters": {
+        "project_name": {
+          "type": "string",
+          "description": "Name of the new project workspace.",
+          "required": true
+        },
+        "base_path": {
+          "type": "string",
+          "description": "Parent directory where project will be scaffolded.",
+          "required": false
+        },
+        "subdirectories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Custom subfolders to create. Defaults to ['cad', 'firmware', 'docs', 'src', 'bom'].",
+          "required": false
+        },
+        "initialize_git": {
+          "type": "boolean",
+          "description": "Whether to run git init on the new directory. Defaults to true.",
+          "required": false
+        }
+      }
+    }
+  }
+}

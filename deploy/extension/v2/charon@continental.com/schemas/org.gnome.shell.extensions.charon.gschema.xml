@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.charon" path="/org/gnome/shell/extensions/charon/">
+    <key name="api-url" type="s">
+      <default>'http://127.0.0.1:8000'</default>
+      <summary>Charon API URL</summary>
+    </key>
+    <key name="api-key" type="s">
+      <default>'charon-secret-key-change-me'</default>
+      <summary>Charon API Key</summary>
+    </key>
+    <key name="api-key-header" type="s">
+      <default>'X-API-Key'</default>
+      <summary>Charon API Header</summary>
+    </key>
+    <key name="toggle-shortcut" type="as">
+      <default>['&lt;Super&gt;&lt;Shift&gt;c']</default>
+      <summary>Toggle Charon Popup Menu</summary>
+    </key>
+    <key name="save-to-charon-shortcut" type="as">
+      <default>['&lt;Super&gt;&lt;Shift&gt;v']</default>
+      <summary>Save Clipboard Selection to Charon</summary>
+    </key>
+  </schema>
+</schemalist>

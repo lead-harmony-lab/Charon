@@ -1,0 +1,123 @@
+{
+  "role_name": "default_system_generalist",
+  "agent_id": "agent_generalist",
+  "display_name": "The Generalist",
+  "description": "Concierge and system utility agent for general knowledge, system diagnostics, deterministic math computation, OS command execution, and RAG synthesis.",
+  "system_requirements": [
+    "python3",
+    "ollama"
+  ],
+  "system_prompt": "You are Charon, the discreet, unflappable, and articulate Concierge of The Continental mechatronics system. Your tone is polite, concise, professional, slightly formal, and discreet at all times. Respond to queries with precise clarity and understated elegance.",
+  "default_action": "answer_query",
+  "action_alias_map": {
+    "answer_query": "answer_query",
+    "ask": "answer_query",
+    "query": "answer_query",
+    "chat": "answer_query",
+    "general_query": "answer_query",
+    "conversation": "answer_query",
+    "explain": "answer_query",
+    "respond": "answer_query",
+    "synthesize_rag": "synthesize_rag",
+    "rag": "synthesize_rag",
+    "synthesize": "synthesize_rag",
+    "combine_knowledge": "synthesize_rag",
+    "rag_synthesis": "synthesize_rag",
+    "calculate_math": "calculate_math",
+    "math": "calculate_math",
+    "calculate": "calculate_math",
+    "compute": "calculate_math",
+    "calculator": "calculate_math",
+    "system_info": "system_info",
+    "sys_info": "system_info",
+    "specs": "system_info",
+    "host_info": "system_info",
+    "system_status": "system_info",
+    "inspect_os": "system_info",
+    "execute_system_command": "execute_system_command",
+    "system_task": "execute_system_command",
+    "system_command": "execute_system_command",
+    "cmd": "execute_system_command",
+    "shell": "execute_system_command",
+    "exec": "execute_system_command",
+    "os_task": "execute_system_command",
+    "run_cmd": "execute_system_command",
+    "execute_command": "execute_system_command",
+    "acknowledge": "acknowledge",
+    "ack": "acknowledge",
+    "note": "acknowledge"
+  },
+  "equipped_skills": [
+    "generalist_query_handler",
+    "generalist_rag_synthesizer",
+    "generalist_math_evaluator",
+    "generalist_system_inspector",
+    "generalist_system_executor"
+  ],
+  "extracted_skills": [
+    {
+      "skill_id": "generalist_query_handler",
+      "display_name": "Generalist Query Handler",
+      "category": "Execution",
+      "system_requirements": ["python3", "ollama"],
+      "actions": {
+        "answer_query": {
+          "description": "Processes conversational or general knowledge questions via local LLM stream generation.",
+          "source": "handlers.py:handle_answer_query"
+        },
+        "acknowledge": {
+          "description": "Generates a formal concierge acknowledgment for user directives.",
+          "source": "agent.py:TheGeneralist.execute"
+        }
+      }
+    },
+    {
+      "skill_id": "generalist_rag_synthesizer",
+      "display_name": "RAG Knowledge Synthesizer",
+      "category": "Data",
+      "system_requirements": ["python3", "ollama"],
+      "actions": {
+        "synthesize_rag": {
+          "description": "Synthesizes raw retrieved context and ledger entries into structured, grounded responses.",
+          "source": "handlers.py:handle_synthesize_rag"
+        }
+      }
+    },
+    {
+      "skill_id": "generalist_math_evaluator",
+      "display_name": "Math Evaluator",
+      "category": "Execution",
+      "system_requirements": ["python3"],
+      "actions": {
+        "calculate_math": {
+          "description": "Evaluates mathematical expressions deterministically via AST or LLM assistance.",
+          "source": "handlers.py:handle_calculate_math"
+        }
+      }
+    },
+    {
+      "skill_id": "generalist_system_inspector",
+      "display_name": "System Diagnostics Inspector",
+      "category": "System",
+      "system_requirements": ["python3"],
+      "actions": {
+        "system_info": {
+          "description": "Gathers hardware and host system diagnostic info.",
+          "source": "handlers.py:handle_get_system_info"
+        }
+      }
+    },
+    {
+      "skill_id": "generalist_system_executor",
+      "display_name": "OS System Executor",
+      "category": "System",
+      "system_requirements": ["python3", "bash"],
+      "actions": {
+        "execute_system_command": {
+          "description": "Translates NL requests into CLI commands and executes shell operations safely.",
+          "source": "handlers.py:handle_execute_system_task"
+        }
+      }
+    }
+  ]
+}

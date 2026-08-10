@@ -1,0 +1,36 @@
+{
+  "skill_id": "code_self_healing_solver",
+  "version": "1.0.0",
+  "description": "Iterative, self-healing code generator and runtime error resolution engine.",
+  "category": "Autonomous Execution",
+  "author": "Charon Librarian",
+  "shelf_tags": ["python", "repair", "self-healing", "solver"],
+  "system_requirements": ["python3"],
+  "supported_actions": {
+    "solve_edge_case": {
+      "description": "Generates, executes, and iteratively repairs code in a closed loop until verification passes.",
+      "parameters": {
+        "problem": {
+          "type": "string",
+          "description": "The coding objective, edge case, or bug to solve.",
+          "required": true
+        },
+        "max_attempts": {
+          "type": "integer",
+          "description": "Maximum repair iteration attempts before giving up.",
+          "required": false
+        },
+        "timeout": {
+          "type": "float",
+          "description": "Process timeout in seconds per attempt.",
+          "required": false
+        },
+        "target_dir": {
+          "type": "string",
+          "description": "Target workspace directory path.",
+          "required": false
+        }
+      }
+    }
+  }
+}
