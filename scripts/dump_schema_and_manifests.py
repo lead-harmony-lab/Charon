@@ -13,7 +13,7 @@ import sqlite3
 from pathlib import Path
 
 STATE_DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 SAMPLES = [
     "archivist_datasheet_rag",

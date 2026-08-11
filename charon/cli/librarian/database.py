@@ -1,16 +1,16 @@
 """
 charon/cli/librarian/database.py
-System Version: v0.3.0 | File Revision: 2.0.0
+System Version: v0.3.1 | File Revision: 2.1.0
 
 Module: SQLite registry synchronization, agent_skill_map verification, and drift auditing.
-Updated to support namespaced action unrolling and accurate FK schema alignment.
+Updated to support flexible db_path parameters across sync and audit entrypoints.
 """
 
 import json
 import logging
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from rich.console import Console
 from rich.table import Table
@@ -34,18 +34,22 @@ def _slugify(text: str) -> str:
     return re.sub(r"[-\s]+", "_", text).strip("_")
 
 
-def run_sync() -> int:
+def run_sync(db_path: Optional[Union[str, Path]] = None) -> int:
     """Re-indexes filesystem manifests into the SQLite skill_registry table."""
+    target_db = Path(db_path) if db_path else STATE_DB_PATH
+
     console.print(
         "[bold blue]Syncing filesystem skill manifests into SQLite registry...[/bold blue]"
     )
-    librarian = SkillLibrarian.get_instance()
-    librarian.reindex_skills()
+    librarian = SkillLibrarian.get_instance(db_path=target_db) if hasattr(SkillLibrarian.get_instance, "__code__") and "db_path" in SkillLibrarian.get_instance.__code__.co_varnames else SkillLibrarian.get_instance()
+
+    if hasattr(librarian, "reindex_skills"):
+        librarian.reindex_skills()
 
     count = 0
-    if STATE_DB_PATH.exists():
+    if target_db.exists():
         try:
-            with get_connection(STATE_DB_PATH, read_only=True) as conn:
+            with get_connection(target_db, read_only=True) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM skill_registry")
                 row = cursor.fetchone()
@@ -78,8 +82,10 @@ def _audit_agent_skill_map(conn) -> List[Tuple[str, str]]:
     return cursor.fetchall()
 
 
-def run_audit() -> int:
+def run_audit(db_path: Optional[Union[str, Path]] = None) -> int:
     """Audits SQLite registry state against disk manifests and validates agent_skill_map integrity."""
+    target_db = Path(db_path) if db_path else STATE_DB_PATH
+
     console.print(
         "[bold blue]🔍 Auditing SQLite Skill Registry & agent_skill_map vs Filesystem...[/bold blue]\n"
     )
@@ -88,9 +94,9 @@ def run_audit() -> int:
     db_registered_skills: Set[str] = set()
     orphaned_mappings: List[Tuple[str, str]] = []
 
-    if STATE_DB_PATH.exists():
+    if target_db.exists():
         try:
-            with get_connection(STATE_DB_PATH, read_only=True) as conn:
+            with get_connection(target_db, read_only=True) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT skill_id, action_name FROM skill_registry")
                 for row in cursor.fetchall():
@@ -162,8 +168,6 @@ def run_audit() -> int:
 
         disk_count = len(expected_actions)
         db_count = len(indexed_actions)
-
-        action_str = f"{disk_count} / {db_count}"
 
         if db_count == 0:
             analysis = "[bold red]Unindexed Skill[/bold red] (Run sync to index)"

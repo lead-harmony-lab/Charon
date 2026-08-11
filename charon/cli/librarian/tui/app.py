@@ -1,15 +1,15 @@
 """
 charon/cli/librarian/tui/app.py
-System Version: v0.1.0 | File Revision: 1.5.0
+System Version: v0.2.0 | File Revision: 2.2.0
 
 Module: LibrarianTUI application orchestrator and main menu navigation loop.
-Refactored to support interactive ingestion name resolution, staged folder sanitization,
-and automatic pre-run synchronization.
+Refactored to trigger startup orphan quarantine auto-sweeps prior to database sync,
+integrating interactive quarantine selection prompts and detailed outcome summaries.
 """
 
 from pathlib import Path
 import sys
-from typing import List
+from typing import Any, Dict, List, Union
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -19,10 +19,18 @@ from rich.syntax import Syntax
 
 from charon.cli.librarian.database import run_sync
 from charon.cli.librarian.forge import main as run_forge
-from charon.cli.librarian.ingestion import SKILLS_TEMPLATES_DIR, run_create, run_ingest
+from charon.cli.librarian.ingestion import (
+    SKILLS_QUARANTINE_DIR,
+    SKILLS_TEMPLATES_DIR,
+    flag_quarantined_orphans,
+    run_create,
+    run_ingest,
+)
+from charon.cli.librarian.tui.components import render_header
 from charon.cli.librarian.tui.diagnostics import run_diagnostics_suite
 from charon.cli.librarian.tui.discovery import discover_skills, get_active_db_agent_ids
-from charon.cli.librarian.tui.views import render_header, view_catalog
+from charon.cli.librarian.tui.prompts import prompt_quarantine_selection
+from charon.cli.librarian.tui.views import view_catalog
 from charon.core.skills import SkillLibrarian
 
 console = Console()
@@ -65,6 +73,47 @@ class LibrarianTUI:
 
         return f"// Template file '{filename}' missing at {template_path}"
 
+    def _render_ingestion_summary(self, result: Dict[str, Any]):
+        """Renders a structured, high-visibility outcome panel after scaffolding or ingestion."""
+        if not result or not result.get("success", True):
+            console.print(
+                Panel(
+                    f"[bold red]❌ INGESTION FAILED OR CANCELLED[/bold red]\n\n"
+                    f"[white]{result.get('error', 'Operation was aborted or invalid source provided.')}[/white]",
+                    title="[bold red]Ingestion Report[/bold red]",
+                    border_style="red",
+                    expand=True,
+                )
+            )
+            return
+
+        skill_id = result.get("skill_id", "Unknown")
+        source = result.get("source_path", "N/A")
+        dest = result.get("staged_path", f"skills/staged/{skill_id}")
+        manifest_status = "[bold green]✓ Created from Template[/bold green]" if result.get("manifest_created") else "[dim green]✓ Verified Existing[/dim green]"
+        plugin_status = "[bold green]✓ Normalized / Created[/bold green]" if result.get("plugin_created") else "[dim green]✓ Verified Existing[/dim green]"
+
+        summary_text = (
+            f"[bold green]✅ SKILL INGESTED SUCCESSFULLY[/bold green]\n\n"
+            f"• [bold white]Assigned Skill ID:[/bold white] [bold cyan]{skill_id}[/bold cyan]\n"
+            f"• [bold white]Source Pathway:[/bold white] [dim]{source}[/dim]\n"
+            f"• [bold white]Staged Target Path:[/bold white] [yellow]{dest}[/yellow]\n\n"
+            f"[bold magenta]Package Structure Verification:[/bold magenta]\n"
+            f"  ├── manifest.json: {manifest_status}\n"
+            f"  └── plugin.py:     {plugin_status}\n\n"
+            f"[dim italic]Tip: Browse Catalog [1] -> Inspector to edit manifest or promote to Dynamic Stage.[/dim italic]"
+        )
+
+        console.print(
+            Panel(
+                summary_text,
+                title=f"[bold green]📥 Ingestion Summary Report — {skill_id}[/bold green]",
+                border_style="green",
+                padding=(0, 2),
+                expand=True,
+            )
+        )
+
     def _show_ingestion_docs(self):
         """Interactive multi-page documentation viewer for skill ingestion specs."""
         page = "1"
@@ -73,29 +122,30 @@ class LibrarianTUI:
             console.print(
                 Panel(
                     "[bold yellow]📖 SKILL INGESTION DOCUMENTATION & TEMPLATE SPECS[/bold yellow]\n"
-                    "[dim]Navigate pages to review package structure and template files[/dim]",
+                    "[dim]Navigate pages to review package structure, quarantine pathway, and templates[/dim]",
                     border_style="yellow",
                 )
             )
 
             if page == "1":
                 doc_markdown = (
-                    "### 🏛️ Ingestion Architecture & Workflow\n\n"
+                    "### 🏛️ Ingestion Architecture & Quarantine Pathways\n\n"
                     "All Charon skills must be formatted into staged package folders prior to dynamic promotion:\n\n"
                     "    skills/staged/<skill_id>/\n"
                     "    ├── manifest.json    (Schema metadata: ID, actions, requirements)\n"
                     "    └── plugin.py        (Python entrypoint module handling action callbacks)\n\n"
-                    "#### 💡 Ingestion Rules & Automated Normalization\n"
+                    "#### ☣️ Quarantine & Ingestion Rules\n"
+                    f"* **Quarantine Directory**: Isolated files sitting in `{SKILLS_QUARANTINE_DIR}` are automatically evaluated during ingestion.\n"
                     "* **Interactive Resolution**: User is prompted to confirm or customize the `skill_id` slug upon import.\n"
                     "* **Standalone `.py` File**: Copied as `plugin.py` into `skills/staged/<skill_id>/`; boilerplate `manifest.json` generated from template.\n"
                     "* **Directory without Manifest**: Copied to staged area, entrypoint normalized to `plugin.py`, and `manifest.json` generated from template.\n"
-                    "* **Staged Sanitization**: Pre-existing folders in `staged/` are auto-slugified and synced during DB maintenance checks.\n\n"
+                    "* **Staged Sanitization**: Pre-existing folders in `staged/` and demoted files in `quarantine/` are auto-slugified and synced during DB maintenance checks.\n\n"
                     "*Documentation Reference:* `https://docs.charon.internal/skills/ingestion`"
                 )
                 console.print(
                     Panel(
                         Markdown(doc_markdown),
-                        title="[bold cyan]Page 1: Overview & Guidelines[/bold cyan]",
+                        title="[bold cyan]Page 1: Overview, Staging & Quarantine Pathways[/bold cyan]",
                         border_style="cyan",
                     )
                 )
@@ -144,23 +194,24 @@ class LibrarianTUI:
                 page = choice
 
     def run_ingestion_wizard(self):
-        """Interactive workflow for scaffolding, ingesting files, and reading specs."""
+        """Interactive workflow for scaffolding, ingesting files from local/quarantine paths, and reading specs."""
         while True:
             console.clear()
             console.print(
                 Panel(
                     "[bold cyan]📥 SKILL INGESTION & SCAFFOLDING WIZARD[/bold cyan]\n"
-                    "[dim]Scaffold new templates or import external code into staged storage[/dim]",
+                    "[dim]Scaffold new templates or import external/quarantined code into staged storage[/dim]",
                     border_style="cyan",
                 )
             )
             console.print("  [1] 🛠️  Scaffold New Skill Template")
-            console.print("  [2] 📂 Ingest External File or Directory")
+            console.print("  [2] ☣️  Select from Quarantine Storage Pathway")
+            console.print("  [3] 📂 Ingest from Custom File or Directory Path")
             console.print("  [H] 📖 Ingestion Specs & Help Docs (Multi-Page Viewer)")
             console.print("  [B] Back to Main Menu")
             console.print("  [Q] Exit Librarian TUI\n")
 
-            choice = Prompt.ask("Select option", choices=["1", "2", "h", "H", "b", "B", "q", "Q"], default="1")
+            choice = Prompt.ask("Select option", choices=["1", "2", "3", "h", "H", "b", "B", "q", "Q"], default="1")
 
             if choice.lower() == "q":
                 console.print("[bold cyan]Librarian session closed.[/bold cyan]")
@@ -181,13 +232,41 @@ class LibrarianTUI:
                     sys.exit(0)
 
                 category = Prompt.ask("Category", default="General").strip()
-                run_create(skill_id=sid, category=category)
+                res = run_create(skill_id=sid, category=category)
+
+                if isinstance(res, dict):
+                    self._render_ingestion_summary(res)
+                else:
+                    self._render_ingestion_summary({
+                        "success": True,
+                        "skill_id": sid,
+                        "source_path": "Built-in Scaffold Template",
+                        "staged_path": f"skills/staged/{sid}",
+                        "manifest_created": True,
+                        "plugin_created": True,
+                    })
                 Prompt.ask("\nPress Enter to return")
 
             elif choice == "2":
-                console.print(
-                    "\n[dim]Provide path to a standalone .py file or folder (e.g., ~/my_script.py or ./my_skill_pkg/)[/dim]"
-                )
+                selected_path = prompt_quarantine_selection()
+                if selected_path:
+                    res = run_ingest(source_path=selected_path)
+
+                    if isinstance(res, dict):
+                        self._render_ingestion_summary(res)
+                    else:
+                        staged_target = Path("skills/staged") / selected_path.stem
+                        self._render_ingestion_summary({
+                            "success": True,
+                            "skill_id": selected_path.stem,
+                            "source_path": str(selected_path),
+                            "staged_path": str(staged_target),
+                            "manifest_created": (staged_target / "manifest.json").exists(),
+                            "plugin_created": (staged_target / "plugin.py").exists(),
+                        })
+                    Prompt.ask("\nPress Enter to return")
+
+            elif choice == "3":
                 path_input = Prompt.ask("Enter source path (or 'b' to cancel)").strip()
 
                 if not path_input or path_input.lower() == "b":
@@ -202,12 +281,27 @@ class LibrarianTUI:
                     Prompt.ask("Press Enter to try again")
                     continue
 
-                # run_ingest handles interactive naming, collision detection, and user confirmation
-                run_ingest(source_path=source_path)
+                res = run_ingest(source_path=source_path)
+
+                if isinstance(res, dict):
+                    self._render_ingestion_summary(res)
+                else:
+                    staged_target = Path("skills/staged") / source_path.stem
+                    self._render_ingestion_summary({
+                        "success": True,
+                        "skill_id": source_path.stem,
+                        "source_path": str(source_path),
+                        "staged_path": str(staged_target),
+                        "manifest_created": (staged_target / "manifest.json").exists(),
+                        "plugin_created": (staged_target / "plugin.py").exists(),
+                    })
                 Prompt.ask("\nPress Enter to return")
 
     def start(self):
-        # Enforce initial DB sync and staged folder sanitization on startup
+        # 1. Sweep disk/DB for quarantined orphans on boot
+        flag_quarantined_orphans()
+
+        # 2. Synchronize DB and staged/quarantine folders
         run_sync()
 
         while True:

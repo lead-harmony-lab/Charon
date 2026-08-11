@@ -6986,7 +6986,7 @@ class SkillExecutorMixin:
                 )
                 return None
 
-            module_name = f"charon.skills_registry.dynamic.{skill_id}"
+            module_name = f"charon.storage.dynamic.{skill_id}"
             spec = importlib.util.spec_from_file_location(module_name, entry_file_path)
             if spec is None or spec.loader is None:
                 logger.error(f"[LIBRARIAN] Failed to load spec for {module_name} at '{entry_file_path}'.")
@@ -7175,7 +7175,7 @@ class SkillIndexerMixin:
         return unique_manifests
 
     def _promote_skill_to_dynamic(self, source_manifest_path: Path) -> Path:
-        """Copies staged skill directory into skills_registry/dynamic/<skill_id>/"""
+        """Copies staged skill directory into storage/dynamic/<skill_id>/"""
         source_dir = source_manifest_path.parent
         raw_text = source_manifest_path.read_text(encoding="utf-8")
         manifest_data = json.loads(raw_text)

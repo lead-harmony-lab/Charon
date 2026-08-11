@@ -14,7 +14,7 @@ from pathlib import Path
 
 DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
 CHARON_ROOT = Path("~/Projects/Tools/Charon/charon").expanduser()
-SKILLS_DIR = CHARON_ROOT / "skills_registry" / "dynamic"
+SKILLS_DIR = CHARON_ROOT / "storage" / "dynamic"
 AGENTS_DIR = CHARON_ROOT / "agents"
 
 

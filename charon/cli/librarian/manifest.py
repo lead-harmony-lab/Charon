@@ -75,7 +75,7 @@ def _migrate_raw_dict(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
             if isinstance(act_val, str):
                 migrated["supported_actions"][act_key] = {
                     "description": act_val,
-                    "parameters": {}
+                    "parameters": {},
                 }
                 modified = True
             elif isinstance(act_val, dict):

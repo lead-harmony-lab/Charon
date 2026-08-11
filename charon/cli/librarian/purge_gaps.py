@@ -8,6 +8,7 @@ Aligned with Schema V3.
 
 import logging
 import sys
+
 from charon.config.paths import STATE_DB_PATH
 from charon.db.connection import get_connection
 
@@ -20,7 +21,9 @@ def purge_resolved_gaps() -> int:
     Returns the total number of purged records.
     """
     if not STATE_DB_PATH.exists():
-        logger.info(f"[MAINTENANCE] Database file not found at {STATE_DB_PATH}. Skipping purge.")
+        logger.info(
+            f"[MAINTENANCE] Database file not found at {STATE_DB_PATH}. Skipping purge."
+        )
         return 0
 
     # 1. Execute the purge within a standard managed transaction
@@ -36,9 +39,13 @@ def purge_resolved_gaps() -> int:
             with get_connection(STATE_DB_PATH) as conn:
                 conn.isolation_level = None  # Enable autocommit for VACUUM
                 conn.execute("VACUUM")
-            logger.info(f"[MAINTENANCE] Purged {purged_count} resolved gaps and vacuumed database.")
+            logger.info(
+                f"[MAINTENANCE] Purged {purged_count} resolved gaps and vacuumed database."
+            )
         except Exception as e:
-            logger.warning(f"[MAINTENANCE] Purged {purged_count} records, but VACUUM failed: {e}")
+            logger.warning(
+                f"[MAINTENANCE] Purged {purged_count} records, but VACUUM failed: {e}"
+            )
     else:
         logger.info("[MAINTENANCE] No resolved gaps found to purge.")
 

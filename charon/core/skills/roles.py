@@ -1,9 +1,9 @@
 """
 charon/core/skills/roles.py
-System Version: v0.6.3 | File Revision: 9.0.0
+System Version: v0.6.4 | File Revision: 9.1.0
 
 Strict database-driven role resolution and entrypoint discovery mixin for SkillLibrarian.
-No in-memory fallback dictionaries. No string-stripping heuristics.
+No in-memory fallback dictionaries. No string normalization heuristics or dynamic fallbacks.
 The database is the single source of truth. Unmapped roles raise RoleResolutionError immediately.
 """
 
@@ -17,11 +17,12 @@ logger = logging.getLogger("Charon.Core.Skills.Roles")
 
 class RoleResolutionError(KeyError):
     """Raised when a requested role cannot be resolved directly from the database registry."""
+
     pass
 
 
 class RoleResolverMixin:
-    """Strict DB-backed role normalization, canonical ID resolution, and entrypoint lookup mixin."""
+    """Strict DB-backed canonical ID resolution and entrypoint lookup mixin."""
 
     @property
     def _role_repo(self) -> RoleRepository:
@@ -29,12 +30,6 @@ class RoleResolverMixin:
         if not hasattr(self, "_cached_role_repo") or self._cached_role_repo is None:
             self._cached_role_repo = RoleRepository(getattr(self, "db_path", None))
         return self._cached_role_repo
-
-    def _normalize_role_key(self, raw_role: str) -> str:
-        """Normalizes raw role input string by trimming whitespace and lowercasing."""
-        if not raw_role:
-            return ""
-        return raw_role.strip().lower()
 
     def get_default_agent_id(self) -> str:
         """
@@ -56,7 +51,9 @@ class RoleResolverMixin:
         """
         rows = self._role_repo.get_core_roles_status()
         if not rows:
-            logger.error("[LIBRARIAN] Core role validation failed: `system_roles` table returned no records.")
+            logger.error(
+                "[LIBRARIAN] Core role validation failed: `system_roles` table returned no records."
+            )
             return False
 
         all_valid = True
@@ -71,24 +68,24 @@ class RoleResolverMixin:
 
     def resolve_agent_id_for_role(self, role_input: str) -> str:
         """
-        Queries the database directly for the agent_id bound to the given role.
+        Queries the database directly for the exact agent_id bound to the given role key.
 
-        HARD FAIL: Raises `RoleResolutionError` immediately if input is blank or unmapped in DB.
+        HARD FAIL: Raises `RoleResolutionError` immediately if input is missing or unmapped in DB.
+        No normalization, lowercasing, or string manipulation is performed.
         """
-        if not role_input or not str(role_input).strip():
-            raise RoleResolutionError("[LIBRARIAN] Role lookup rejected: Empty or missing role input.")
+        if not role_input or not isinstance(role_input, str):
+            raise RoleResolutionError(
+                "[LIBRARIAN] Role lookup rejected: Blank or invalid role input."
+            )
 
-        norm = self._normalize_role_key(role_input)
-
-        # Single Source of Truth: Database lookup
-        resolved_id = self._role_repo.get_agent_id_for_role(norm)
+        # Single Source of Truth: Direct raw key lookup in database
+        resolved_id = self._role_repo.get_agent_id_for_role(role_input)
         if resolved_id:
             return resolved_id
 
-        # HARD FAIL: No in-memory guessing, no default fallback
+        # HARD FAIL: No in-memory guessing, no normalization, no fallbacks
         raise RoleResolutionError(
-            f"[LIBRARIAN] Unresolvable Role: '{role_input}' (normalized: '{norm}') "
-            f"has no active agent binding in the database."
+            f"[LIBRARIAN] Unresolvable Role: Exact key '{role_input}' has no active agent binding in the database."
         )
 
     def resolve_role(self, role_input: str) -> str:
@@ -97,25 +94,24 @@ class RoleResolverMixin:
 
     def get_agent_entrypoint(self, agent_id: str) -> Dict[str, str]:
         """
-        Retrieves the Python module path and class name for a database-validated agent.
-        Raises RoleResolutionError if the agent has no entrypoint in DB.
+        Retrieves the Python module path and class name for a database-validated agent directly from DB.
+        Raises RoleResolutionError if module or class_name is missing or incomplete in the DB.
         """
         canonical_id = self.resolve_agent_id_for_role(agent_id)
 
         entrypoint_data = self._role_repo.get_agent_entrypoint_data(canonical_id)
 
-        if entrypoint_data and entrypoint_data.get("module") and entrypoint_data.get("class_name"):
+        if (
+            entrypoint_data
+            and isinstance(entrypoint_data, dict)
+            and entrypoint_data.get("module")
+            and entrypoint_data.get("class_name")
+        ):
             return entrypoint_data
 
-        if entrypoint_data is not None:
-            class_name = "".join(part.capitalize() for part in canonical_id.split("_")) + "Agent"
-            return {
-                "module": f"charon.agents.{canonical_id}",
-                "class_name": class_name,
-            }
-
         raise RoleResolutionError(
-            f"[LIBRARIAN] Entrypoint Resolution Failure: No module/class registered for canonical agent '{canonical_id}'."
+            f"[LIBRARIAN] Entrypoint Resolution Failure: Incomplete or missing entrypoint record "
+            f"(module/class_name) in database for agent '{canonical_id}'."
         )
 
     def get_display_name_for_agent(self, agent_id: str) -> str:

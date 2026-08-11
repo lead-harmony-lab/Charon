@@ -1,8 +1,9 @@
 """
 charon/cli/librarian/tui/diagnostics.py
-System Version: v0.1.0 | File Revision: 1.5.0
+System Version: v0.2.0 | File Revision: 1.6.0
 
-Module: Diagnostic health audits, dependency resolutions, and registry maintenance interface.
+Module: Diagnostic health audits, dependency resolutions, state drift checks,
+and registry maintenance interface.
 """
 
 import subprocess
@@ -15,6 +16,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from charon.cli.librarian.database import run_audit, run_sync
+from charon.cli.librarian.ingestion import flag_quarantined_orphans
 from charon.cli.librarian.purge_gaps import purge_resolved_gaps
 from charon.cli.librarian.tui.discovery import discover_skills, get_resolved_gaps_count
 from charon.core.skills import SkillLibrarian
@@ -31,12 +33,14 @@ PACKAGE_MAP = {
 }
 
 
-def run_diagnostics_suite(librarian: SkillLibrarian):
+def run_diagnostics_suite(librarian: SkillLibrarian) -> None:
     """Main interactive entry point for Option [3]: Diagnostics & Maintenance."""
     while True:
+        # Re-check and flag orphaned skills in DB prior to discovery
+        flag_quarantined_orphans()
+
         skills = discover_skills()
         broken_skills = [s for s in skills if s.get("missing_requirements")]
-        # Updated: Check relational RBAC bindings rather than legacy shelf_tags
         unassigned_skills = [s for s in skills if not s.get("authorized_agents")]
         resolved_gaps = get_resolved_gaps_count()
 
@@ -46,16 +50,18 @@ def run_diagnostics_suite(librarian: SkillLibrarian):
         grid.add_column(justify="left")
         grid.add_column(justify="left")
 
+        broken_style = "bold red" if broken_skills else "dim green"
         grid.add_row(
             f"• Total Skills Audited: [bold white]{len(skills)}[/bold white]",
-            f"• Broken Binary Dependencies: [{'bold red' if broken_skills else 'dim green'}]{len(broken_skills)}[/{'bold red' if broken_skills else 'dim green'}]",
+            f"• Broken Binary Dependencies: [{broken_style}]{len(broken_skills)}[/{broken_style}]",
         )
 
         db_status = "NEEDS PURGE" if resolved_gaps > 0 else "OK"
         db_color = "bold yellow" if resolved_gaps > 0 else "bold green"
+        unassigned_style = "bold yellow" if unassigned_skills else "dim green"
 
         grid.add_row(
-            f"• Unassigned Skills: [{'bold yellow' if unassigned_skills else 'dim green'}]{len(unassigned_skills)}[/{'bold yellow' if unassigned_skills else 'dim green'}]",
+            f"• Unassigned Skills: [{unassigned_style}]{len(unassigned_skills)}[/{unassigned_style}]",
             f"• Database Registry: [{db_color}]{db_status}[/{db_color}]",
         )
 
@@ -68,7 +74,8 @@ def run_diagnostics_suite(librarian: SkillLibrarian):
         if resolved_gaps > 0:
             elements.append(
                 f"\n[bold yellow]🧹 MAINTENANCE REQUIRED:[/bold yellow] "
-                f"[yellow]{resolved_gaps} resolved gap record(s) pending DB purge & vacuum. Select [4] to audit and purge.[/yellow]"
+                f"[yellow]{resolved_gaps} resolved gap record(s) pending DB purge & vacuum. "
+                f"Select [4] to audit and purge.[/yellow]"
             )
 
         header = Group(*elements)
@@ -110,6 +117,7 @@ def run_diagnostics_suite(librarian: SkillLibrarian):
                 Prompt.ask("Press Enter to continue")
         elif choice == "3":
             console.print("\n[bold cyan]Syncing SQLite database with filesystem manifests...[/bold cyan]")
+            flag_quarantined_orphans()
             run_sync()
             if hasattr(librarian, "reindex_skills"):
                 librarian.reindex_skills()
@@ -118,10 +126,13 @@ def run_diagnostics_suite(librarian: SkillLibrarian):
         elif choice == "4":
             console.clear()
             console.print("[bold cyan]📋 SQLite vs Filesystem State Drift Audit[/bold cyan]\n")
+            flag_quarantined_orphans()
             run_audit()
 
             if resolved_gaps > 0:
-                console.print(f"\n[bold yellow]⚠️ Drift Detected: {resolved_gaps} resolved gap(s) pending purge.[/bold yellow]")
+                console.print(
+                    f"\n[bold yellow]⚠️ State Drift Detected: {resolved_gaps} resolved gap(s) pending purge.[/bold yellow]"
+                )
                 confirm = Prompt.ask("Purge resolved gaps and vacuum database?", choices=["y", "n"], default="y")
                 if confirm.lower() == "y":
                     purged = purge_resolved_gaps()
@@ -129,7 +140,7 @@ def run_diagnostics_suite(librarian: SkillLibrarian):
             Prompt.ask("\nPress Enter to continue")
 
 
-def audit_report(skills: List[Dict]):
+def audit_report(skills: List[Dict]) -> None:
     """Displays a detailed diagnostic health matrix across all skills."""
     console.clear()
     table = Table(title="Diagnostic System Audit", show_header=True, header_style="bold cyan")
@@ -145,16 +156,16 @@ def audit_report(skills: List[Dict]):
             status = "[bold red]CRITICAL[/bold red]"
             packages = [PACKAGE_MAP.get(m, m) for m in missing]
             table.add_row(
-                s["skill_id"],
-                s["stage"],
+                s.get("skill_id", "N/A"),
+                s.get("stage", "Unknown"),
                 status,
                 ", ".join(missing),
                 ", ".join(packages),
             )
         else:
             table.add_row(
-                s["skill_id"],
-                s["stage"],
+                s.get("skill_id", "N/A"),
+                s.get("stage", "Unknown"),
                 "[bold green]HEALTHY[/bold green]",
                 "[dim]None[/dim]",
                 "[dim]N/A[/dim]",
@@ -164,7 +175,7 @@ def audit_report(skills: List[Dict]):
     Prompt.ask("\nPress Enter to return to Diagnostics Menu")
 
 
-def resolve_all_dependencies(broken_skills: List[Dict]):
+def resolve_all_dependencies(broken_skills: List[Dict]) -> None:
     """Collects missing requirements, applies package mapping, and triggers apt-get."""
     console.clear()
 

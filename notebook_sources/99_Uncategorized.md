@@ -16255,7 +16255,7 @@ class HardwareTelemetry:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/archivist_datasheet_rag/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/archivist_datasheet_rag/plugin.py`
 
 ```python
 """Plugin entrypoint module for archivist_datasheet_rag."""
@@ -16300,7 +16300,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/archivist_vector_ledger/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/archivist_vector_ledger/plugin.py`
 
 ```python
 """Plugin entrypoint module for archivist_vector_ledger."""
@@ -16369,7 +16369,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/cleaner_cad_sweeper/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/cleaner_cad_sweeper/plugin.py`
 
 ```python
 """Plugin entrypoint module for cleaner_cad_sweeper."""
@@ -16408,7 +16408,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/cleaner_git_manager/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/cleaner_git_manager/plugin.py`
 
 ```python
 """Plugin entrypoint module for cleaner_git_manager."""
@@ -16448,7 +16448,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/cleaner_log_pruner/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/cleaner_log_pruner/plugin.py`
 
 ```python
 """Plugin entrypoint module for cleaner_log_pruner."""
@@ -16487,7 +16487,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/cleaner_workspace_deleter/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/cleaner_workspace_deleter/plugin.py`
 
 ```python
 """Plugin entrypoint module for cleaner_workspace_deleter."""
@@ -16527,7 +16527,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/cleaner_workspace_inspector/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/cleaner_workspace_inspector/plugin.py`
 
 ```python
 """Plugin entrypoint module for cleaner_workspace_inspector."""
@@ -16567,7 +16567,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/cleaner_workspace_scaffolder/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/cleaner_workspace_scaffolder/plugin.py`
 
 ```python
 """Plugin entrypoint module for cleaner_workspace_scaffolder."""
@@ -16607,7 +16607,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/code_python_interpreter/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/code_python_interpreter/plugin.py`
 
 ```python
 """
@@ -16695,7 +16695,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/code_sandbox_executor/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/code_sandbox_executor/plugin.py`
 
 ```python
 """
@@ -16896,7 +16896,7 @@ async def generate_and_execute_code(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/code_script_generator/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/code_script_generator/plugin.py`
 
 ```python
 """
@@ -16967,7 +16967,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/code_self_healing_solver/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/code_self_healing_solver/plugin.py`
 
 ```python
 """
@@ -17073,7 +17073,7 @@ async def execute_action_async(action_name: str, params: Dict[str, Any]) -> Dict
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/extract_pdf_ocr_skill/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/extract_pdf_ocr_skill/plugin.py`
 
 ```python
 """
@@ -17156,7 +17156,7 @@ def execute(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/fab_cad_tools/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/fab_cad_tools/plugin.py`
 
 ```python
 """Plugin entrypoint module for fab_cad_tools."""
@@ -17274,7 +17274,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/fab_cam_slicer/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/fab_cam_slicer/plugin.py`
 
 ```python
 """Plugin entrypoint module for fab_cam_slicer."""
@@ -17337,7 +17337,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/fab_printer_transmitter/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/fab_printer_transmitter/plugin.py`
 
 ```python
 """Plugin entrypoint module for fab_printer_transmitter."""
@@ -17387,7 +17387,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/generalist_math_evaluator/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/generalist_math_evaluator/plugin.py`
 
 ```python
 """Plugin entrypoint module for generalist_math_evaluator."""
@@ -17429,7 +17429,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/generalist_query_handler/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/generalist_query_handler/plugin.py`
 
 ```python
 """Plugin entrypoint module for generalist_query_handler."""
@@ -17516,7 +17516,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Union[Dict[str, 
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/generalist_rag_synthesizer/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/generalist_rag_synthesizer/plugin.py`
 
 ```python
 """Plugin entrypoint module for generalist_rag_synthesizer."""
@@ -17558,7 +17558,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/generalist_system_executor/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/generalist_system_executor/plugin.py`
 
 ```python
 """Plugin entrypoint module for generalist_system_executor."""
@@ -17600,7 +17600,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/generalist_system_inspector/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/generalist_system_inspector/plugin.py`
 
 ```python
 """Plugin entrypoint module for generalist_system_inspector."""
@@ -17632,7 +17632,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/hw_eda_kicad/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/hw_eda_kicad/plugin.py`
 
 ```python
 """Plugin entrypoint module for hw_eda_kicad."""
@@ -17672,7 +17672,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/hw_firmware_pio/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/hw_firmware_pio/plugin.py`
 
 ```python
 """Plugin entrypoint module for hw_firmware_pio."""
@@ -17712,7 +17712,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/iot_home_assistant/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/iot_home_assistant/plugin.py`
 
 ```python
 """Plugin entrypoint module for iot_home_assistant."""
@@ -17809,7 +17809,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/iot_mqtt_publisher/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/iot_mqtt_publisher/plugin.py`
 
 ```python
 """Plugin entrypoint module for iot_mqtt_publisher."""
@@ -17865,7 +17865,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/kicad_bom_exporter/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/kicad_bom_exporter/plugin.py`
 
 ```python
 """
@@ -17924,7 +17924,7 @@ def export_bom(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/plan_task_decomposer/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/plan_task_decomposer/plugin.py`
 
 ```python
 """
@@ -18274,7 +18274,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Union[Dict[str, 
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/quartermaster_bom_auditor/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/quartermaster_bom_auditor/plugin.py`
 
 ```python
 """Plugin entrypoint module for quartermaster_bom_auditor."""
@@ -18317,7 +18317,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/quartermaster_datasheet_fetcher/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/quartermaster_datasheet_fetcher/plugin.py`
 
 ```python
 """Plugin entrypoint module for quartermaster_datasheet_fetcher."""
@@ -18376,7 +18376,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/quartermaster_inventory_manager/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/quartermaster_inventory_manager/plugin.py`
 
 ```python
 """Plugin entrypoint module for quartermaster_inventory_manager."""
@@ -18430,7 +18430,7 @@ def execute_action(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/skill_builder/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/skill_builder/plugin.py`
 
 ```python
 """
@@ -18536,7 +18536,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/sys_asset_pruner/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/sys_asset_pruner/plugin.py`
 
 ```python
 """Plugin entrypoint module for sys_asset_pruner."""
@@ -18764,7 +18764,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/sys_health_auditor/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/sys_health_auditor/plugin.py`
 
 ```python
 """Plugin entrypoint module for sys_health_auditor."""
@@ -19102,7 +19102,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/sys_log_analyzer/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/sys_log_analyzer/plugin.py`
 
 ```python
 """
@@ -19203,7 +19203,7 @@ async def analyze_error_logs(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/sys_os_control/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/sys_os_control/plugin.py`
 
 ```python
 """
@@ -19288,7 +19288,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/task_tracker_manage/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/task_tracker_manage/plugin.py`
 
 ```python
 """
@@ -19403,7 +19403,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/web_scraper/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/web_scraper/plugin.py`
 
 ```python
 """Plugin entrypoint module for web_scraper."""
@@ -19460,7 +19460,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/dynamic/web_search/plugin.py`
+## Target File: `../charon/cli/librarian/storage/dynamic/web_search/plugin.py`
 
 ```python
 """Plugin entrypoint module for web_search."""
@@ -19543,7 +19543,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/staged/planner_synthesize/plugin.py`
+## Target File: `../charon/cli/librarian/storage/staged/planner_synthesize/plugin.py`
 
 ```python
 """
@@ -19604,7 +19604,7 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/skills_registry/templates/plugin.py`
+## Target File: `../charon/cli/librarian/storage/templates/plugin.py`
 
 ```python
 """

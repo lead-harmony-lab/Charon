@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 STATE_DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("Charon.Pass2Repair")

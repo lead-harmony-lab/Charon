@@ -1,6 +1,6 @@
 """
 charon/cli/librarian/tui/discovery.py
-System Version: v0.1.0 | File Revision: 2.3.1
+System Version: v0.1.0 | File Revision: 2.4.0
 
 Module: V3-aligned skill discovery, manifest parsing, database permission queries,
 agent default skill bindings, and decoupled dual-pathway integrity auditing.
@@ -481,6 +481,25 @@ def audit_filesystem_manifest_health() -> Dict[str, Any]:
                 audit_report["corrupt_manifests"].append({"path": str(manifest_path), "error": str(e)})
 
     return audit_report
+
+
+# ============================================================================
+# METRICS & STATE DB QUERIES
+# ============================================================================
+
+def get_quarantined_orphans_count() -> int:
+    """Queries count of quarantined/orphaned skills in charon_state.db."""
+    if not STATE_DB_PATH.exists():
+        return 0
+    try:
+        with get_connection(STATE_DB_PATH, read_only=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM skill_registry WHERE status = 'quarantined'")
+            row = cursor.fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.debug(f"Failed to query quarantined orphans count: {e}")
+        return 0
 
 
 def get_open_gaps_count() -> int:

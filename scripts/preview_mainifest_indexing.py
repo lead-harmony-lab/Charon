@@ -10,7 +10,7 @@ and prints the resulting action table to verify everything before writing to sta
 import json
 from pathlib import Path
 
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 
 def preview_indexing():

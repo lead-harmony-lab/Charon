@@ -1,0 +1,36 @@
+{
+  "skill_id": "task_tracker_manage",
+  "version": "1.2.0",
+  "description": "Allows Charon agents to manage, list, and query top bar ticker tasks, scheduling, and operational checklists.",
+  "category": "Task Management",
+  "author": "Charon Librarian",
+  "stage": "Dynamic",
+  "allowed_agents": [
+    "planner",
+    "steward"
+  ],
+  "shelf_tags": [
+    "tasks",
+    "ticker",
+    "gnome_ui",
+    "planner"
+  ],
+  "system_requirements": [],
+  "supported_actions": {
+    "add_task": {
+      "description": "Add or pin a new task (title, priority, task_id) to the top bar ticker loop.",
+      "handler": "add_task",
+      "parameters": {}
+    },
+    "complete_task": {
+      "description": "Mark an existing task_id as completed to remove it from ticker rotation.",
+      "handler": "complete_task",
+      "parameters": {}
+    },
+    "list_tasks": {
+      "description": "Query all currently active/pinned tasks from the top bar ticker loop.",
+      "handler": "list_tasks",
+      "parameters": {}
+    }
+  }
+}

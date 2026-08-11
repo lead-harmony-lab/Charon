@@ -53,7 +53,7 @@ class SkillIndexerMixin:
         return unique_manifests
 
     def _promote_skill_to_dynamic(self, source_manifest_path: Path) -> Path:
-        """Copies staged skill directory into skills_registry/dynamic/<skill_id>/"""
+        """Copies staged skill directory into storage/dynamic/<skill_id>/"""
         source_dir = source_manifest_path.parent
         raw_text = source_manifest_path.read_text(encoding="utf-8")
         manifest_data = json.loads(raw_text)

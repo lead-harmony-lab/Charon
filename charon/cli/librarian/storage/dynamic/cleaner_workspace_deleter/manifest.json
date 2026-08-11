@@ -1,0 +1,31 @@
+{
+  "skill_id": "cleaner_workspace_deleter",
+  "version": "1.0.0",
+  "description": "Safely purges project workspace directories with confirmation and path authorization checks.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": ["workspace", "delete", "purge", "safety"],
+  "system_requirements": ["python3"],
+  "supported_actions": {
+    "delete_project_workspace": {
+      "description": "Permanently purges a project workspace directory after verifying authorization and safety limits.",
+      "parameters": {
+        "project_name": {
+          "type": "string",
+          "description": "Name of the project workspace to delete.",
+          "required": true
+        },
+        "base_path": {
+          "type": "string",
+          "description": "Root path containing the project folder.",
+          "required": false
+        },
+        "confirmed": {
+          "type": "boolean",
+          "description": "Confirmation flag authorizing permanent deletion.",
+          "required": false
+        }
+      }
+    }
+  }
+}

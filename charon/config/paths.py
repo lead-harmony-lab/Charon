@@ -1,6 +1,6 @@
 """
 charon/config/paths.py
-System Version: v0.1.0 | File Revision: 1.4.0
+System Version: v0.2.0 | File Revision: 1.5.0
 
 Module: Application & Ecosystem XDG Path Resolver
 Defines canonical XDG-compliant storage paths for Charon background daemon runtime,
@@ -17,6 +17,11 @@ from typing import Union
 # =============================================================================
 CHARON_PKG_DIR = Path(__file__).resolve().parent.parent  # .../Charon/charon
 BASE_DIR = CHARON_PKG_DIR.parent                          # .../Charon
+
+# Internal Module Directories
+CLI_DIR = CHARON_PKG_DIR / "cli"
+LIBRARIAN_DIR = CLI_DIR / "librarian"
+STORAGE_DIR = LIBRARIAN_DIR / "storage"
 
 # =============================================================================
 # 1. XDG Base Directory Specification Standards
@@ -56,13 +61,15 @@ STATE_DB_PATH = CHARON_DATA_DIR / "charon_state.db"
 LEDGER_DB_PATH = CHARON_DATA_DIR / "charon_ledger.db"
 TASK_QUEUE_DB_PATH = STATE_DB_PATH  # Task queue state shares StateManager DB
 
-# Dynamic Skill & Task Sandbox Directories
-DYNAMIC_SKILLS_DIR = CHARON_DATA_DIR / "skills_registry"
+# User-Level Dynamic Skill & Task Sandbox Directories (XDG Runtime Overrides)
+DYNAMIC_SKILLS_DIR = CHARON_DATA_DIR / "storage"
 WORKSPACES_DIR = CHARON_DATA_DIR / "workspaces"
 
-# Repository-Internal Skill Paths (Ingestion & Staging)
-PKG_DYNAMIC_SKILLS_DIR = CHARON_PKG_DIR / "skills_registry" / "dynamic"
-PKG_STAGED_SKILLS_DIR = CHARON_PKG_DIR / "skills_registry" / "staged"
+# Repository-Internal 3-Tier Skill Storage (Modularized inside Librarian)
+QUARANTINE_SKILLS_DIR = STORAGE_DIR / "quarantine"
+PKG_QUARANTINE_SKILLS_DIR = QUARANTINE_SKILLS_DIR  # Alias for consistency
+PKG_STAGED_SKILLS_DIR = STORAGE_DIR / "staged"
+PKG_DYNAMIC_SKILLS_DIR = STORAGE_DIR / "dynamic"
 
 # Charon Logging & Cache State
 PROJECT_LOGS_DIR = XDG_STATE_HOME / "charon" / "logs"
@@ -93,8 +100,14 @@ def ensure_ecosystem_directories() -> None:
     PROJECT_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     DYNAMIC_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
-    PKG_DYNAMIC_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Internal Storage Tier Directories
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    QUARANTINE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     PKG_STAGED_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    PKG_DYNAMIC_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Logs and External Integrations
     PROJECT_LOGS_DIR.mkdir(parents=True, exist_ok=True)
     PARTVAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
     DATASHEETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -107,3 +120,7 @@ def resolve_project_path(target: Union[str, Path]) -> Path:
     if path.exists():
         return path
     return (PROJECTS_DIR / str(target)).resolve()
+
+
+# Initialize ecosystem directories on module import
+ensure_ecosystem_directories()

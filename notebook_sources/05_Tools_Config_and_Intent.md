@@ -228,12 +228,12 @@ LEDGER_DB_PATH = CHARON_DATA_DIR / "charon_ledger.db"
 TASK_QUEUE_DB_PATH = STATE_DB_PATH  # Task queue state shares StateManager DB
 
 # Dynamic Skill & Task Sandbox Directories
-DYNAMIC_SKILLS_DIR = CHARON_DATA_DIR / "skills_registry"
+DYNAMIC_SKILLS_DIR = CHARON_DATA_DIR / "storage"
 WORKSPACES_DIR = CHARON_DATA_DIR / "workspaces"
 
 # Repository-Internal Skill Paths (Ingestion & Staging)
-PKG_DYNAMIC_SKILLS_DIR = CHARON_PKG_DIR / "skills_registry" / "dynamic"
-PKG_STAGED_SKILLS_DIR = CHARON_PKG_DIR / "skills_registry" / "staged"
+PKG_DYNAMIC_SKILLS_DIR = CHARON_PKG_DIR / "storage" / "dynamic"
+PKG_STAGED_SKILLS_DIR = CHARON_PKG_DIR / "storage" / "staged"
 
 # Charon Logging & Cache State
 PROJECT_LOGS_DIR = XDG_STATE_HOME / "charon" / "logs"
@@ -2677,7 +2677,7 @@ import sys
 from pathlib import Path
 
 STATE_DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 
 def audit_agent_skill_mappings():
@@ -2708,11 +2708,11 @@ def audit_agent_skill_mappings():
                 data = json.loads(m_path.read_text(encoding="utf-8"))
                 s_id = data.get("skill_id", m_path.parent.name)
                 declared_agent = (
-                    data.get("agent_id")
-                    or data.get("assigned_agent")
-                    or data.get("target_agent")
-                    or data.get("agent")
-                    or data.get("role")
+                        data.get("agent_id")
+                        or data.get("assigned_agent")
+                        or data.get("target_agent")
+                        or data.get("agent")
+                        or data.get("role")
                 )
                 manifest_agent_refs[s_id] = declared_agent
             except Exception:
@@ -3928,7 +3928,7 @@ import sqlite3
 from pathlib import Path
 
 STATE_DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 SAMPLES = [
     "archivist_datasheet_rag",
@@ -4329,7 +4329,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("Charon.ManifestInspector")
@@ -4864,7 +4864,7 @@ and prints the resulting action table to verify everything before writing to sta
 import json
 from pathlib import Path
 
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 
 def preview_indexing():
@@ -5079,7 +5079,7 @@ import sys
 from pathlib import Path
 
 STATE_DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 
 def repair_and_resync_agent_map():
@@ -5445,7 +5445,7 @@ from pathlib import Path
 
 DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
 CHARON_ROOT = Path("~/Projects/Tools/Charon/charon").expanduser()
-SKILLS_DIR = CHARON_ROOT / "skills_registry" / "dynamic"
+SKILLS_DIR = CHARON_ROOT / "storage" / "dynamic"
 AGENTS_DIR = CHARON_ROOT / "agents"
 
 
@@ -5702,7 +5702,7 @@ import sys
 from pathlib import Path
 
 STATE_DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("Charon.Pass2Repair")
@@ -5908,7 +5908,7 @@ import sys
 from pathlib import Path
 
 STATE_DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 
 def audit_db_against_disk():

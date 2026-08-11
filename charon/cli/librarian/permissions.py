@@ -1,14 +1,15 @@
 """
 charon/cli/librarian/permissions.py
-System Version: v0.2.0 | File Revision: 2.0.0
+System Version: v0.2.0 | File Revision: 2.1.0
 
-Module: DB-backed authorization management, default action configuration, and inventory views.
-Aligned with Schema V3.
+Module: DB-backed authorization management, default action configuration, inventory views,
+and agent registry queries. Aligned with Schema V3.
 """
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
+
 from rich.console import Console
 from rich.table import Table
 
@@ -21,6 +22,25 @@ from charon.config.paths import (
 from charon.db.connection import get_connection
 
 console = Console()
+
+
+def get_registered_agents() -> List[str]:
+    """
+    Retrieves a sorted list of registered agent identifiers from agent_registry in SQLite.
+    Falls back to system defaults if database tables are uninitialized or empty.
+    """
+    try:
+        with get_connection(STATE_DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT agent_id FROM agent_registry ORDER BY agent_id ASC")
+            rows = cursor.fetchall()
+            agents = [row[0] for row in rows if row[0]]
+            if agents:
+                return agents
+    except Exception:
+        pass
+
+    return ["executor", "coder", "researcher", "librarian"]
 
 
 def find_skill_manifest(

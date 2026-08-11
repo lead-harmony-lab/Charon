@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-SKILLS_DIR = Path("~/Projects/Tools/Charon/charon/skills_registry/dynamic").expanduser()
+SKILLS_DIR = Path("/charon/storage/dynamic").expanduser()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("Charon.ManifestInspector")
