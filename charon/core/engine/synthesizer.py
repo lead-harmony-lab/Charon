@@ -1,15 +1,14 @@
 """
 charon/core/engine/synthesizer.py
-System Version: v0.3.1 | File Revision: 2.2.0
+System Version: v0.4.0 | File Revision: 3.0.0
 
 Module: Response synthesis module via dynamic agent routing.
-Patched to inspect variadic keyword arguments (**kwargs) for streaming callbacks,
-guarantee CLI output delivery on fallback, and enforce fail-fast system role resolution.
+Updated to route synthesis directly through the 'synthesize' DB action SSOT.
 """
 
 import inspect
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from charon.core.session import SessionGateway
 from charon.core.skills.librarian import SkillLibrarian
@@ -29,66 +28,73 @@ class OutputSynthesizer:
         self.librarian = librarian or SkillLibrarian.get_instance()
 
     def _get_synthesis_agent_id(self) -> str:
-        """Queries the Librarian to dynamically determine the synthesis agent."""
-        # 1. Direct action resolution via Librarian
-        if hasattr(self.librarian, "resolve_agent_id_for_action"):
-            synth_agent = self.librarian.resolve_agent_id_for_action("synthesize")
-            if synth_agent:
-                return synth_agent
+        """Queries the Librarian SSOT to determine the synthesis agent ID."""
+        # 1. Look for explicit candidates authorized for the 'synthesize' action
+        if hasattr(self.librarian, "get_agents_for_action"):
+            agents = self.librarian.get_agents_for_action("synthesize")
+            if agents:
+                return agents[0]
 
-        # 2. System generalist role resolution (matches system_roles table key)
+        # 2. System generalist / planner fallback resolution
         generalist_id = self.librarian.resolve_agent_id_for_role("system_generalist")
         if generalist_id:
             return generalist_id
 
         # Fail Fast: Enforce database bootstrap integrity
         raise RuntimeError(
-            "Bootstrap Error: Mandatory system role 'system_generalist' is not bound in system_roles."
+            "[FAIL-FAST] Mandatory 'synthesize' action or 'system_generalist' role not registered in database."
+        )
+
+    def _truncate_raw_output_for_context(self, text: str, max_chars: int = 6000) -> str:
+        """Truncates raw output from the middle to prevent LLM context window overflows."""
+        if len(text) <= max_chars:
+            return text
+        half = max_chars // 2
+        truncated_count = len(text) - max_chars
+        return (
+            f"{text[:half]}\n\n"
+            f"[... Charon Synthesis Guard: Truncated {truncated_count} raw characters ...]\n\n"
+            f"{text[-half:]}"
         )
 
     async def synthesize(
         self,
         user_query: str,
         agent: str,
-        raw_output: str,
+        raw_output: Any,
         stream_cb: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Synthesizes raw specialist tool outputs into clean, user-facing responses."""
-        if not raw_output or not raw_output.strip():
+        raw_str = str(raw_output) if raw_output is not None else ""
+
+        if not raw_str.strip():
             return "Task executed successfully with no output returned."
 
-        # Resolve display name for logger & prompt if input is an agent ID or role
+        # Resolve display name for logger & prompt
         display_agent = (
             self.librarian.get_display_name_for_agent(agent)
             if hasattr(self.librarian, "get_display_name_for_agent")
-            else agent
+            else str(agent)
         )
 
         logger.info(f"Synthesizing raw tool output from '{display_agent}'...")
-
-        synthesis_prompt = (
-            f"User Prompt: {user_query}\n"
-            f"Executing Specialist: {display_agent}\n"
-            f"Raw Execution Data:\n```\n{raw_output}\n```\n\n"
-            "Synthesize this execution output into a concise, well-formatted response for the user. "
-            "Do not describe what you are doing—just present the final result directly."
-        )
+        sanitized_context = self._truncate_raw_output_for_context(raw_str, max_chars=6000)
 
         try:
-            # 1. Dynamically resolve synthesis agent
+            # 1. Resolve agent authorized for action 'synthesize'
             synth_agent_id = self._get_synthesis_agent_id()
 
             # 2. Retrieve agent instance from dispatcher
             synth_agent = self.orchestrator.dispatcher._resolve_agent(synth_agent_id)
 
-            # 3. Construct execution parameters and inspect streaming signature
+            # 3. Construct parameters targeting strict DB action 'synthesize'
             exec_kwargs = {
                 "action": "synthesize",
                 "parameters": {
-                    "prompt": synthesis_prompt,
-                    "context": raw_output,
-                    "raw_output": raw_output,
                     "user_query": user_query,
+                    "raw_output": raw_str,
+                    "context": sanitized_context,
+                    "executing_agent": display_agent,
                 },
                 "raw_prompt": user_query,
             }
@@ -111,18 +117,16 @@ class OutputSynthesizer:
 
             if not res_str:
                 logger.warning(
-                    f"Agent '{synth_agent_id}' returned empty synthesis output. Falling back to raw tool output."
+                    f"Agent '{synth_agent_id}' returned empty synthesis. Falling back to raw output."
                 )
-                if stream_cb and raw_output:
-                    stream_cb(f"{raw_output}\n")
-                return raw_output
+                if stream_cb and raw_str:
+                    stream_cb(f"{raw_str}\n")
+                return raw_str
 
             return res_str
 
         except Exception as synth_err:
-            logger.warning(
-                f"Output synthesis failed; returning raw execution output: {synth_err}"
-            )
-            if stream_cb and raw_output:
-                stream_cb(f"{raw_output}\n")
-            return raw_output
+            logger.warning(f"Synthesis failed; returning raw execution output: {synth_err}")
+            if stream_cb and raw_str:
+                stream_cb(f"{raw_str}\n")
+            return raw_str

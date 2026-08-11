@@ -1,6 +1,6 @@
 """
 charon/core/agent_runner.py
-System Version: v0.3.3 | File Revision: 1.0.0
+System Version: v0.3.4 | File Revision: 1.1.0
 
 Module: Generic, Stateless Agent Execution Harness.
 Instantiates agent personas dynamically via role abstraction, hydra-loads tool specs
@@ -10,8 +10,9 @@ Janitorial Working Anchor.
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
+from charon.config.settings import DEFAULT_HEAVY_MODEL
 from charon.core.skills.librarian import SkillLibrarian
 
 logger = logging.getLogger("Charon.Core.AgentRunner")
@@ -31,7 +32,7 @@ class AgentRunner:
 
     def __init__(
         self,
-        role_name: str = "default_system_generalist",
+        role_name: str = "system_generalist",
         librarian: Optional[SkillLibrarian] = None,
         max_tool_turns: int = 5,
     ) -> None:
@@ -68,7 +69,7 @@ class AgentRunner:
         self,
         task_prompt: str,
         llm_client: Any,
-        model_name: str = "llama3.1:8b",
+        model_name: Optional[str] = None,
         blackboard_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -78,6 +79,7 @@ class AgentRunner:
         3. Intercepts tool calls and executes matching plugin.py handlers
         4. Returns final response and telemetry settlement
         """
+        active_model = model_name or DEFAULT_HEAVY_MODEL
         context = blackboard_context or {}
         tools = self.get_tool_schemas()
         sys_prompt = self.system_prompt
@@ -91,7 +93,7 @@ class AgentRunner:
         ]
 
         logger.info(
-            f"[{self.display_name}] Executing task with {len(tools)} loaded tools..."
+            f"[{self.display_name}] Executing task on model '{active_model}' with {len(tools)} loaded tools..."
         )
 
         turn_count = 0
@@ -101,7 +103,7 @@ class AgentRunner:
             # Dispatch turn to LLM Client (Expected interface: Ollama or OpenAI compatible client)
             try:
                 response = llm_client.chat(
-                    model=model_name,
+                    model=active_model,
                     messages=messages,
                     tools=tools if tools else None,
                 )
@@ -121,6 +123,7 @@ class AgentRunner:
                     "role_name": self.role_name,
                     "agent_id": self.agent_id,
                     "display_name": self.display_name,
+                    "model_used": active_model,
                     "output": final_content,
                     "turns_taken": turn_count,
                 }

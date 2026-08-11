@@ -1,14 +1,16 @@
 """
 charon/db/repositories/route.py
-System Version: v0.6.0 | File Revision: 6.1.1
+System Version: v0.7.0 | File Revision: 7.0.0
 
-Module: Data Access Layer repository for route mappings, system fallback definitions,
-action trigger resolution, and dynamic shortcut override rules.
+Module: Data Access Layer repository for route mappings, action trigger resolution,
+and dynamic shortcut override rules.
+Enforces strict zero-fallback deterministic routing: unmapped or unequipped action
+triggers return None rather than defaulting to catch-all roles.
 """
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 import uuid
 
 from charon.config.paths import STATE_DB_PATH
@@ -25,10 +27,7 @@ class RouteRepository:
 
     def ensure_schema(self) -> None:
         """
-        Initializes the route_registry and dynamic_routing_rules database tables.
-
-        Note: Table creation is provided here for bootstrap initialization. Once the database schema
-        stabilizes, DDL logic should be executed strictly through a dedicated system migration runner.
+        Initializes the system_roles, route_registry, and dynamic_routing_rules database tables.
         """
         with get_connection(self.db_path) as conn:
             conn.executescript("""
@@ -42,7 +41,6 @@ class RouteRepository:
                     route_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action_trigger TEXT UNIQUE NOT NULL,
                     target_role TEXT NOT NULL,
-                    fallback_role TEXT DEFAULT 'system_fallback',
                     route_type TEXT CHECK(route_type IN('SYSTEM', 'USER_OVERRIDE', 'DYNAMIC_AUTO', 'EPHEMERAL')) NOT NULL DEFAULT 'DYNAMIC_AUTO',
                     is_active INTEGER NOT NULL DEFAULT 1,
                     description TEXT,
@@ -50,8 +48,7 @@ class RouteRepository:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     execution_count INTEGER DEFAULT 0,
                     last_executed_at TEXT,
-                    FOREIGN KEY(target_role) REFERENCES system_roles(role_name) ON DELETE RESTRICT,
-                    FOREIGN KEY(fallback_role) REFERENCES system_roles(role_name) ON DELETE SET NULL
+                    FOREIGN KEY(target_role) REFERENCES system_roles(role_name) ON DELETE RESTRICT
                 );
 
                 CREATE TABLE IF NOT EXISTS dynamic_routing_rules (
@@ -68,26 +65,15 @@ class RouteRepository:
                 CREATE INDEX IF NOT EXISTS idx_dynamic_rule_trigger ON dynamic_routing_rules(trigger);
             """)
 
-            # Ensure system_fallback default role is registered in system_roles
-            conn.execute(
-                "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES ('system_fallback', 'Default system fallback role');"
-            )
-
-    def get_system_fallback(self) -> str:
-        """Returns the fallback role mapped in the system."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
-                "SELECT target_role FROM route_registry WHERE target_role = 'system_fallback' LIMIT 1;"
-            )
-            row = cursor.fetchone()
-            return str(row["target_role"]) if row else "system_fallback"
-
-    def resolve_and_track_route(self, action_trigger: str) -> Optional[Tuple[str, str]]:
-        """Fetches highest priority active route and increments execution telemetry."""
+    def resolve_and_track_route(self, action_trigger: str) -> Optional[str]:
+        """
+        Fetches target_role for highest priority active route and increments execution telemetry.
+        Returns None if no active route exists for the action trigger.
+        """
         with get_connection(self.db_path, row_factory=True) as conn:
             cursor = conn.execute(
                 """
-                SELECT target_role, fallback_role 
+                SELECT target_role 
                 FROM route_registry 
                 WHERE action_trigger = ? AND is_active = 1
                 ORDER BY CASE route_type
@@ -111,7 +97,7 @@ class RouteRepository:
                     """,
                     (action_trigger,),
                 )
-                return str(row["target_role"]), str(row["fallback_role"])
+                return str(row["target_role"])
             return None
 
     def get_route_type(self, action_trigger: str) -> Optional[str]:
@@ -137,14 +123,13 @@ class RouteRepository:
         self,
         action_trigger: str,
         target_role: str,
-        fallback_role: Optional[str],
-        route_type: str,
-        description: str,
-        created_by: str,
+        route_type: str = "DYNAMIC_AUTO",
+        description: str = "",
+        created_by: str = "system",
         force: bool = False,
     ) -> None:
         """
-        Upserts a route. Throws PermissionError if attempting to mutate
+        Upserts a route target. Throws PermissionError if attempting to mutate
         a SYSTEM route without force=True.
         """
         existing_type = self.get_route_type(action_trigger)
@@ -154,22 +139,18 @@ class RouteRepository:
             )
 
         with get_connection(self.db_path) as conn:
-            # Seed referenced roles if they don't exist yet in system_roles
-            roles_to_ensure = [r for r in (target_role, fallback_role) if r]
-            for role in roles_to_ensure:
-                conn.execute(
-                    "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES (?, ?);",
-                    (role, f"Role for {role}"),
-                )
+            conn.execute(
+                "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES (?, ?);",
+                (target_role, f"Role for {target_role}"),
+            )
 
             conn.execute(
                 """
                 INSERT INTO route_registry 
-                (action_trigger, target_role, fallback_role, route_type, description, created_by, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, 1)
+                (action_trigger, target_role, route_type, description, created_by, is_active)
+                VALUES (?, ?, ?, ?, ?, 1)
                 ON CONFLICT(action_trigger) DO UPDATE SET
                     target_role = excluded.target_role,
-                    fallback_role = excluded.fallback_role,
                     route_type = excluded.route_type,
                     description = excluded.description,
                     created_by = excluded.created_by,
@@ -178,7 +159,6 @@ class RouteRepository:
                 (
                     action_trigger,
                     target_role,
-                    fallback_role,
                     route_type,
                     description,
                     created_by,
@@ -188,23 +168,23 @@ class RouteRepository:
     def sync_dynamic_routes(self) -> bool:
         """
         Synchronizes active skills from skill_registry and agent_skill_map into route_registry.
-        Automatically updates or creates DYNAMIC_AUTO route entries for registered actions.
+        Only maps skills with explicit non-wildcard agent assignments. Unmapped skills are omitted.
         """
         query = """
             INSERT INTO route_registry (
-                action_trigger, target_role, fallback_role, route_type, description, created_by, is_active
+                action_trigger, target_role, route_type, description, created_by, is_active
             )
             SELECT 
                 sr.action_name AS action_trigger,
-                COALESCE(asm.agent_id, 'system_fallback') AS target_role,
-                'system_fallback' AS fallback_role,
+                MIN(asm.agent_id) AS target_role,
                 'DYNAMIC_AUTO' AS route_type,
                 sr.description,
                 'indexer' AS created_by,
                 1 AS is_active
             FROM skill_registry sr
-            LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
-            WHERE sr.status = 'ACTIVE'
+            JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
+            WHERE sr.status = 'ACTIVE' AND asm.agent_id IS NOT NULL AND asm.agent_id != '*'
+            GROUP BY sr.skill_id, sr.action_name, sr.description
             ON CONFLICT(action_trigger) DO UPDATE SET
                 target_role = EXCLUDED.target_role,
                 description = EXCLUDED.description,
@@ -213,12 +193,7 @@ class RouteRepository:
         """
         try:
             with get_connection(self.db_path) as conn:
-                # 1. Ensure fallback role exists in system_roles
-                conn.execute(
-                    "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES ('system_fallback', 'Default system fallback role');"
-                )
-
-                # 2. Pre-seed system_roles with all agent_ids currently in agent_skill_map
+                # 1. Pre-seed system_roles with all non-wildcard agent_ids
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO system_roles (role_name, description)
@@ -228,7 +203,7 @@ class RouteRepository:
                     """
                 )
 
-                # 3. Synchronize routes into route_registry
+                # 2. Synchronize unique action triggers into route_registry
                 conn.execute(query)
 
             logger.info("[RouteRepository] Successfully synchronized dynamic routes from skill registry.")
@@ -238,7 +213,7 @@ class RouteRepository:
             return False
 
     # =========================================================================
-    # Dynamic Shortcut Override Rules (Pass 1 Router Support)
+    # Dynamic Shortcut Override Rules
     # =========================================================================
 
     def get_override_rules(self) -> List[Dict[str, Any]]:
@@ -247,14 +222,10 @@ class RouteRepository:
             cursor = conn.execute(
                 "SELECT rule_id, trigger, target_agent, description, created_at FROM dynamic_routing_rules;"
             )
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            return [dict(row) for row in cursor.fetchall()]
 
     def add_override_rule(self, trigger: str, target_agent: str, description: str = "") -> str:
-        """
-        Creates or updates a hard trigger shortcut rule (e.g. '#archivist' -> forced dispatch).
-        Returns the rule_id assigned to the shortcut.
-        """
+        """Creates or updates a hard trigger shortcut rule."""
         rule_id = f"rule_{uuid.uuid4().hex[:8]}"
         with get_connection(self.db_path) as conn:
             conn.execute(

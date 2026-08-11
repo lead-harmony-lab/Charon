@@ -1,6 +1,6 @@
 """
 charon/db/repositories/role.py
-System Version: v0.6.0 | File Revision: 6.1.0
+System Version: v0.6.2 | File Revision: 7.0.0
 
 Module: Data Access Layer repository for system role mappings, fallback agent selection,
 agent entrypoint reflection, role criticality checks, and agent lifecycle plug/unplug execution.
@@ -28,7 +28,7 @@ class RoleRepository:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS system_roles (
                     role_name TEXT PRIMARY KEY,
-                    agent_id TEXT,                              -- Nullable to allow agent swapping
+                    agent_id TEXT,                               -- Nullable to allow agent swapping
                     is_mandatory INTEGER NOT NULL DEFAULT 0,    -- Harness requirement flag
                     is_system_core INTEGER NOT NULL DEFAULT 0,   -- Core vs custom role flag
                     description TEXT DEFAULT '',
@@ -61,7 +61,6 @@ class RoleRepository:
     def swap_agent_role(self, role_name: str, new_agent_id: Optional[str]) -> bool:
         """
         Safely assigns or clears an agent for a given system role.
-        Note: SQLite triggers ('prevent_inactive_agent_role_assignment') raise ABORT on inactive agent assignment.
         """
         query = """
             UPDATE system_roles 
@@ -79,23 +78,41 @@ class RoleRepository:
 
         return updated
 
-    def get_agent_id_for_role(
-        self, norm: str, agent_id_variant: str, system_role_variant: str
-    ) -> Optional[str]:
-        """Resolves a canonical agent_id by checking both registries and mappings."""
+    def get_agent_id_for_role(self, role_input: str) -> Optional[str]:
+        """
+        Queries SQLite to resolve an active agent_id from:
+        1. agent_registry (matching agent_id or display_name)
+        2. system_roles (matching role_name -> mapped agent_id)
+
+        Enforces active status (`is_active = 1`).
+        """
+        if not role_input or not str(role_input).strip():
+            return None
+
+        target = str(role_input).strip()
+
+        query = """
+            SELECT a.agent_id
+            FROM agent_registry a
+            WHERE (a.agent_id = ? OR LOWER(a.agent_id) = LOWER(?) OR LOWER(a.display_name) = LOWER(?))
+              AND a.is_active = 1
+
+            UNION ALL
+
+            SELECT r.agent_id
+            FROM system_roles r
+            JOIN agent_registry a ON r.agent_id = a.agent_id
+            WHERE (r.role_name = ? OR LOWER(r.role_name) = LOWER(?))
+              AND a.is_active = 1
+
+            LIMIT 1;
+        """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
-                """
-                SELECT agent_id FROM agent_registry WHERE agent_id = ? OR agent_id = ?
-                UNION ALL
-                SELECT agent_id FROM system_roles WHERE (role_name = ? OR role_name = ?) AND agent_id IS NOT NULL
-                LIMIT 1;
-                """,
-                (norm, agent_id_variant, norm, system_role_variant),
-            )
+            cursor = conn.execute(query, (target, target, target, target, target))
             row = cursor.fetchone()
             if row and row["agent_id"]:
                 return str(row["agent_id"])
+
         return None
 
     def get_default_agent_id(self) -> Optional[str]:
@@ -133,7 +150,7 @@ class RoleRepository:
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
             try:
                 cursor = conn.execute(
-                    "SELECT module_path, class_name FROM agent_registry WHERE agent_id = ?;",
+                    "SELECT module_path, class_name FROM agent_registry WHERE agent_id = ? AND is_active = 1;",
                     (agent_id,),
                 )
                 row = cursor.fetchone()
@@ -142,7 +159,9 @@ class RoleRepository:
             except Exception:
                 pass
 
-            cursor = conn.execute("SELECT agent_id FROM agent_registry WHERE agent_id = ?;", (agent_id,))
+            cursor = conn.execute(
+                "SELECT agent_id FROM agent_registry WHERE agent_id = ? AND is_active = 1;", (agent_id,)
+            )
             if cursor.fetchone():
                 return {}
 

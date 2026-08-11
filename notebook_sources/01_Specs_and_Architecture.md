@@ -1,7 +1,7 @@
 # Subsystem Domain Context: 01_Specs_and_Architecture
-> **Generated:** 2026-08-09 18:25 UTC  
+> **Generated:** 2026-08-10 05:34 UTC  
 > **Charon Core Version:** v8.0  
-> **Git Branch:** `Dynamic-Skill-Bus` | **Commit:** `13ca7e3`
+> **Git Branch:** `main` | **Commit:** `bc5f379`
 
 ---
 
@@ -23,93 +23,7 @@ For the full architectural charter, agent fleet description, and system vision, 
 ### 1. Installation & Environment Setup
 Ensure Python 3.12+ is installed on Linux:
 
-```bash
-# Clone repository and enter project directory
-git clone [https://github.com/your-repo/charon.git](https://github.com/your-repo/charon.git)
-cd charon
 
-# Create virtual environment and install in editable mode with development tools
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
-```
-
-### 2. Service Management (`systemctl`)
-Charon runs natively as a user-level systemd daemon with kernel-enforced system isolation (`ProtectSystem=strict`):
-
-```bash
-# Enable and start the charond background service
-systemctl --user daemon-reload
-systemctl --user enable --now charond.service
-
-# Check daemon health and real-time logs
-systemctl --user status charond.service
-journalctl --user -u charond.service -f
-```
-
-### 3. Launching Interactive CLI & Telemetry Monitor
-Connect to the running `charond` daemon over WebSockets/REST:
-
-```bash
-# Primary terminal interactive shell
-charon
-
-# Stream live agent telemetry, reasoning chunks, and execution traces
-charon telemetry
-
-# Alternative explicit aliases
-charon-cli
-```
-
----
-
-## 🛠️ Package Executables & Utility Commands
-
-Installing `charon` provides the following CLI entry points and subcommands defined in `pyproject.toml`:
-
-| Command / Subcommand | Target Python Entry Point | Description |
-| :--- | :--- | :--- |
-| `charon` | `charon.cli.main:main` | Interactive terminal UI / REPL for daemon communication. |
-| `charon telemetry` | `charon.cli.main:main` | Real-time WebSocket trace monitor for agent execution logs, reasoning chunks, and telemetry. |
-| `charon-cli` | `charon.cli.main:main` | Direct alias for `charon`. |
-| `charond` | `charon.daemon:main` | Core background FastAPI + WebSocket daemon process. |
-| `charon-forge` | `charon.skill_forge_cli:main` | Developer utility for generating and testing new agent skills. |
-
----
-
-## 🧪 Testing, Artifacts & Version Management
-
-Run the test suite using `pytest` with coverage reporting and strict workspace state validation:
-
-```bash
-# Run full unit and integration test suite
-pytest
-
-# Enforce clean workspace state (halts execution if uncommitted Git changes exist)
-pytest --fail-on-dirty
-```
-
-### Versioning & Header Automation
-Charon enforces deterministic versioning tied to Git commit SHAs, global Semantic Versioning, and per-file revision header docstrings:
-
-```bash
-# Standardize dual-version header docstrings across the codebase
-python3 scripts/standardize_headers.py
-
-# Bump patch version (0.1.0 -> 0.1.1), sync file headers, and create Git tag
-python3 scripts/bump_version.py patch --tag
-```
-
-Test execution logs and generated JSON outputs are deterministically isolated under `.charon_test_artifacts/` by schema version and commit SHA.
-
----
-
-## 📚 Documentation Reference
-
-- **`docs/architecture/00_system_overview.md`**: Master architectural charter, system vision, agent fleet layout, and execution models.
-- **`docs/guides/SYSTEM_VERSIONING_AND_TESTING.md`**: Versioning architecture, dual-version headers, test artifact isolation, and release automation.
-- **`docs/planning/PLANNING.md`**: Active sprint tasks, immediate roadmap, and task queue priorities.
-- **`docs/architecture/`**: Complete system architecture, gateway specifications, and individual agent cards.
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -134,6 +48,7 @@ ADR-001: Local Multi-Agent Architecture with Modular PEP 562 Lazy Loading
         Positive: Drastically reduces charond startup time and idle RAM usage; isolates domain-specific context prompts to specialized agents.
 
         Negative: Introduces a small first-call latency penalty when an agent module is imported for the first time in a session.
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -156,6 +71,7 @@ Consequences:
     Positive: Provides total protection against catastrophic system mutations at the Linux kernel level without requiring VM/Docker overhead or locking the agent out of the user's workspace.
 
     Negative: Operations modifying system configurations outside $HOME (e.g., apt install) require escalation mechanisms (pkexec or Gatekeeper approvals).
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -186,6 +102,7 @@ Consequences:
     Positive: Keeps the user in control of high-impact changes without causing friction on routine read/write queries.
 
     Negative: Multi-step workflows pause when hitting Level 2 actions until the user responds to the authorization prompt.
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -208,6 +125,7 @@ Consequences:
     Positive: Completely decouples network ingress/egress from LLM inference and agent execution pipelines; enables multi-client monitoring.
 
     Negative: Requires strict state management across clients and handling disconnected WebSocket connections during task execution.
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -230,6 +148,7 @@ Consequences:
     Positive: Keeps local LLM context windows lean and focused; handles multi-agent workflows; self-corrects transient errors automatically.
 
     Negative: Multi-step execution adds latency and multiple inference passes per overall request.
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -298,266 +217,7 @@ Tasks are routed through a tiered execution safety policy and human-in-the-loop 
 
 ### 3.1 High-Level Execution Tiers
 
-```mermaid
-graph TD
- Client["Client / Gateway Layer(charon/daemon.py, charon/sdk.py, charon/cli/main.py)"]
- Core["Core Execution & Orchestration(charon/core/engine, charon/core/coordinator, charon/core/dispatcher)"]
- Agent["Agent Swarm Layer(11 Sub-Agents)"]
- Intent["Intent & PayloadTyped Schemas"]
- State["State, Queue & Memory(Ledger, DB, SQLite)"]
- Hardware["Hardware & Tools(CAD, PDF, IoT)"]
- Client --> Core
- Core --> Agent
- Core --> Intent
- Core --> State
- Agent --> Hardware
-```
 
-### 3.2 Subsystem Directory Map
-
-- **Gateway & Entry Points (`charon/gateway/`, `charon/daemon.py`, `charon/sdk.py`):**
-  
-  - `charon/daemon.py`: Gateway entry point launching the FastAPI service, persistent task queue, state tables, and real-time WebSocket telemetry bridging.
-    
-  - `charon/gateway/core.py` (`CharonDaemon`): Operational hub holding references to task queues, gatekeeper auth, concierge, workspace managers, state, and ledgers.
-    
-  - `charon/sdk.py`: Isolated, public interface for programmatic integration (e.g., `nodes/workshop_hud.py`, `skill_forge_cli.py`).
-    
-- **Core Execution Engine (`charon/core/`):**
-  
-  - `charon/core/engine/`: Manages DAG execution (`dag_executor.py`), automated task repair (`self_healing.py`), and result collation (`synthesizer.py`).
-    
-  - `charon/core/coordinator/`: Implements the **Blackboard Coordination Pattern**, decomposing goals (`decomposer.py`), discovering agent capability profiles (`discovery.py`), and handling task escalations (`escalation.py`).
-    
-  - `charon/core/dispatcher/`: Dispatches task units to agents via `resolver.py`, which acts as the system's central agent registry.
-    
-- **Agent Swarm Domain (`charon/agents/`):**
-  
-  All agents inherit from `charon/agents/base.py` and use **PEP 562 lazy-loaded modules** to keep idle RAM overhead minimal:
-  
-  - **The Generalist:** Everyday OS interaction, natural-language-to-CLI command synthesis, and mathematical reasoning (`tools/math.py`, `tools/system.py`).
-    
-  - **The Steward:** Controls local system processes, systemd units, OS settings, package management (`dnf`), and IoT/home automation (`tools/iot.py`).
-    
-  - **The Spark & The Machinist:** Embedded electronics design (KiCad gerbers/EDA/firmware) and physical fabrication (CAD models, 3D printing, G-code slicing) (`tools/cad.py`, `tools/eda.py`, `tools/firmware.py`).
-    
-  - **The Archivist & The Quartermaster:** Vector memory, local documentation, datasheet parsing (`tools/pdf.py`), component inventory (`PartVault`), and Bills of Materials (BOM).
-    
-  - **The Overseer:** Telemetry aggregation, memory usage, vector store indexing, and database pruning (`tools/system.py`).
-    
-  - **The Planner & The Engineer:** Execution sequencing, DAG generation, diagnostic error log analysis, and guarded sandbox code execution (`tools/code.py`).
-    
-  - **The Scout & The Cleaner:** Web scraping/search (`tools/web.py`) and workspace sanitization/git repository lifecycles (`tools/git.py`).
-    
-  - **The Architect:** Interrupt handling, order rescinding, and state lifecycle synchronization when active tasks are cancelled.
-    
-
-## 4. Architectural Diagrams
-
-### 4.1 Runtime Execution Flowchart
-
-Code snippet
-
-```
-flowchart TD
-    %% --- USER INTERFACES & IPC FRONTENDS ---
-    subgraph Frontends["USER INTERFACES & IPC FRONTENDS"]
-        direction LR
-        CLI["Charon Terminal(CLI)"]
-        GNOME["GNOME Shell Extension(Desktop Widget)"]
-        REST["External REST/WS Node(Authorized IPC)"]
-    end
-
-    %% --- GATEWAY & SECURITY BOUNDARY ---
-    subgraph Gateway["GATEWAY & SECURITY BOUNDARY (gateway/core.py, gateway/ws.py)"]
-        APIAuth["• APIKeyMiddleware: Enforces Token Auth (Bearer / Query Header Fallbacks)"]
-        Sandbox["• Systemd Sandbox Bounds: ProtectSystem=strict | Scoped ReadWritePaths (%h, /tmp, /run/user/%U)"]
-    end
-
-    %% --- INTENT TRIAGE & COORDINATOR REFLECTION LOOP ---
-    subgraph Orchestrator["COORDINATOR & REFLECTION ENGINE (core/coordinator/)"]
-        InputPrompt["Input Prompt"] --> Decomposer["Requirement Decomposer(Prompt/Payload & Hint Parser)"]
-        Decomposer --> Discovery["Agent Discovery Manager(Capability & Binary Probing)"]
-        Discovery --> Blackboard["Task Blackboard(Artifacts & Requirement Queue)"]
-        Blackboard --> Negotiation["Hint-Guided Contract Negotiation(Pre-turn Validation)"]
-        Negotiation -- "Step Ready" --> ReflectionLoop["Stateful Reflection Loop(Dependency Injection & Execution)"]
-        ReflectionLoop -- "Step Failure" --> Escalation["4-Level Escalation Pathway(L1 ➔ L2 ➔ L3 ➔ L4)"]
-        Escalation -- "Retry / Fallback" --> Blackboard
-    end
-
-    %% --- PERSISTENCE & AUDIT LEDGER ---
-    subgraph Persistence["PERSISTENCE & TELEMETRY LEDGER (core/state.py, core/ledger.py, telemetry/bus.py)"]
-        direction LR
-        StateMgr["StateManager(SQLite/WAL State Sync)"]
-        Queue["PersistentTaskQueue(Crash-Resilient Queue)"]
-        Ledger["ExecutionLedger & TelemetryBus(Append-Only Audit & Trace Event Log)"]
-    end
-
-    %% --- REACTIVE EXECUTION ENGINE ---
-    subgraph Engine["REACTIVE EXECUTION ENGINE (core/engine.py)"]
-        StepLoop["Step Loop Exec• Dynamic Parameter Substitution ($STEP_X_OUTPUT)• Context Truncation (_sanitize_output_for_injection)• Self-Healing Intercept Loop (Retry/Correction)"]
-
-        Gatekeeper["GATEKEEPER INTERCEPT GATE(gateway/gatekeeper.py)───────────────• Risk Level 0: Auto-execute• Risk Level 1: Workspace Log• Risk Level 2: Intercept Prompt• Risk Level 3: Terminal Stop"]
-
-        Popup["Desktop Intercept Pop-Up(Approve / Reject / Mutate)"]
-
-        Fleet["LAZY-LOADED AGENT FLEET(PEP 562)───────────────• Generalist • Quartermaster• Steward • Overseer• Spark • Planner• Machinist • Engineer• Archivist • Scout/Cleaner• Architect"]
-
-        StepLoop --> Gatekeeper
-        StepLoop --> Fleet
-        Gatekeeper -- "Approval Req." --> Popup
-        Popup -- "Approved" --> Fleet
-    end
-
-    %% --- HOST SYSTEM EXECUTION & HARDWARE BOUNDS ---
-    subgraph Host["HOST SYSTEM EXECUTION & HARDWARE BOUNDS"]
-        FS["• Local Workspace Filesystem ($HOME/Projects, WorkspaceManager Sandboxes)"]
-        HW["• Hardware Access Group Inheritance (dialout, plugdev, kvm ➔ /dev/ttyACM*, /dev/ttyUSB*)"]
-        Sys["• System Management (systemctl --user, package managers, network sockets)"]
-    end
-
-    %% --- CONNECTIONS BETWEEN LAYERS ---
-    CLI & GNOME & REST -- "HTTP / WebSockets" --> Gateway
-    Gateway --> Orchestrator
-    Orchestrator --> Persistence
-    Persistence --> Engine
-    Engine --> Host
-```
-
-### 4.2 AST Module Import Dependency Map
-
-Code snippet
-
-```
-graph TD
-    subgraph Config
-        config_init["charon/config/__init__.py"] --> config_logging["charon/config/logging.py"]
-        config_init --> config_paths["charon/config/paths.py"]
-        config_init --> config_settings["charon/config/settings.py"]
-        config_logging --> config_paths
-        config_settings --> config_paths
-    end
-
-    subgraph Tools
-        tools_code["charon/tools/code.py"] --> config_paths
-        tools_system["charon/tools/system.py"] --> config_paths
-    end
-
-    subgraph Intent
-        intent_init["charon/intent/__init__.py"] --> intent_base["charon/intent/base.py"]
-        intent_init --> intent_hw["charon/intent/payloads/hardware.py"]
-        intent_init --> intent_kn["charon/intent/payloads/knowledge.py"]
-        intent_init --> intent_sys["charon/intent/payloads/system.py"]
-        intent_init --> intent_routing["charon/intent/routing.py"]
-        intent_manifests["charon/intent/manifests.py"] --> intent_init
-        intent_manifests --> intent_base
-        intent_cap["charon/intent/capabilities.py"] --> intent_base
-    end
-
-    subgraph Core Engine
-        engine_main["charon/core/engine/engine.py"] --> config_paths
-        engine_main --> engine_dag["charon/core/engine/dag_executor.py"]
-        engine_main --> engine_healing["charon/core/engine/self_healing.py"]
-        engine_main --> engine_synth["charon/core/engine/synthesizer.py"]
-        engine_main --> core_ledger["charon/core/ledger.py"]
-        engine_main --> core_orch["charon/core/orchestrator.py"]
-        engine_main --> core_state["charon/core/state.py"]
-
-        engine_dag --> engine_healing
-        engine_dag --> core_ledger
-        engine_dag --> core_orch
-        engine_dag --> core_state
-        engine_dag --> intent_init
-
-        core_orch --> core_parser["charon/core/parser.py"]
-        core_orch --> core_prompts["charon/core/prompts.py"]
-        core_orch --> core_utils["charon/core/utils.py"]
-    end
-
-    subgraph Coordinator
-        coord_engine["charon/core/coordinator/engine.py"] --> coord_bb["charon/core/coordinator/blackboard.py"]
-        coord_engine --> coord_decomp["charon/core/coordinator/decomposer.py"]
-        coord_engine --> coord_disc["charon/core/coordinator/discovery.py"]
-        coord_engine --> coord_esc["charon/core/coordinator/escalation.py"]
-        coord_bb --> intent_base
-        coord_decomp --> coord_bb
-        coord_decomp --> intent_cap
-        coord_decomp --> intent_manifests
-        coord_disc --> coord_bb
-        coord_disc --> coord_profile["charon/core/coordinator/profile.py"]
-    end
-
-    subgraph Dispatcher
-        disp_main["charon/core/dispatcher/dispatcher.py"] --> disp_resolver["charon/core/dispatcher/resolver.py"]
-        disp_main --> disp_art["charon/core/dispatcher/artifacts.py"]
-        disp_main --> disp_telem["charon/core/dispatcher/telemetry.py"]
-        disp_resolver --> agents_init["charon/agents/__init__.py"]
-    end
-
-    subgraph Gateway Layer
-        daemon_py["charon/daemon.py"] --> config_logging
-        daemon_py --> config_paths
-        daemon_py --> engine_init["charon/core/engine/__init__.py"]
-        daemon_py --> core_reg["charon/core/registry.py"]
-        daemon_py --> gw_core["charon/gateway/core.py"]
-        daemon_py --> gw_mw["charon/gateway/middleware.py"]
-        daemon_py --> gw_routes["charon/gateway/routes.py"]
-
-        gw_core --> config_init
-        gw_core --> concierge["charon/core/concierge.py"]
-        gw_core --> engine_init
-        gw_core --> core_ledger
-        gw_core --> core_orch
-        gw_core --> queue["charon/core/queue.py"]
-        gw_core --> core_state
-        gw_core --> workspace["charon/core/workspace.py"]
-        gw_core --> gw_emitter["charon/gateway/emitter.py"]
-        gw_core --> gw_keeper["charon/gateway/gatekeeper.py"]
-    end
-
-    subgraph Agent Swarm
-        agents_base["charon/agents/base.py"] --> core_contracts["charon/core/contracts.py"]
-        agents_base --> core_skills["charon/core/skills.py"]
-
-        archivist["charon/agents/archivist/agent.py"] --> agents_base
-        cleaner["charon/agents/cleaner/agent.py"] --> agents_base
-        engineer["charon/agents/engineer/agent.py"] --> agents_base
-        generalist["charon/agents/generalist/agent.py"] --> agents_base
-        machinist["charon/agents/machinist/agent.py"] --> agents_base
-        overseer["charon/agents/overseer/agent.py"] --> agents_base
-        planner["charon/agents/planner/agent.py"] --> agents_base
-        quartermaster["charon/agents/quartermaster/agent.py"] --> agents_base
-        scout["charon/agents/scout/agent.py"] --> agents_base
-        spark["charon/agents/spark/agent.py"] --> agents_base
-        steward["charon/agents/steward/agent.py"] --> agents_base
-    end
-
-    subgraph CLI & Public SDK
-        sdk_py["charon/sdk.py"] --> gw_models["charon/gateway/models.py"]
-        cli_main["charon/cli/main.py"] --> cli_client["charon/cli/client.py"]
-        cli_main --> cli_interactive["charon/cli/interactive.py"]
-        cli_main --> cli_ui["charon/cli/ui.py"]
-        cli_main --> sdk_py
-    end
-```
-
-## 5. Architectural Rules & Maintenance Guiding Principles
-
-1. **Strict Core Engine Isolation (`charon/core/engine/`):**
-  
-  - The execution engine relies strictly on task state, ledgers, DAG models, and orchestrator functions.
-  
-  - **Rule:** Never import dynamic agent dispatchers (`charon/core/dispatcher/resolver.py`) directly from inside `core/engine/`. Agent invocation must flow through coordinator and dispatcher interfaces.
-  
-2. **Dispatcher as Central Registry (`charon/core/dispatcher/resolver.py`):**
-  
-  - `resolver.py` imports all 11 sub-agent packages to dynamically route dispatched execution blocks.
-  
-  - **Rule:** Sub-agents must avoid importing `resolver.py` or parent modules to prevent circular import loops.
-  
-3. **Tool Encapsulation:**
-  
-  - External tool wrappers (`pdf.py`, `git.py`, `cad.py`, `eda.py`, `iot.py`, `web.py`) must remain pure functional adapters and should not carry engine or agent states.
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -709,169 +369,7 @@ When a user mentions system configurations, personal preferences, or workspace r
 
 The API gateway hosts Charon’s primary communication layer under daemon version `3.1.0`. Access is controlled via constant-time header key checking alongside cross-origin resource sharing controls.
 
-```text
-                    ┌──────────────────────────────────────────┐
-                    │          FastAPI Daemon Gateway          │
-                    │            (charon/daemon.py)            │
-                    └────────────────────┬─────────────────────┘
-                        /                  │                  \
-                       /                   │                   \
-                      ▼                    ▼                    ▼
-          ┌──────────────────┐ ┌────────────┐ ┌────────────────────┐
-          │ App State Init   │ │ REST / WS  │ │ Lifespan Workers   │
-          │  * daemon        │ │ Endpoints  │ │  * process_queue   │
-          │  * engine        │ │ (/v1/...)  │ │  * overseer (30s)  │
-          └──────────────────┘ └────────────┘ └────────────────────┘
 
-```
-
-### Lifespan & Background Workers
-
-Upon application startup, the FastAPI lifespan context initializes state references (`app.state.daemon` and `app.state.engine`) and provisions two asynchronous, non-blocking background tasks:
-
-1. **Async Queue Consumer (`daemon.process_queue()`):** Consumes task objects sequentially from an `asyncio.Queue` and feeds them through the core engine pipeline.
-2. **Overseer Watchdog Reporter (`daemon.start_overseer_reporter(interval=30)`):** Assesses Ollama inference engine availability (`verify_engine`), queue depth, connected socket client count, and system state every 30 seconds. Emits `overseer_report` payloads and generates `system_alert` events if local inference services drop offline.
-
----
-
-## 2. Authentication & Middleware (`charon/gateway/middleware.py`)
-
-All inbound HTTP REST traffic is filtered through `APIKeyMiddleware`, validating incoming headers against `CHARON_API_KEY`:
-
-* **Header Identity:** `X-API-Key`
-* **Constant-Time Verification:** Uses `secrets.compare_digest` to protect against timing attacks.
-* **Public Bypass Endpoints:** `/v1/health`, `/docs`, `/openapi.json`, `/redoc`.
-* **WebSocket Handshake Auth:** Handshakes validate authorization during connection upgrades using query parameters (`?api_key=...`) or HTTP request headers.
-
----
-
-## 3. REST API Gateway Endpoint Reference (`charon/gateway/main.py`)
-
-| Endpoint | Method | Auth Level | Request / Payload Model | Description |
-| --- | --- | --- | --- | --- |
-| `/v1/health` | `GET` | Public | N/A | Returns gateway state, Ollama inference status, queue depth, and connected socket count. |
-| `/v1/task` | `POST` | Required | `TaskRequest` | Submits task strings to `CharonDaemon.queue`. Returns `TaskResponse` (`task_id`). |
-| `/v1/gatekeeper/respond` | `POST` | Required | `GatekeeperDecision` | Ingests operator decisions (`"proceed"`, `"rescind"`, `"cancel"`) for pending high-safety tasks. |
-| `/v1/clients` | `GET` | Required | N/A | Enumerates active peripheral SDK client connections and socket instances. |
-
----
-
-## 4. Gatekeeper Safety Intercept State Machine
-
-```text
-                             [ Task Ingestion (/v1/task) ]
-                                           │
-                                           ▼
-                               ┌─────────────────────┐
-                               │ asyncio.Queue<Task> │
-                               └─────────────────────┘
-                                           │
-                                           ▼
-                               ┌─────────────────────────┐
-                               │ process_queue() Consumer │
-                               └─────────────────────────┘
-                                           │
-                    ┌──────────────────────┴──────────────────────┐
-                    ▼                                             ▼
-      [ awaiting_gatekeeper == True ]               [ Standard Request Processing ]
-                    │                                             │
-        ┌───────────┴───────────┐                         ┌───────┴────────┐
-        ▼                       ▼                         ▼                ▼
-("proceed" command)     ("cancel" / "rescind")        Parse Intent     Parse Intent
-        │                       │                       (Pass 1)         (Pass 2)
-        ▼                       ▼                         │                │
-Execute Pending         Clear State Machine &             └────────┬───────┘
-Payload                 Emit Order Rescinded                       ▼
-                                                           Check `requires_approval`
-                                                                   │
-                                           ┌───────────────────────┴──────────────────────┐
-                                           ▼                                              ▼
-                                   [ True: Halt ]                                 [ False: Pass ]
-                                           │                                              │
-                               Emit Gatekeeper Event                         Dispatch to Agent Logic
-                             Set awaiting_gatekeeper                  
-
-```
-
-### Safety Intercept Flow
-
-When an agent action requires elevated operator privileges (`requires_approval = True`):
-
-1. **Execution Freeze:** `CharonDaemon` halts execution, serializes pending state (`pending_agent`, `pending_extraction`, `pending_raw_input`), and sets `awaiting_gatekeeper = True`.
-2. **Event Broadcast:** Emits a `gatekeeper_intercept` WebSocket event and D-Bus signal detailing target files, parameter scopes, and required permissions.
-3. **Operator Resolution:**
-* **`proceed`:** Resumes execution of the serialized pending action payload.
-* **`cancel` / `rescind`:** Clears pending state without executing and emits `order_rescinded`.
-
-
-
----
-
-## 5. Native D-Bus System Integration (`charon/dbus_server.py`)
-
-Charon runs a dedicated D-Bus service on a `GLib.MainLoop` thread, enabling native Linux desktop, GNOME Shell, and IPC integrations without HTTP socket overhead.
-
-* **Bus Name:** `org.charon.Service`
-* **Object Path:** `/org/charon/Daemon`
-* **Interface:** `org.charon.Interface`
-
-```text
-[ GNOME Shell / Local Scripts ]
-             │ (D-Bus Call: SubmitTask)
-             ▼
-   [ GLib MainLoop Thread ] ─── asyncio.run_coroutine_threadsafe() ───► [ asyncio Event Loop ]
-                                                                             │
-  [ D-Bus Signal Broadcast ] ◄────────── GLib.idle_add() ────────────────────┘
-
-```
-
-### Cross-Thread Event Loop Bridging
-
-1. **Inbound Calls (`SubmitTask`):** Receives string instructions from D-Bus callers and injects them into the main `asyncio` event loop using `asyncio.run_coroutine_threadsafe()`.
-2. **Outbound Signals (`GLib.idle_add`):** Broadcasts D-Bus signals (`TaskCompleted`, `TaskStream`, `GatekeeperIntercept`, `ClarificationRequired`) onto the GLib system bus without blocking the `asyncio` runtime.
-
----
-
-## 6. WebSocket Event & Streaming Subsystem (`charon/gateway/ws.py`, `bridge.py`)
-
-The WebSocket bus manages asynchronous, real-time event streaming across connected client SDKs, CLI REPL sessions, and desktop notification bridges.
-
-```text
-  [ Client Connection ]
-             │
-             ▼  ws://127.0.0.1:8000/v1/ws/stream?api_key=...
- ┌───────────────────┐
- │ ConnectionManager │ ◄─── Connection Pool Tracking & Broadcast
- └─────────┬─────────┘
-           │
- ┌─────────┴───────────────────────────────────────────────────────┐
- │                        WebSocket Event Types                    │
- ├───────────────────┬──────────────────┬──────────────────────────┤
- │ task_progress     │ stream_delta     │ gatekeeper_intercept     │
- │ system_alert      │ overseer_report  │ task_completed           │
- └───────────────────┴──────────────────┴──────────────────────────┘
-
-```
-
-### Stream Delta Protocol
-
-Subshell console outputs from **`The_Engineer`** and step updates from **`The_Planner`** stream incrementally using standard JSON frame formats:
-
-```json
-{
-  "event": "stream_delta",
-  "task_id": "task_8f9a2b",
-  "data": {
-    "agent": "The_Engineer",
-    "chunk": "Compiling target firmware for stm32f4xx... [OK]\n"
-  }
-}
-
-```
-
-### Desktop Notification Bridge (`charon/gateway/bridge.py`)
-
-`bridge.py` subscribes to the internal WebSocket feed and translates event updates into native desktop OS notifications via GNOME Shell extensions, eliminating client polling requirements.
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1027,28 +525,7 @@ The Charon daemon enforces a strict three-tier safety framework determined by th
 
 All agent request payloads inherit from `BaseAgentPayload` to ensure standardized parameter parsing and passive background memory collection:
 
-```python
-class BaseAgentPayload(StrictBaseModel):
-    requires_approval: bool = False
-    memory_candidate: Optional[MemoryCandidate] = Field(
-        default=None,
-        description="Passive preference or system rule extracted from prompt context."
-    )
 
-```
-
-$$\text{MemoryCandidate} = \{ \text{is\_persistent: bool}, \;\text{confidence: float}, \;\text{fact: str} \}$$
-
----
-
-## 4. Cross-Agent Orchestration & Auto-Chaining Rules
-
-1. **Planner $\rightarrow$ Engineer Delegation:**
-Upon completion of `draft_build_sequence` or `analyze_error_logs` by **`The_Planner`**, the daemon automatically forwards output context to **`The_Engineer`** (`solve_edge_case`) for execution code generation without requiring a second user prompt.
-2. **Archivist $\rightarrow$ Generalist Synthesis:**
-When **`The_Archivist`** completes `search_ledger` or `search_datasheets`, vector context payloads are chained automatically into **`The_Generalist`** (`synthesize_rag`) to format a natural language response.
-3. **Self-Healing Error Escalation:**
-If any specialist agent encounters an unhandled runtime exception, the execution loop catches the fault and re-routes the stack trace to **`The_Planner`** (`diagnose`) to construct an auto-remediation plan.
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1087,57 +564,7 @@ If any specialist agent encounters an unhandled runtime exception, the execution
 
 ## 2. Agent Architecture
 
-```text
-                             ┌────────────────────────────┐
-                             │        TheArchivist        │
-                             └─────────────┬──────────────┘
-                                           │
-                    ┌──────────────────────┴──────────────────────┐
-                    ▼                                             ▼
-      ┌───────────────────────────┐                 ┌───────────────────────────┐
-      │   Collection: "ledger"    │                 │ Collection: "datasheet_   │
-      │  (System Rules & Memory)  │                 │        knowledge"         │
-      └───────────────────────────┘                 └───────────────────────────┘
 
-```
-
----
-
-## 3. Subsystem Deep Dives
-
-### A. System Rule & Fact Ledger (`ledger`)
-
-The `ledger` collection stores persistent user preferences, behavioral guidelines, and workspace rules.
-
-* **Deduplication Safeguard:** Before committing a new fact or rule via `_store_record`, `TheArchivist` issues a similarity query against existing records. If the nearest L2/Cosine distance $d$ falls below the deduplication threshold:
-
-$$d_{\text{match}} < 0.2$$
-
-The record is flagged as a duplicate and rejected to prevent store clutter and embedding drift.
-
-* **Two-Pass Record Expungement (`_expunge_record`):**
-1. **Pass 1 (Literal Substring Match):** Scans all document strings for exact substring presence of `target_concept`. If matched, documents are expunged directly by document ID.
-2. **Pass 2 (Semantic Similarity Search):** If Pass 1 yields zero matches, `TheArchivist` queries the store for the top semantic match. The record is removed only if the vector distance satisfies:
-
-
-
-$$d_{\text{semantic}} \le 1.2$$
-
----
-
-### B. Technical Datasheet PDF RAG Subsystem (`datasheet_knowledge`)
-
-The `datasheet_knowledge` collection indexes dense technical documentation (e.g., component datasheets, pinout diagrams, manual specs) for high-precision retrieval during design and assembly tasks.
-
-* **Safe Sliding-Window Chunking:** Raw text extracted from PDFs is sliced into overlapping text segments using a sliding-window algorithm (`_chunk_text`):
-
-$$\text{chunk\_size} = 1000, \quad \text{overlap} = 200, \quad \text{step} = \max(1, \text{chunk\_size} - \text{overlap}) = 800$$
-
-* **Fault-Tolerant PDF Processing:** Uses `pypdf.PdfReader` with per-page exception wrapping to index readable pages without crashing on corrupted font structures or malformed binary streams.
-* **Metadata Sanitization:** Strips `None` values and forces clean scalar types (`str`, `int`, `float`, `bool`) before writing metadata dictionary objects to ChromaDB to maintain payload compatibility.
-* **Cross-Collection Fallback RAG Chain:**
-1. If `_search_ledger` is queried on an empty or non-matching `ledger` collection, it automatically bridges the search query to `_search_datasheets`.
-2. In `_search_datasheets`, if a query filtered by Manufacturer Part Number (`where={"mpn": MPN}`) returns no results, the query automatically drops the metadata filter and retries as a global vector search across all indexed datasheets.
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1176,59 +603,7 @@ $$\text{chunk\_size} = 1000, \quad \text{overlap} = 200, \quad \text{step} = \ma
 
 ## 2. Agent Architecture
 
-```text
-                             ┌────────────────────────────┐
-                             │         TheCleaner         │
-                             └─────────────┬──────────────┘
-                                           │
-         ┌───────────────────┬─────────────┴───────┬───────────────────┐
-         ▼                   ▼                     ▼                   ▼
-┌─────────────────┐ ┌─────────────────┐ ┌──────────────────┐ ┌─────────────────┐
-│ Log Pruner      │ │ CAD Iteration   │ │ Workspace        │ │ Workspace       │
-│ (_prune_logs)   │ │ Sweeper         │ │ Scaffolder       │ │ Purge Safety    │
-│                 │ │ (_sweep_cad_    │ │ (_initialize_    │ │ (_delete_       │
-│                 │ │  iterations)    │ │  workspace)      │ │  workspace)     │
-└─────────────────┘ └─────────────────┘ └──────────────────┘ └─────────────────┘
 
-```
-
----
-
-## 3. Subsystem Deep Dives
-
-### A. Strict Age-Bound Log Retention (`_prune_logs`)
-
-Log cleanup enforces strict age limits on rotated and system log files to maintain host storage bounds without destroying active diagnostic streams:
-
-* **Active Log Protection:** Active system streams (`charond.log`, `charond.error.log`) are preserved when `keep_active=True`.
-* **Age Qualification:** Rotated log files (e.g., `charond.log.1`, `sys.log.gz`) are pruned **only** if the file's elapsed modification age exceeds the configured retention threshold:
-
-$$\text{file\_age} = t_{\text{now}} - t_{\text{mtime}} > t_{\text{max\_age}} \quad (\text{where } t_{\text{max\_age}} = \text{max\_age\_days} \times 86400)$$
-
----
-
-### B. CAD Iteration Sweeping (`_sweep_cad_iterations`)
-
-Digital fabrication workflows frequently generate incremental design iterations (e.g., `bracket_v1.step`, `bracket_v2.step`). `TheCleaner` automatically keeps primary CAD folders clutter-free using regex pattern grouping:
-
-$$\text{Pattern: } \texttt{\textasciicircum(.*?)[\_.-]v(\textbackslash d+)\textbackslash.([a-zA-Z0-9]+)\$}$$
-
-* **Grouping & Sorting:** Files matched in the workspace are grouped by `(base_name, extension)` and ordered by their extracted integer version index $v$.
-* **Deprecation Archiving:** The highest version $v_{\text{latest}}$ remains active in the root `cad/` directory, while all historical revisions ($v < v_{\text{latest}}$) are safely relocated to `cad/archive/`.
-
----
-
-### C. Boundary Validation & Deletion Safety Protocols (`_delete_project_workspace`)
-
-Purging project workspace directories involves a strict multi-factor confirmation state machine combined with path-boundary validation:
-
-* **Path Traversal Boundary Guardrail:** Target paths are validated to ensure they reside strictly within the permitted parent workspace path `base_path`, preventing root scrubbing or directory traversal exploits:
-
-$$\text{target\_path}.\text{is\_relative\_to}(\text{base\_path}) == \text{True} \quad \land \quad \text{target\_path} \neq \text{base\_path}$$
-
-* **Gatekeeper Pre-Flight Intercept:** Unconfirmed deletion calls halt execution and emit a summary audit payload (`[AUTHORIZATION REQUIRED]`) containing target file counts and total byte sizes. Permanent disk scrubbing triggers only upon explicit authorization:
-
-$$\text{Confirmed} \iff (\text{params.get('confirmed') is True}) \lor (\text{"proceed"} \in \text{prompt}) \lor (\text{"confirm"} \in \text{prompt})$$
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1266,95 +641,7 @@ $$\text{Confirmed} \iff (\text{params.get('confirmed') is True}) \lor (\text{"pr
 
 ## 2. Agent Architecture
 
-```text
-                             ┌────────────────────────────┐
-                             │        TheEngineer         │
-                             └─────────────┬──────────────┘
-                                           │
-         ┌─────────────────────────────────┼─────────────────────────────────┐
-         ▼                                 ▼                                 ▼
-┌──────────────────┐              ┌──────────────────┐              ┌──────────────────┐
-│ Self-Healing     │              │ Subshell Sandbox │              │ AST Disk Artifact│
-│ Repair Loop      │              │ Subprocess Exec  │              │ Verifier         │
-│ (_solve_edge_    │              │ (_run_script_in_ │              │ (_audit_written_ │
-│  case)           │              │  subprocess)     │              │  artifacts)      │
-└──────────────────┘              └──────────────────┘              └──────────────────┘
 
-```
-
----
-
-## 3. Subsystem Deep Dives
-
-### A. Self-Healing Iterative Repair Loop (`_solve_edge_case`)
-
-When encountering ambiguous edge cases, execution exceptions, or missing file artifacts, `TheEngineer` enters an iterative self-healing feedback loop bounded by $a \in \{1, 2, \dots, N_{\text{max}}\}$ where $N_{\text{max}} = \text{max\_attempts}$ (default 3):
-
-* **Attempt $a = 1$:** Formulates the initial Python script from the target prompt objective and workspace path using `llama3.1`.
-* **Attempt $a > 1$ (Feedback Injection):** If attempt $a - 1$ fails during subshell execution or fails the post-execution AST disk audit, the runtime exception traceback, stderr/stdout output, and previous code block are fed directly back into the LLM context prompt:
-
-$$\text{Prompt}_a = \text{Objective} \;\cup\; \text{Traceback}_{a-1} \;\cup\; \text{Script}_{a-1}$$
-
-This feedback loop forces the model to perform root-cause analysis, correct missing imports or paths, and issue a revised Python script until execution succeeds or $a = N_{\text{max}}$.
-
----
-
-### B. Isolated Subshell Sandbox Execution (`_run_script_in_subprocess`)
-
-Dynamic Python code execution is isolated from the main daemon process using temporary file execution in a dedicated asynchronous subshell:
-
-* **Temporary Artifact Creation:** The clean script body is written to an ephemeral script file (`NamedTemporaryFile(suffix=".py")`) using UTF-8 encoding.
-* **Process Isolation & Streaming:** Executes via `asyncio.create_subprocess_exec` using `sys.executable`. Standard output and standard error are combined (`stderr=STDOUT`) and streamed line-by-line via `stream_callback` to active client sockets.
-* **Strict Timeout Enforcement:** Process execution time $t_{\text{exec}}$ is constrained using `asyncio.wait_for`:
-
-$$t_{\text{exec}} \le t_{\text{timeout}} \quad (\text{default } t_{\text{timeout}} = 30.0\text{s})$$
-
-If $t_{\text{exec}} > t_{\text{timeout}}$, a `TimeoutError` is raised, the subprocess is forcibly killed (`process.kill()`), and a non-zero failure flag is returned.
-
-* **Cleanup Guarantee:** Ephemeral script files are deleted in a `finally` block post-execution, leaving zero residual script artifacts in system temporary paths.
-
----
-
-### C. Post-Execution AST Disk Artifact Auditing (`_audit_written_artifacts`)
-
-To eliminate false-positive execution reports (where a Python script runs with exit code `0` but fails to write required output files), `TheEngineer` parses the script's AST using standard `ast.walk()` prior to declaring success.
-
-```text
-                           [ Script Execution Returns Code 0 ]
-                                           │
-                                           ▼
-                             ┌──────────────────────────┐
-                             │   Parse AST (ast.parse)  │
-                             └─────────────┬────────────┘
-                                           │
-                                           ▼
-                           ┌──────────────────────────────┐
-                           │ Inspect ast.Call Nodes       │
-                           │ - open("file", "w")          │
-                           │ - Path("file").write_text()  │
-                           │ - Path("file").open("w")     │
-                           └───────────────┬──────────────┘
-                                           │
-                                           ▼
-                    ┌──────────────────────┴──────────────────────┐
-                    ▼                                             ▼
-          [ Target Files Found ]                         [ Missing Target Files ]
-                    │                                             │
-      Audit Status: True (Verified)                 Audit Status: False (Warning)
-      (Return Success Result)                       (Inject Error into Self-Healing)
-
-```
-
-* **AST Write Call Identifiers:**
-1. Standard `open(file, mode)` calls where $\text{mode} \cap \{ \text{"w"}, \text{"a"}, \text{"x"}, \text{"+"} \} \neq \emptyset$.
-2. `Path(file).write_text()`, `Path(file).write_bytes()`, or `Path(file).open("w")` method invocations.
-
-
-* **Verification Criteria:** For all target write paths $f \in \mathcal{F}_{\text{write}}$ extracted from constant AST nodes, `TheEngineer` verifies file existence on disk within the target working directory `cwd`:
-
-$$\text{Audit Passed} \iff \forall f \in \mathcal{F}_{\text{write}}, \quad \text{Path}(cwd / f).\text{exists}() == \text{True}$$
-
-If any expected output file is missing on disk post-execution, the AST auditor flags a warning, treats the execution attempt as a failure, and routes the missing file warning back into the self-healing loop.
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1445,45 +732,7 @@ $$S_{\text{KB}} = \text{round}\left( \frac{\text{stat().st\_size}}{1024}, 1 \rig
 
 ## 4. Execution Chaining & Integration Example
 
-```python
-from charon.agents.machinist import TheMachinist
 
-machinist = TheMachinist(printer_url="http://192.168.1.100")
-
-# Example 1: Export OpenSCAD / STEP file to STL mesh
-export_result = machinist.execute(
-    action="export_cad_to_stl",
-    parameters={
-        "source_file": "housing_v1.scad",
-        "project_name": "custom_enclosure"
-    }
-)
-print(export_result)
-
-# Example 2: Slice STL mesh into printable G-code toolpaths
-slice_result = machinist.execute(
-    action="generate_gcode",
-    parameters={
-        "stl_file": "housing_v1.stl",
-        "project_name": "custom_enclosure",
-        "layer_height": 0.2,
-        "infill": 20
-    }
-)
-print(slice_result)
-
-# Example 3: Transmit generated G-code payload to OctoPrint endpoint
-transmit_result = machinist.execute(
-    action="transmit_to_printer",
-    parameters={
-        "gcode_file": "housing_v1.gcode",
-        "project_name": "custom_enclosure",
-        "start_print": False
-    }
-)
-print(transmit_result)
-
-```
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1677,64 +926,7 @@ Transforms unstructured prompts into a sequential multi-agent plan represented a
 * **Agent Capabilities Vocabulary:** Prompts the model with strict action/parameter definitions for all 12 Charon agents.
 * **Output Validation:** Forces JSON format enforcement (`format="json"`). Strips backtick formatting and validates array structure before passing output downstream to the `OrchestrationEngine`.
 
-```json
-[
-  {"step": 1, "agent": "The_Archivist", "action": "search_ledger", "parameters": {"query": "housing dimensions"}},
-  {"step": 2, "agent": "The_Cleaner", "action": "initialize_project_workspace", "parameters": {"project_name": "custom_enclosure"}}
-]
 
-```
-
-### Dynamic Path Resolution (`_extract_target_directory`)
-
-Resolves explicit or relative directory targets from user prompts using regex scanning prior to code generation:
-
-1. **Absolute Path Verification:** Scans for paths matching `(/[\w.-]+(?:/[\w.-]+)+)` and checks if they exist on disk.
-2. **Rule & Home Path Expansion:** Expands `~/` or explicit rule paths.
-3. **Workspace Matcher:** Matches project keywords (e.g., `project housing`, `workspace bot`) against `PROJECTS_DIR`.
-
-### Subshell Execution Sandbox (`_execute_sandbox_code`)
-
-Generates and executes custom Python scripts in an isolated process context:
-
-* **Sanitization Loop:** Prompts Ollama with strict read-only audit versus mutation contracts to prevent accidental path truncation or unauthorized folder creation.
-* **Subshell Isolation:** Spawns a separate process via `asyncio.create_subprocess_exec` using the active environment interpreter (`sys.executable`). Enforces `cwd` constraints to lock execution inside the target workspace directory.
-* **Streaming Output:** Real-time stdout/stderr capture with optional WebSocket streaming callback relay.
-
-### Metacognitive AST Artifact Verification (`_audit_written_artifacts`)
-
-After executing sandbox scripts, `The_Planner` performs a metacognitive audit on the executed source code to verify that claimed file modifications occurred on physical disk:
-
-1. Parses generated code using Python's `ast.parse()`.
-2. Traverses the Abstract Syntax Tree (`ast.walk`) to identify call nodes invoking `open()`.
-3. Extracts literal file paths (`node.args[0]`) and resolves them against the active `cwd`.
-4. Asserts physical disk existence via `Path.exists()` and appends a verified artifact summary to the agent response.
-
----
-
-## 4. Execution Chaining & Integration Example
-
-```python
-from charon.agents.planner import ThePlanner
-
-planner = ThePlanner(model_name="llama3.1")
-
-# Example 1: Decompose a multi-agent task into a DAG
-dag_plan = await planner.execute(
-    action="decompose_task",
-    parameters={"objective": "Search datasheets for STM32, initialize project 'mcu_board', and draft build sequence."}
-)
-
-# Example 2: Run a sandbox script with AST artifact auditing
-result = await planner.execute(
-    action="execute_sandbox_code",
-    parameters={"prompt": "Create an audit report file named 'build_status.txt' in project test_enclosure"},
-    stream_callback=lambda token: print(token, end="")
-)
-
-print(result)
-
-```
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1796,74 +988,7 @@ Retrieves binary PDF payloads through a two-tiered fetch architecture designed t
 
 ### Multi-Agent Integration Flow
 
-```
-                     ┌────────────────────────┐
-                     │   The_Quartermaster    │
-                     └───────────┬────────────┘
-                                 │
-           ┌─────────────────────┴─────────────────────┐
-           ▼                                           ▼
-┌─────────────────────┐                     ┌─────────────────────┐
-│      The_Scout      │                     │    The_Archivist    │
-│ (Discovers PDF      │                     │ (Indexes PDF into   │
-│  mirror URLs)       │                     │  ChromaDB VectorDB) │
-└─────────────────────┘                     └─────────────────────┘
 
-```
-
-1. **Mirror Discovery:** If a primary download fails or is omitted, `_search_pdf_mirrors` uses `The_Scout` (or direct DuckDuckGo fallback parsing) to find alternative PDF candidate links.
-2. **Candidate Filtering (`_is_valid_mirror_candidate`):** Filters candidate links to exclude media/search domains (`youtube.com`, `wikipedia.org`, etc.) and asserts that candidate PDF filenames match the target MPN.
-3. **Vector Indexing Handoff:** Once saved locally in `DATASHEETS_DIR`, the PDF path is handed over to `TheArchivist.index_pdf_datasheet()` for vectorization.
-
-### Database Schema Alignment (`quartermaster.db`)
-
-Communicates with an SQLite database operating in **WAL mode** (`PRAGMA journal_mode = WAL;`) and enforcing **Foreign Key Constraints**:
-
-* **`parts` Table:** Stores immutable/component metadata (`mpn`, `manufacturer`, `category`, `description`, `package_footprint`).
-* **`inventory` Table:** Tracks quantity counts per `storage_bin` with `ON CONFLICT` stock accumulation.
-* **`datasheets` Table:** Maps `part_id` to local relative PDF file paths.
-
----
-
-## 4. Execution Chaining & Integration Example
-
-```python
-from charon.agents.quartermaster import TheQuartermaster
-
-quartermaster = TheQuartermaster()
-
-# Example 1: Log incoming inventory into a specific bin
-log_result = quartermaster.execute(
-    action="log_inventory",
-    parameters={
-        "part_number": "STM32F405RGT6",
-        "quantity": 10,
-        "storage_bin": "Bin-B12",
-        "category": "Microcontrollers",
-        "manufacturer": "STMicroelectronics",
-        "package_footprint": "LQFP-64"
-    }
-)
-print(log_result)
-
-# Example 2: Download a datasheet and index it into vector memory
-fetch_result = quartermaster.execute(
-    action="fetch_datasheet",
-    parameters={
-        "part_number": "STM32F405RGT6",
-        "category": "Microcontrollers"
-    }
-)
-print(fetch_result)
-
-# Example 3: Audit project assembly BOM against current database stock
-bom_report = quartermaster.execute(
-    action="audit_bom",
-    parameters={"project_directory": "custom_enclosure"}
-)
-print(bom_report)
-
-```
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1910,91 +1035,7 @@ To ensure high availability, `The_Scout` employs a dual-tiered search fallback s
 
 Before issuing network requests, query strings are cleaned to remove wrapping LLM artifacts, quotes, or Markdown syntax:
 
-```python
-cleaned = re.sub(r"^[`'\">]+|[`'\">]+$", "", query).strip()
 
-```
-
-### Dual-Tiered Search Engine Architecture (`search_links`)
-
-To maintain search resilience without relying on single provider APIs, `The_Scout` cascades across search providers:
-
-```
-                        ┌────────────────────────┐
-                        │   Incoming Web Query   │
-                        └───────────┬────────────┘
-                                    │
-                                    ▼
-                        ┌────────────────────────┐
-                        │   DuckDuckGo Engine    │
-                        │   (ddgs / ddg_search)  │
-                        └───────────┬────────────┘
-                                    │
-                         [ Fail / Empty Matches ]
-                                    │
-                                    ▼
-                        ┌────────────────────────┐
-                        │  Google Search Engine  │
-                        │     (googlesearch)     │
-                        └────────────────────────┘
-
-```
-
-1. **Primary Engine (DuckDuckGo / `DDGS`):** Issues search requests with custom browser headers.
-2. **Secondary Fallback (Google Search / `googlesearch`):** Engaged automatically if DuckDuckGo raises network exceptions or yields zero valid matches.
-3. **Over-Fetching Strategy:** Requests double the requested result count ($N_{\text{fetch}} = 2 \cdot N_{\text{max}}$) to ensure adequate valid links remain after applying domain blocklists.
-4. **Domain Filtering:** Ignores non-informational domains, aggregators, and search engine layouts defined in `IGNORED_DOMAINS` (`wikipedia.org`, `yahoo.com`, `statista.com`, `pitchbook.com`, `financecharts.com`, `expandedramblings.com`, `bing.com`, `google.com`).
-
-### DOM Decomposition & Content Extraction Pipeline (`_scrape_url`)
-
-Fetches and converts raw HTML into clean readable text:
-
-* **Connection Protocol:** Uses `httpx.Client` configured with standard Chrome desktop User-Agent headers, redirect execution (`follow_redirects=True`), and a 12.0-second network timeout.
-* **MIME-Type Routing:** Directly normalizes whitespace for `text/plain` and `application/json` payloads.
-* **DOM Cleaning:** Parses HTML via `BeautifulSoup` and strips non-content tags from the DOM tree:
-
-$$\text{Tags Deleted} \in \{\text{script}, \text{style}, \text{nav}, \text{footer}, \text{header}, \text{noscript}, \text{svg}, \text{iframe}, \text{form}, \text{aside}, \text{button}\}$$
-
-
-* **Whitespace & Character Truncation:** Collapses consecutive whitespace characters (`\s+` $\rightarrow$ `" "`) and truncates output text $T_{\text{clean}}$ against the character budget $C_{\text{max}}$:
-
-$$T_{\text{final}} = \begin{cases} T_{\text{clean}} & \text{if } \vert{}T_{\text{clean}}\vert{} \le C_{\text{max}} \\ T_{\text{clean}}[0:C_{\text{max}}] + \text{"...\n[Content Truncated]"} & \text{if } \vert{}T_{\text{clean}}\vert{} > C_{\text{max}} \end{cases}$$
-
----
-
-## 4. Execution Chaining & Integration Example
-
-```python
-from charon.agents.scout import TheScout
-
-scout = TheScout()
-
-# Example 1: Execute web search query with DuckDuckGo / Google fallback
-search_results = scout.execute(
-    action="search_web",
-    parameters={
-        "query": "STM32F405LQFP64 pinout datasheet pdf",
-        "max_results": 3
-    }
-)
-print(search_results)
-
-# Example 2: Scrape web page content and strip HTML boilerplate
-scraped_content = scout.execute(
-    action="scrape_page_content",
-    parameters={
-        "url": "https://www.st.com/en/microcontrollers-microprocessors/stm32f405rg.html",
-        "max_chars": 2000
-    }
-)
-print(scraped_content)
-
-# Example 3: Programmatic structured link retrieval for downstream agents (e.g. The_Quartermaster)
-raw_links = scout.search_links("Raspberry Pi Compute Module 4 pinout", max_results=5)
-for item in raw_links:
-    print(f"Title: {item['title']}\nURL: {item['link']}\nSnippet: {item['snippet']}\n---")
-
-```
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2078,52 +1119,7 @@ Automates board production exports via `kicad-cli`:
 
 ## 4. Execution Chaining & Integration Example
 
-```python
-from charon.agents.spark import TheSpark
 
-spark = TheSpark(pio_cmd="pio", kicad_cli="kicad-cli")
-
-# Example 1: Export KiCad PCB Gerbers and Drill files
-gerber_result = spark.execute(
-    action="export_gerbers",
-    parameters={
-        "project_name": "motor_driver_v2",
-        "dry_run": False
-    }
-)
-print(gerber_result)
-
-# Example 2: Export Bill of Materials (BOM) CSV from schematic
-bom_result = spark.execute(
-    action="export_bom",
-    parameters={
-        "project_name": "motor_driver_v2"
-    }
-)
-print(bom_result)
-
-# Example 3: Compile embedded firmware for ESP32 environment
-compile_result = spark.execute(
-    action="compile_firmware",
-    parameters={
-        "project_name": "motor_driver_v2",
-        "environment": "esp32dev"
-    }
-)
-print(compile_result)
-
-# Example 4: Flash compiled firmware payload to connected MCU
-flash_result = spark.execute(
-    action="flash_hardware",
-    parameters={
-        "project_name": "motor_driver_v2",
-        "environment": "esp32dev",
-        "port": "/dev/ttyUSB0"
-    }
-)
-print(flash_result)
-
-```
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2179,84 +1175,6 @@ Through `The_Steward`, Charon can monitor physical laboratory/workspace environm
 ### Home Assistant REST Interface (`_make_ha_request`)
 
 All REST API interactions use standard library `urllib.request` with strict 10-second connection timeouts and Bearer Token authentication headers:
-
-```
-Authorization: Bearer <HOMEASSISTANT_TOKEN>
-Content-Type: application/json
-
-```
-
-### Domain Service Dispatcher (`control_appliance`)
-
-Target device identifiers are expected in canonical Home Assistant entity notation (`domain.entity_id`, e.g., `switch.lab_bench_power`). The agent dynamically extracts the target domain and routes the POST request to the corresponding service endpoint:
-
-$$\text{target\_device} = \text{domain} \mathbin{.} \text{entity\_id} \implies \text{Endpoint} = \text{/api/services/}\langle\text{domain}\rangle\text{/}\langle\text{service}\rangle$$
-
-Default service commands fall back to `turn_on` if omitted.
-
-### MQTT Telemetry Bridge (`publish_mqtt`)
-
-Publishes single-shot messages (`paho.mqtt.publish.single`) to the configured broker:
-
-* **Payload Normalization:** Dictionary structures are automatically stringified into JSON strings via `json.dumps()`. Standard string payloads are passed unmodified.
-* **Resilience:** Gracefully reports an error if the `paho-mqtt` library is missing from the runtime Python environment.
-
-### Workspace Device Discovery (`discover_devices`)
-
-Scans `/api/states` and strips full state trees down to lightweight JSON summaries:
-
-$$\mathcal{D}_{\text{summary}} = \left\{ \left( \text{entity\_id},\; \text{state},\; \text{attributes.friendly\_name} \right) \;\middle\vert{}\; \text{item} \in \text{HA}_{\text{states}} \right\}$$
-
----
-
-## 4. Execution Chaining & Integration Example
-
-```python
-from charon.agents.steward import TheSteward, execute_steward_task
-
-steward = TheSteward()
-
-# Example 1: Discover all active entities in the Home Assistant network
-discovery = steward.execute(
-    action="discover_devices",
-    parameters={}
-)
-print(f"Discovered {discovery.get('count', 0)} devices.")
-
-# Example 2: Toggle a lab switch entity
-control_result = steward.execute(
-    action="control_appliance",
-    parameters={
-        "target_device": "switch.lab_power_strip",
-        "command": "turn_on"
-    }
-)
-print(control_result)
-
-# Example 3: Publish direct telemetry to an MQTT topic
-mqtt_result = steward.execute(
-    action="publish_mqtt",
-    parameters={
-        "topic": "telemetry/lab/environment",
-        "payload": {"status": "active", "voltage": 120.4}
-    }
-)
-print(mqtt_result)
-
-# Example 4: Execute via the standalone module dispatcher function
-response = execute_steward_task({
-    "action": "read_sensor_net",
-    "target_device": "sensor.lab_temperature"
-})
-print(response)
-
-```
-### Action Alias Normalization
-The Steward accepts shorthand intent strings and maps them internally (`ACTION_MAP`):
-- `control_appliance` <= `['control_appliance', 'control', 'set_state', 'toggle']`
-- `publish_mqtt` <= `['publish_mqtt', 'mqtt', 'publish']`
-- `read_sensor_net` <= `['read_sensor_net', 'read_sensor', 'get_state', 'read']`
-- `discover_devices` <= `['discover_devices', 'discover', 'list_devices']`
 
 
 ```
@@ -2857,112 +1775,7 @@ At runtime, Charon dynamically inspects the environment via Git subprocess calls
 
 To prevent AI code generation or localized module updates from triggering unintended project-wide major/minor version bumps, every Python module in `../../charon` maintains a dual-version header docstring:
 
-```python
-"""
-charon/gateway/core.py
-System Version: v0.1.0 | File Revision: 1.0.0
 
-Module: Charon Core Daemon Orchestrator.
-
-Central daemon managing lifecycle execution state, persistent task queue processing,
-Workspace isolation, Gatekeeper authorization resolution, and client event broadcasting.
-"""
-
-```
-
-* **`System Version`**: Managed globally by `charon/__version__.py` and synced across all files during releases via `../../scripts/bump_version.py`.
-* **`File Revision`**: Managed per-file. Developers and AI models increment this value (e.g., `1.0.0` to `1.1.0`) when making local edits without disturbing global SemVer.
-
----
-
-## 3. Test Artifact Management (`../../tests/artifact_manager.py`)
-
-Test artifacts are stored under `../../.charon_test_artifacts` using a versioned schema layout:
-
-```text
-.charon_test_artifacts/
-├── .gitignore
-├── .opencodeignore
-└── v1.0.0/                      <-- ARTIFACT_SCHEMA_VERSION
-    └── a21c3ef/                 <-- Short Git SHA
-        ├── test_gatekeeper/
-        │   └── output.json
-        └── test_queue_recovery/
-            └── log.json
-
-```
-
-### Lifecycle & Cleanup Rules
-
-1. **Auto-Purge Stale Runs**: `ArtifactVersionManager` automatically purges directories from outdated schema versions or older commit SHAs upon initialization.
-2. **Git & Parser Exclusions**: Automatically maintains `../../.gitignore` and `.opencodeignore` files within `../../.charon_test_artifacts` to keep artifacts out of source control and LLM context indexers.
-3. **Metadata Injection**: All JSON artifacts generated via `write_json_artifact()` are automatically stamped with:
-* System Version
-* Schema Version
-* Git SHA
-* Git Branch
-* Dirty Workspace Status
-* UTC Timestamp
-
-
-
----
-
-## 4. Pytest Integration & Workspace Guard
-
-### Session Header Reporting
-
-Every `pytest` invocation prints system version state in the session header:
-
-```text
-Charon System Target: v0.1.0-ga21c3ef (dirty)
-
-```
-
-### Dirty Workspace Guard Flag
-
-To prevent running tests on uncommitted code in continuous integration or strict verification environments:
-
-```bash
-pytest --fail-on-dirty
-
-```
-
-If uncommitted changes exist when this flag is active, pytest will halt before executing any test fixtures.
-
----
-
-## 5. Automation & Release Workflow
-
-### Header Standardization Script (`../../scripts/standardize_headers.py`)
-
-Normalizes header docstrings across all files in `../../charon`. It updates `System Version` tags while preserving localized `File Revision` numbers and stripping outdated comment artifacts.
-
-```bash
-python3 scripts/standardize_headers.py
-
-```
-
-### SemVer Bumping Script (`../../scripts/bump_version.py`)
-
-Increments global version numbers, syncs file headers via `standardize_headers.py`, and optionally creates annotated Git tags.
-
-```bash
-# Bump patch version (0.1.0 -> 0.1.1), sync headers, and create git tag
-python3 scripts/bump_version.py patch --tag
-
-# Bump minor version (0.1.0 -> 0.2.0) and sync headers without tagging
-python3 scripts/bump_version.py minor
-
-```
-
-### PyCharm Integration
-
-Custom External Tools are defined in `../../.idea/tools/External_Tools.xml`:
-
-* **Charon: Bump Patch Version**: Triggers `scripts/bump_version.py patch --tag`
-* **Charon: Bump Minor Version**: Triggers `scripts/bump_version.py minor --tag`
-* **Charon: Test Suite (Strict Guard)**: Runs `pytest --fail-on-dirty`
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -3119,6 +1932,9 @@ dependencies = [
     "websockets",
     "prompt-toolkit",
     "rich",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.51.0",
+    "ollama>=0.6.2",
 ]
 
 [project.optional-dependencies]
@@ -3181,6 +1997,7 @@ directory = "htmlcov"
 
 [tool.coverage.xml]
 output = "coverage.xml"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────

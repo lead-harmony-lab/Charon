@@ -1,11 +1,11 @@
 """
 charon/core/coordinator/decomposer.py
-System Version: v0.3.2 | File Revision: 1.6.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Requirement Decomposition and Payload Parsing Engine.
 Parses prompts and metadata into discrete blackboard requirements and seed artifacts.
-Updated for dynamic SkillLibrarian queries, Revision 3 SQLite Schema compatibility,
-and fail-fast default action contract resolution.
+Strictly enforces Database as SSOT across all SkillLibrarian resolutions.
+Raises RuntimeError on unmapped roles or inactive capabilities.
 """
 
 import logging
@@ -20,7 +20,7 @@ from charon.core.coordinator.blackboard import (
 )
 from charon.core.skills import SkillLibrarian
 
-# Safe import for legacy manifest lookup
+# Safe import for manifest lookup
 try:
     from charon.intent.manifests import get_agent_manifest
 except ImportError:
@@ -30,80 +30,84 @@ logger = logging.getLogger("charon.core.coordinator.decomposer")
 
 
 class RequirementDecomposer:
-    """Decomposes prompts into initial blackboard artifacts and unfulfilled requirements using dynamic skills."""
+    """Decomposes prompts into initial blackboard artifacts and unfulfilled requirements using SSOT skills."""
 
     def __init__(self, librarian: Optional[SkillLibrarian] = None):
         self.librarian = librarian or SkillLibrarian.get_instance()
 
     def _resolve_agent_override(self, raw_override: Any) -> tuple[Optional[str], Optional[str]]:
-        """Resolves raw role/agent strings into (role_name, agent_id) matching system_roles / agent_registry FKs."""
+        """Resolves raw role/agent inputs into canonical (agent_id, agent_id) tuples via direct DB lookup."""
         if not raw_override:
             return None, None
 
-        raw_str = str(getattr(raw_override, "value", raw_override))
-        role_name = raw_str
-        agent_id = raw_str
+        clean_id = str(getattr(raw_override, "value", raw_override)).strip()
+        if not clean_id:
+            return None, None
 
-        # Schema Compliance: Check if raw_override is a role_name mapped in system_roles
-        if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(self.librarian.resolve_agent_id_for_role):
-            resolved = self.librarian.resolve_agent_id_for_role(raw_str)
-            if resolved:
-                agent_id = resolved
+        agent_id = None
+        if hasattr(self.librarian, "resolve_agent_id") and callable(self.librarian.resolve_agent_id):
+            agent_id = self.librarian.resolve_agent_id(clean_id)
+        elif hasattr(self.librarian, "resolve_agent_id_for_role") and callable(
+            self.librarian.resolve_agent_id_for_role
+        ):
+            agent_id = self.librarian.resolve_agent_id_for_role(clean_id)
 
-        return role_name, agent_id
+        if not agent_id:
+            raise RuntimeError(
+                f"[DECOMPOSER FAULT] Identifier '{clean_id}' could not be resolved in DB via SkillLibrarian."
+            )
 
-    def _resolve_agent_default_action(self, agent_or_role: Optional[str] = None) -> str:
-        """Dynamically resolves default interface action for an agent/role via SkillLibrarian or manifest.
+        resolved_str = str(agent_id)
+        return resolved_str, resolved_str
 
-        If agent_or_role is not provided, resolves default action for the system 'generalist' role.
+    def _resolve_agent_default_action(self, agent_or_role: str) -> str:
+        """Dynamically resolves default interface action for an agent/role strictly via SkillLibrarian or manifest.
 
         Raises:
-            RuntimeError: If default action contract cannot be resolved.
+            RuntimeError: If default action contract is not explicitly defined in the database or manifest.
         """
-        target_agent = agent_or_role
+        if not agent_or_role or not str(agent_or_role).strip():
+            raise RuntimeError(
+                "[DECOMPOSER FAULT] Cannot resolve default action: No agent or role identifier provided."
+            )
 
-        # 1. Resolve role_name -> agent_id if mapped
-        if target_agent and hasattr(self.librarian, "resolve_agent_id_for_role") and callable(self.librarian.resolve_agent_id_for_role):
-            resolved = self.librarian.resolve_agent_id_for_role(target_agent)
-            if resolved:
-                target_agent = resolved
+        target_id = str(agent_or_role).strip()
 
-        # 2. If no target provided, resolve system generalist role
-        if not target_agent:
-            for role_key in ["generalist", "default_generalist", "system_fallback"]:
-                if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(self.librarian.resolve_agent_id_for_role):
-                    resolved = self.librarian.resolve_agent_id_for_role(role_key)
-                    if resolved:
-                        target_agent = resolved
-                        break
+        # 1. Query SkillLibrarian API strictly with exact identifier
+        if hasattr(self.librarian, "get_agent_default_action") and callable(
+            self.librarian.get_agent_default_action
+        ):
+            action = self.librarian.get_agent_default_action(target_id)
+            if action:
+                return str(action)
 
-        if target_agent:
-            # Query SkillLibrarian API
-            if hasattr(self.librarian, "get_agent_default_action") and callable(self.librarian.get_agent_default_action):
-                action = self.librarian.get_agent_default_action(target_agent)
-                if action:
-                    return str(action)
+        # 2. Query Manifest directly
+        try:
+            manifest = get_agent_manifest(target_id)
+            if manifest:
+                default_act = (
+                    manifest.get("default_action")
+                    if isinstance(manifest, dict)
+                    else getattr(manifest, "default_action", None)
+                )
+                if default_act:
+                    return str(default_act)
+        except Exception:
+            pass
 
-            # Query Manifest Cache directly
-            try:
-                manifest = get_agent_manifest(target_agent)
-                if manifest:
-                    default_act = manifest.get("default_action") if isinstance(manifest, dict) else getattr(manifest, "default_action", None)
-                    if default_act:
-                        return str(default_act)
-            except Exception:
-                pass
-
+        # Strictly fail fast if not mapped in SSOT
         raise RuntimeError(
-            f"[DECOMPOSER ERROR] Cannot resolve default action contract for target '{agent_or_role or 'generalist'}': "
-            "No 'default_action' mapped in manifest or database state."
+            f"[DECOMPOSER FAULT] Cannot resolve default action contract for identifier '{target_id}': "
+            "No 'default_action' mapped in database state or manifest."
         )
 
     def get_action_capability(self, action_name: str) -> Optional[Dict[str, Any]]:
         """Retrieves action metadata from the dynamic skill registry, filtering for ACTIVE status."""
         cap = self.librarian.get_action_details(action_name)
         if cap and cap.get("status", "ACTIVE") != "ACTIVE":
-            logger.warning(f"[DECOMPOSER] Requested action '{action_name}' is not ACTIVE (status={cap.get('status')}).")
+            logger.warning(
+                f"[DECOMPOSER] Requested action '{action_name}' is not ACTIVE (status={cap.get('status')})."
+            )
             return None
         return cap
 
@@ -129,7 +133,7 @@ class RequirementDecomposer:
         """Populates blackboard with seed artifacts and initial requirement stack."""
         metadata = metadata or {}
 
-        # 1. MPN / Part Number Regex Extraction (Strict alphanumeric heuristics)
+        # 1. MPN / Part Number Regex Extraction
         mpn_match = re.search(r"\b([A-Z0-9]+-[A-Z0-9_\-]+|[A-Z0-9]{5,})\b", prompt, re.IGNORECASE)
         if mpn_match:
             blackboard.set_artifact("target_part", mpn_match.group(1))
@@ -137,7 +141,7 @@ class RequirementDecomposer:
         blackboard.set_artifact("original_prompt", prompt)
         handled_by_payload = False
 
-        # 2. Check Typed Agent/Role Payloads / Dynamic Payloads
+        # 2. Check Typed Agent/Role Payloads
         payload_obj = (
             metadata.get("payload")
             or metadata.get("agent_payload")
@@ -160,17 +164,26 @@ class RequirementDecomposer:
                     intent_extraction.get("action") if isinstance(intent_extraction, dict) else None
                 )
                 params = getattr(intent_extraction, "parameters", None) or (
-                    intent_extraction.get("parameters", {}) if isinstance(intent_extraction, dict) else {}
+                    intent_extraction.get("parameters", {})
+                    if isinstance(intent_extraction, dict)
+                    else {}
                 )
 
                 if action:
-                    cap_info = self.get_action_capability(action) or {}
+                    cap_info = self.get_action_capability(action)
+                    if not cap_info:
+                        raise RuntimeError(
+                            f"[DECOMPOSER FAULT] Intent specified action '{action}', "
+                            "but it is missing or inactive in SkillLibrarian database."
+                        )
+
+                    cap_name = cap_info.get("capability_name") or cap_info.get("action_name", action)
                     produced = cap_info.get("produced_artifacts", [])
                     esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
 
                     blackboard.unfulfilled_requirements.append(
                         UnfulfilledRequirement(
-                            capability_required=cap_info.get("capability_name", action),
+                            capability_required=cap_name,
                             target_artifact_key=produced[0] if produced else None,
                             escalation_level=esc_level,
                             assigned_role_override=role_override,
@@ -215,54 +228,60 @@ class RequirementDecomposer:
                     cap_info = self.get_action_capability(cap_name) if cap_name else None
 
                     if not cap_info:
-                        agent_actions = self.librarian.list_available_actions(
-                            getattr(manifest, "name", role_str) if manifest else role_str
-                        )
+                        agent_actions = self.librarian.list_available_actions(role_str)
                         if agent_actions:
                             cap_info = self.get_action_capability(agent_actions[0])
                         else:
-                            fallback_action = self._resolve_agent_default_action(agent_id_str or role_str)
+                            fallback_action = self._resolve_agent_default_action(role_str)
                             cap_info = self.get_action_capability(fallback_action)
 
-                    if cap_info:
-                        hint_params = (
-                            routing_hint.get("parameters", {})
-                            if isinstance(routing_hint, dict)
-                            else {}
+                    if not cap_info:
+                        raise RuntimeError(
+                            f"[DECOMPOSER FAULT] Could not resolve an active capability contract for target '{role_str}'."
                         )
-                        produced = cap_info.get("produced_artifacts", [])
-                        esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
-                        blackboard.unfulfilled_requirements.append(
-                            UnfulfilledRequirement(
-                                capability_required=cap_info.get("capability_name", cap_info.get("action_name")),
-                                target_artifact_key=produced[0] if produced else None,
-                                escalation_level=esc_level,
-                                assigned_role_override=role_str,
-                                assigned_agent_override=agent_id_str,
-                                parameters=hint_params,
-                            )
-                        )
-                        handled_by_payload = True
 
-        # 4. Default Fallback -> Conversational Query
+                    hint_params = (
+                        routing_hint.get("parameters", {})
+                        if isinstance(routing_hint, dict)
+                        else {}
+                    )
+                    cap_name_val = cap_info.get("capability_name") or cap_info.get("action_name")
+                    produced = cap_info.get("produced_artifacts", [])
+                    esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
+
+                    blackboard.unfulfilled_requirements.append(
+                        UnfulfilledRequirement(
+                            capability_required=cap_name_val,
+                            target_artifact_key=produced[0] if produced else None,
+                            escalation_level=esc_level,
+                            assigned_role_override=role_str,
+                            assigned_agent_override=agent_id_str,
+                            parameters=hint_params,
+                        )
+                    )
+                    handled_by_payload = True
+
+        # 4. Default Fallback -> Direct system_generalist Lookup
         if not blackboard.unfulfilled_requirements:
-            generalist_action = self._resolve_agent_default_action()
+            generalist_action = self._resolve_agent_default_action("system_generalist")
             cap_info = self.get_action_capability(generalist_action)
+
             if not cap_info:
                 raise RuntimeError(
-                    f"[DECOMPOSER ERROR] Default generalist action '{generalist_action}' "
-                    "is missing or not active in database."
+                    f"[DECOMPOSER FAULT] Default generalist action '{generalist_action}' "
+                    "resolved for 'system_generalist' is missing or inactive in SkillLibrarian database."
                 )
 
-            cap_name = cap_info.get("capability_name", generalist_action)
+            cap_name = cap_info.get("capability_name") or cap_info.get("action_name", generalist_action)
             esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
-            produced = cap_info.get("produced_artifacts", ["response_text"])
+            produced = cap_info.get("produced_artifacts", [])
 
             blackboard.unfulfilled_requirements.append(
                 UnfulfilledRequirement(
                     capability_required=cap_name,
                     target_artifact_key=produced[0] if produced else "response_text",
                     escalation_level=esc_level,
+                    parameters={"prompt": prompt},
                 )
             )
 
@@ -291,11 +310,17 @@ class RequirementDecomposer:
         if not action:
             return False
 
-        cap_info = self.get_action_capability(action) or {}
+        cap_info = self.get_action_capability(action)
+        if not cap_info:
+            raise RuntimeError(
+                f"[DECOMPOSER FAULT] Payload specified action '{action}', "
+                "but capability is missing or inactive in SkillLibrarian database."
+            )
 
         req_params = {k: v for k, v in payload_dict.items() if v is not None}
         req_params["requires_approval"] = requires_approval
 
+        cap_name = cap_info.get("capability_name") or cap_info.get("action_name", action)
         produced = cap_info.get("produced_artifacts", [])
         esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
 
@@ -309,7 +334,7 @@ class RequirementDecomposer:
 
         blackboard.unfulfilled_requirements.append(
             UnfulfilledRequirement(
-                capability_required=cap_info.get("capability_name", action),
+                capability_required=cap_name,
                 target_artifact_key=produced[0] if produced else None,
                 escalation_level=esc_level,
                 assigned_role_override=role_str,

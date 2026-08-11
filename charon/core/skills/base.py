@@ -1,6 +1,6 @@
 """
 charon/core/skills/base.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.7.0 | File Revision: 7.0.0
 
 Module: Abstract Base Class defining the contract for in-memory and dynamic skill plugins.
 Establishes clean separation between code identity (skill_id) and prompt contract (action_name),
@@ -8,7 +8,7 @@ aligned with CBAC Schema V2 capability architecture and quarantine lifecycle man
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 class BaseSkill(ABC):
@@ -29,7 +29,7 @@ class BaseSkill(ABC):
 
     # Status state machine: 'ACTIVE', 'QUARANTINED', 'DISABLED'
     status: str = "ACTIVE"
-    quarantine_reason: Union[str, None] = None
+    quarantine_reason: Optional[str] = None
 
     # Restrict checkout to specific agent IDs, or ["*"] for global availability
     allowed_agents: List[str] = ["*"]

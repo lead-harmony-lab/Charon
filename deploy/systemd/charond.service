@@ -7,11 +7,10 @@ Wants=ollama.service
 Type=simple
 WorkingDirectory=%h/Projects/Tools/Charon
 EnvironmentFile=-%h/.config/charon/env
-Environment=PYTHONUNBUFFERED=1
+Environment="PYTHONUNBUFFERED=1" "PATH=%h/Projects/Tools/Charon/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 ExecStart=%h/Projects/Tools/Charon/.venv/bin/python -m charon.daemon
 Restart=on-failure
 RestartSec=3s
-
 
 [Install]
 WantedBy=default.target

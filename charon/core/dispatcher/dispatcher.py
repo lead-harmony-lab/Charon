@@ -1,11 +1,12 @@
 """
 charon/core/dispatcher/dispatcher.py
-System Version: v0.4.0 | File Revision: 7.2.0
+System Version: v0.7.0 | File Revision: 8.0.0
 
 Module: Core AgentDispatcher implementation.
 Handles specialist agent execution, dynamic skill negotiation, telemetry event routing,
 and stateful TaskBlackboard reflection loops. Standardized on action_name routing,
 dynamic agent resolution via SkillLibrarian, and guaranteed output telemetry emission.
+Hardened against None return values from missing role defaults and prompt lookups.
 """
 
 import inspect
@@ -110,6 +111,9 @@ class AgentDispatcher:
 
     def _resolve_agent(self, agent_id: str) -> Any:
         """Delegates agent resolution to AgentRouter and binds telemetry callbacks."""
+        if not agent_id:
+            raise ValueError("[DISPATCHER] Agent resolution failed: agent_id was empty or None.")
+
         agent_instance = self.router.get_agent_instance(
             agent_id=agent_id,
             heavy_model=self.heavy_model,
@@ -154,6 +158,9 @@ class AgentDispatcher:
         stream_cb: Any = None,
     ) -> Any:
         """Executes a single discrete step on a specialist agent and returns execution result."""
+        if not action:
+            raise ValueError("[DISPATCHER] Invalid execution step: 'action' parameter cannot be empty.")
+
         agent_instance = self._resolve_agent(agent_id)
         librarian = SkillLibrarian.get_instance(self.db_path)
         display_name = librarian.get_display_name_for_agent(agent_id)
@@ -248,7 +255,9 @@ class AgentDispatcher:
         cb = stream_cb or kwargs.get("stream_callback")
 
         librarian = SkillLibrarian.get_instance(self.db_path)
-        default_generalist_action = librarian.get_default_action_for_role("system_generalist")
+        default_generalist_action = (
+            librarian.get_default_action_for_role("system_generalist") or "general_query"
+        )
 
         init_agent_id = (
             initial_agent_id
@@ -308,7 +317,11 @@ class AgentDispatcher:
 
             if not step_selection and iteration == 1 and init_agent_id:
                 manifest = get_agent_manifest(init_agent_id)
-                action_hint = initial_action_hint or (manifest.default_action if manifest else default_generalist_action)
+                action_hint = (
+                    initial_action_hint
+                    or (manifest.default_action if manifest else None)
+                    or default_generalist_action
+                )
                 action_details = librarian.get_action_details(action_hint) or {
                     "action_name": action_hint,
                     "agent": init_agent_id,
@@ -337,7 +350,11 @@ class AgentDispatcher:
             bound_params = {**blackboard.artifacts, **step_params}
 
             if isinstance(capability_info, dict):
-                action = capability_info.get("action_name", getattr(req, "capability_required", default_generalist_action))
+                action = (
+                    capability_info.get("action_name")
+                    or getattr(req, "capability_required", None)
+                    or default_generalist_action
+                )
                 requested_agent = (
                     capability_info.get("agent")
                     or capability_info.get("assigned_agent")
@@ -347,7 +364,12 @@ class AgentDispatcher:
                 )
             else:
                 requested_agent = getattr(capability_info, "agent", init_agent_id)
-                action = getattr(capability_info, "capability_name", getattr(capability_info, "action", default_generalist_action))
+                action = (
+                    getattr(capability_info, "capability_name", None)
+                    or getattr(capability_info, "action", None)
+                    or getattr(req, "capability_required", None)
+                    or default_generalist_action
+                )
 
             target_role, fallback_role = self.router.resolve_route(
                 action_name=action,

@@ -1,10 +1,11 @@
 """
 charon/core/coordinator/blackboard.py
-System Version: v0.3.2 | File Revision: 3.6.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Core state blackboard and execution TaskBlackboard models.
 Provides strongly-typed schemas for multi-step artifact propagation, unfulfilled task tracking,
 contract reflection, state mutation tracking, execution history, and DB state hydration.
+Strictly preserves canonical database identifiers across all state interactions.
 """
 
 import json
@@ -16,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from pydantic import Field
 
 from charon.core.contracts import ContractResponse, ExecutionStatus
-from charon.core.skills import SkillLibrarian
+from charon.core.skills.librarian import SkillLibrarian
 from charon.intent.base import StrictBaseModel
 
 
@@ -97,7 +98,7 @@ class UnfulfilledRequirement(StrictBaseModel):
     )
     assigned_role_override: Optional[str] = Field(
         default=None,
-        description="Abstract system role assigned during escalation (e.g., 'default_system_engineer').",
+        description="Abstract system role assigned during escalation (e.g., 'system_engineer').",
     )
     assigned_agent_override: Optional[str] = Field(
         default=None,
@@ -196,12 +197,24 @@ class TaskBlackboard(StrictBaseModel):
 
     def get_role_display_name(self, role: str) -> str:
         """Resolves human-readable presentation label via SkillLibrarian accessors."""
+        clean_role = str(getattr(role, "value", role)).strip() if role else ""
+        if not clean_role:
+            return "system_generalist"
+
         librarian = SkillLibrarian.get_instance()
-        if hasattr(librarian, "get_display_name_for_role") and callable(librarian.get_display_name_for_role):
-            return librarian.get_display_name_for_role(role)
-        if hasattr(librarian, "get_display_name_for_agent") and callable(librarian.get_display_name_for_agent):
-            return librarian.get_display_name_for_agent(role)
-        return role
+        if hasattr(librarian, "get_display_name_for_role") and callable(
+            librarian.get_display_name_for_role
+        ):
+            name = librarian.get_display_name_for_role(clean_role)
+            if name:
+                return name
+        if hasattr(librarian, "get_display_name_for_agent") and callable(
+            librarian.get_display_name_for_agent
+        ):
+            name = librarian.get_display_name_for_agent(clean_role)
+            if name:
+                return name
+        return clean_role
 
     def emit_thought(
         self,
@@ -212,9 +225,14 @@ class TaskBlackboard(StrictBaseModel):
         bus_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> ThoughtRecord:
         """Emits a live CoT reasoning event to the blackboard and optional bus callback."""
+        clean_role = (
+            str(getattr(source_role, "value", source_role)).strip()
+            if source_role
+            else "system_generalist"
+        )
         record = ThoughtRecord(
             task_id=self.task_id,
-            source_role=source_role,
+            source_role=clean_role,
             thought_type=thought_type,
             message=message,
             context_data=context_data or {},
@@ -241,8 +259,13 @@ class TaskBlackboard(StrictBaseModel):
         except Exception:
             return f"<{type(value).__name__} Unserializable Object>"
 
-    def set_artifact(self, key: str, value: Any, source_role: str = "default_system_generalist") -> None:
+    def set_artifact(self, key: str, value: Any, source_role: str = "system_generalist") -> None:
         """Stores a ground truth artifact on the blackboard and logs a truncated mutation."""
+        clean_role = (
+            str(getattr(source_role, "value", source_role)).strip()
+            if source_role
+            else "system_generalist"
+        )
         previous_val = self.artifacts.get(key)
         self.artifacts[key] = value
 
@@ -251,7 +274,7 @@ class TaskBlackboard(StrictBaseModel):
             "key": key,
             "previous_value": self._safe_summary(previous_val),
             "new_value": self._safe_summary(value),
-            "source_role": source_role,
+            "source_role": clean_role,
         })
 
     def get_artifact(self, key: str, default: Any = None) -> Any:
@@ -274,29 +297,31 @@ class TaskBlackboard(StrictBaseModel):
             self.active_gaps.remove(gap_description)
 
     def record_step(
-            self,
-            role: Any = None,
-            action: str = "",
-            status: str = "SUCCESS",
-            output_summary: str = "",
-            produced_artifacts: Optional[Dict[str, Any]] = None,
-            unresolved_gaps: Optional[List[str]] = None,
-            error_message: Optional[str] = None,
-            agent: Any = None,  # Added as alias for role
+        self,
+        role: Any = None,
+        action: str = "",
+        status: str = "SUCCESS",
+        output_summary: str = "",
+        produced_artifacts: Optional[Dict[str, Any]] = None,
+        unresolved_gaps: Optional[List[str]] = None,
+        error_message: Optional[str] = None,
+        agent: Any = None,  # Alias for role
     ) -> ExecutionStepRecord:
         """Appends an execution turn to history and updates blackboard artifacts."""
         resolved_role = role if role is not None else agent
-        if resolved_role is None:
-            resolved_role = "system_fallback"
+        clean_role = (
+            str(getattr(resolved_role, "value", resolved_role)).strip()
+            if resolved_role
+            else "system_generalist"
+        )
 
         produced = produced_artifacts or {}
         gaps = unresolved_gaps or []
         step_number = len(self.execution_history) + 1
-        role_str = str(getattr(resolved_role, "value", resolved_role))
 
         record = ExecutionStepRecord(
             step_number=step_number,
-            role=role_str,
+            role=clean_role,
             action=action,
             status=status,
             output_summary=output_summary,
@@ -310,7 +335,7 @@ class TaskBlackboard(StrictBaseModel):
             self.log_gap(gap)
 
         for k, v in produced.items():
-            self.set_artifact(k, v, source_role=role_str)
+            self.set_artifact(k, v, source_role=clean_role)
 
         return record
 
@@ -322,12 +347,16 @@ class TaskBlackboard(StrictBaseModel):
     ) -> ExecutionStepRecord:
         """Integrates a formal Pydantic ContractResponse directly into state history."""
         produced = produced_artifacts_map or {}
-        summary = " | ".join(response.accomplishments) if response.accomplishments else (response.reason or "")
+        summary = (
+            " | ".join(response.accomplishments)
+            if response.accomplishments
+            else (response.reason or "")
+        )
 
         resolved_role = getattr(
             response,
             "role_name",
-            getattr(response, "agent_name", "system_fallback"),
+            getattr(response, "agent_name", "system_generalist"),
         )
 
         is_success = response.status in (ExecutionStatus.SUCCESS, ExecutionStatus.SATISFIED)

@@ -1,6 +1,6 @@
 """
 charon/core/parser.py
-System Version: v0.2.0 | File Revision: 2.4.0
+System Version: v0.2.0 | File Revision: 2.4.1
 
 Module: Pass 1 (Triage Routing) and Pass 2 (Schema Extraction) intent parser
 with Tiered Fallback Recovery, Manifest-Driven Routing, and Dynamic Skill Bus Interception.
@@ -16,10 +16,10 @@ import ollama
 from pydantic import BaseModel, ValidationError, create_model
 
 from charon.core.prompts import CHARON_ROUTING_PROMPT, EXTRACTION_SYSTEM_PROMPT
-from charon.core.utils import clean_json_string, get_schema_json
 from charon.core.skills import SkillLibrarian
+from charon.core.utils import clean_json_string, get_schema_json
+from charon.intent.manifests import get_agent_manifest, get_triage_agent_descriptions
 from charon.intent.routing import RoutingPayload
-from charon.intent.manifests import get_triage_agent_descriptions, get_agent_manifest
 from charon.utils.memory import ConversationBuffer
 
 logger = logging.getLogger("Charon.Parser")
@@ -58,8 +58,8 @@ class IntentParser:
                 if resolved_action_agent:
                     return resolved_action_agent
 
-            # Attempt primary database fallback roles
-            resolved_planner = self.librarian.resolve_agent_id_for_role("default_system_planner")
+            # Primary DB role lookup using standard canonical name
+            resolved_planner = self.librarian.resolve_agent_id_for_role("system_planner")
             if resolved_planner:
                 return resolved_planner
 
@@ -71,7 +71,7 @@ class IntentParser:
 
         fatal_msg = (
             "CRITICAL ROUTING FAILURE: Could not resolve mandatory fallback system roles "
-            "('system_fallback' or 'default_system_planner') from the database."
+            "('system_fallback' or 'system_planner') from the database."
         )
         logger.critical(fatal_msg)
         raise RuntimeError(fatal_msg)
@@ -104,7 +104,7 @@ class IntentParser:
             objective=(Optional[str], None),
             problem=(Optional[str], None),
             target_device=(Optional[str], None),
-            __base__=BaseModel
+            __base__=BaseModel,
         )
 
     async def parse_routing(
@@ -123,8 +123,12 @@ class IntentParser:
                     target_agent = matched_skill.get("primary_agent_id") or matched_skill.get("agent_id")
                     skill_name = matched_skill.get("action_name") or matched_skill.get("name")
                 else:
-                    target_agent = getattr(matched_skill, "primary_agent_id", None) or getattr(matched_skill, "agent_id", None)
-                    skill_name = getattr(matched_skill, "action_name", None) or getattr(matched_skill, "name", None)
+                    target_agent = getattr(matched_skill, "primary_agent_id", None) or getattr(
+                        matched_skill, "agent_id", None
+                    )
+                    skill_name = getattr(matched_skill, "action_name", None) or getattr(
+                        matched_skill, "name", None
+                    )
 
                 if not target_agent:
                     target_agent = self._get_fallback_agent(action_name=skill_name)
@@ -135,7 +139,9 @@ class IntentParser:
         except RuntimeError:
             raise  # Bubble up hard runtime errors from missing DB roles
         except Exception as e:
-            logger.warning(f"SkillLibrarian fast-path check failed: {e}. Falling back to standard LLM triage.")
+            logger.warning(
+                f"SkillLibrarian fast-path check failed: {e}. Falling back to standard LLM triage."
+            )
         # --------------------------------------------
 
         # --- STANDARD CONVERSATIONAL/STATIC TRIAGE ---
@@ -152,9 +158,7 @@ class IntentParser:
 
         recent_history = self.memory.get_context_string() if hasattr(self.memory, "get_context_string") else ""
         history_context = (
-            f"Recent Conversational Context:\n{recent_history}\n\n"
-            if recent_history
-            else ""
+            f"Recent Conversational Context:\n{recent_history}\n\n" if recent_history else ""
         )
 
         prompt = (
@@ -189,7 +193,9 @@ class IntentParser:
                 logger.info(f"Triage routed task to: {payload.agent}")
                 return payload
             except Exception as direct_err:
-                logger.debug(f"Direct routing validation failed: {direct_err}. Attempting key alias extraction.")
+                logger.debug(
+                    f"Direct routing validation failed: {direct_err}. Attempting key alias extraction."
+                )
 
             # Tier 2: Key Alias Unwrapping
             parsed_dict = json.loads(clean_json)
@@ -264,7 +270,9 @@ class IntentParser:
 
             # Tier 3: Defensive Fallback
             if extraction is None:
-                logger.warning(f"Pass 2 extraction failed for {agent}. Triggering defensive payload fallback.")
+                logger.warning(
+                    f"Pass 2 extraction failed for {agent}. Triggering defensive payload fallback."
+                )
                 extraction = self._build_fallback_payload(schema_class, agent, user_input)
 
             # Stage 2 Prompt Enrichment
@@ -283,9 +291,17 @@ class IntentParser:
                         f"NEVER modify, truncate, or overwrite the target directory path specified in the PRIMARY USER COMMAND.\n"
                         f"{ledger_context}"
                     )
-                    for attr in ("prompt", "objective", "problem"):
-                        if hasattr(extraction, attr) and getattr(extraction, attr, None) is not None:
-                            setattr(extraction, attr, enriched)
+                    updates = {
+                        attr: enriched
+                        for attr in ("prompt", "objective", "problem")
+                        if hasattr(extraction, attr) and getattr(extraction, attr, None) is not None
+                    }
+                    if updates:
+                        try:
+                            extraction = extraction.model_copy(update=updates)
+                        except Exception:
+                            for k, v in updates.items():
+                                setattr(extraction, k, v)
 
             return extraction
 

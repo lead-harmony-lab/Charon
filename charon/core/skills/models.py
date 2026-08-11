@@ -1,11 +1,11 @@
 """
 charon/core/skills/models.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Pydantic schemas for dynamic skill manifests and action specifications.
-Enforces strict System Role abstraction and explicit agent authorization,
-adhering strictly to the Janitorial Working Anchor.
+Enforces Pydantic V2 validation and schema normalization for SkillManifest and ActionMetadata.
 Integrates CBAC Schema V2 permission declarations and quarantine lifecycle states.
+Preserves raw identifier fidelity without forced case conversions or prefix mutations.
 """
 
 from typing import Any, Dict, List, Optional
@@ -58,8 +58,8 @@ class SkillManifest(BaseModel):
     )
     author: str = Field(default="Charon Librarian", description="Author or maintainer name")
     primary_agent_id: str = Field(
-        default="default_system_generalist",
-        description="Primary system role owner adhering strictly to Janitorial role abstraction",
+        default="system_generalist",
+        description="Primary system role owner or canonical agent identifier",
     )
     allowed_agents: List[str] = Field(
         default_factory=list,
@@ -99,25 +99,36 @@ class SkillManifest(BaseModel):
         """Provides defensive schema export for core utils extraction compatibility."""
         return cls.model_json_schema()
 
-    @field_validator("primary_agent_id")
-    @classmethod
-    def enforce_system_role_abstraction(cls, v: str) -> str:
-        """
-        Fail-fast validator blocking legacy raw agent names and non-conforming role identifiers.
-        Raises ValueError immediately to prevent legacy agent strings from entering the system.
-        """
-        legacy_banned = {"generalist", "engineer", "fallback", "planner", "the_engineer"}
-        clean_v = v.strip().lower()
+    @staticmethod
+    def _clean_identifier(role_str: Any) -> str:
+        """Trims whitespace and extracts string value without case mutation or forced prefixes."""
+        if not role_str:
+            return ""
+        return str(getattr(role_str, "value", role_str)).strip()
 
-        if clean_v in legacy_banned:
-            raise ValueError(
-                f"[JANITORIAL FAULT] Legacy agent string '{v}' detected in manifest. "
-                f"Hardcoded agent names are strictly prohibited. "
-                f"Update manifest to use a System Role (e.g., 'default_system_generalist')."
-            )
+    @field_validator("primary_agent_id", mode="before")
+    @classmethod
+    def sanitize_primary_agent(cls, v: Any) -> str:
+        """Sanitizes primary_agent_id into clean trimmed format."""
+        cleaned = cls._clean_identifier(v)
+        return cleaned or "system_generalist"
+
+    @field_validator("allowed_agents", mode="before")
+    @classmethod
+    def sanitize_allowed_agents(cls, v: Any) -> List[str]:
+        """Coerces strings/lists into trimmed agent identifier list format."""
+        if isinstance(v, str):
+            v = [v]
+        if isinstance(v, list):
+            res = []
+            for agent in v:
+                cleaned = cls._clean_identifier(agent)
+                if cleaned:
+                    res.append(cleaned)
+            return res
         return v
 
-    @field_validator("allowed_agents", "required_permissions", mode="before")
+    @field_validator("required_permissions", mode="before")
     @classmethod
     def coerce_string_to_list(cls, v: Any) -> Any:
         """Coerces single string entries into a standard list prior to schema validation."""
@@ -125,33 +136,11 @@ class SkillManifest(BaseModel):
             return [v]
         return v
 
-    @field_validator("allowed_agents")
-    @classmethod
-    def validate_allowed_agents(cls, v: List[str]) -> List[str]:
-        """Ensures allowed_agents entries do not contain banned legacy raw agent names."""
-        legacy_banned = {
-            "generalist",
-            "engineer",
-            "fallback",
-            "planner",
-            "the_engineer",
-            "the_archivist",
-        }
-        for agent in v:
-            clean_agent = agent.strip().lower()
-            if clean_agent in legacy_banned:
-                raise ValueError(
-                    f"[JANITORIAL FAULT] Legacy agent string '{agent}' detected in allowed_agents list. "
-                    f"Use valid agent_ids (e.g., 'agent_planner' or '*') instead."
-                )
-        return v
-
     @model_validator(mode="before")
     @classmethod
     def normalize_manifest_structure(cls, data: Any) -> Any:
         """
         Normalizes template nested action objects and legacy manifest structures.
-        Does NOT perform silent coercion of legacy agent identities.
         """
         if not isinstance(data, dict):
             return data

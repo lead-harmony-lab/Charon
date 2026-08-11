@@ -15,6 +15,12 @@ Requires-Dist: rich
 Requires-Dist: fastapi>=0.141.1
 Requires-Dist: uvicorn>=0.51.0
 Requires-Dist: ollama>=0.6.2
+Requires-Dist: requests>=2.34.2
+Requires-Dist: psutil>=7.2.2
+Requires-Dist: paho-mqtt>=2.1.0
+Requires-Dist: beautifulsoup4>=4.15.0
+Requires-Dist: pynvml>=13.0.1
+Requires-Dist: platformio>=5.0.4
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.1.0; extra == "dev"

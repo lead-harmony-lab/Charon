@@ -1,6 +1,6 @@
 """
 charon/core/engine/dag_executor.py
-System Version: v0.3.0 | File Revision: 3.3.0
+System Version: v0.6.3 | File Revision: 4.0.0
 
 Module: Asynchronous DAG execution and context substitution engine.
 Enforces strict fail-fast contracts on system_roles, prevents deadlock
@@ -10,6 +10,7 @@ hazards via guaranteed future resolution, and prevents dependency cascades.
 import asyncio
 import inspect
 import logging
+import re
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from charon.core.engine.self_healing import SelfHealingHandler
@@ -49,6 +50,13 @@ class DAGPlanExecutor:
             return int(step_val)
         except (ValueError, TypeError):
             return str(step_val).strip()
+
+    def _step_sort_key(self, step_id: Any) -> tuple:
+        """Orders numeric steps numerically first, followed by string identifiers lexicographically."""
+        norm = self._normalize_step_id(step_id)
+        if isinstance(norm, int):
+            return (0, norm)
+        return (1, str(norm))
 
     async def execute_plan_sequence(
         self,
@@ -150,51 +158,64 @@ class DAGPlanExecutor:
             try:
                 # 1. Await Dependencies & Prevent Failure Cascading
                 for dep in deps:
-                    if dep in step_futures:
-                        dep_output = await step_futures[dep]
-
-                        # Short-circuit downstream execution if prerequisite failed or was blocked
-                        if isinstance(dep_output, str) and any(
-                            dep_output.startswith(p)
-                            for p in (
-                                "[Authorization Denied]",
-                                "[Authorization Error]",
-                                "[Dependency Error]",
-                                "[Runtime Error]",
-                            )
-                        ):
-                            fail_msg = (
-                                f"[Dependency Error]: Step {step_num} ({resolved_agent_id}::{action}) "
-                                f"aborted due to failure in dependency Step {dep}."
-                            )
-                            logger.warning(fail_msg)
-                            results_history[step_num] = {
-                                "step": step_num,
-                                "agent": resolved_agent_id,
-                                "action": action,
-                                "output": fail_msg,
-                            }
-                            return fail_msg
-
-                # 2. Resolve Parameters using completed dependency outputs
-                history_list = [results_history[k] for k in sorted(results_history.keys(), key=lambda x: str(x))]
-                resolved_params = self._resolve_step_references(raw_params, history_list)
-
-                # 3. Capability Authorization Guard (agent_skill_map compliance)
-                if hasattr(self.librarian, "can_agent_execute_action"):
-                    if not self.librarian.can_agent_execute_action(resolved_agent_id, action):
-                        fail_msg = (
-                            f"[Authorization Error]: Agent '{resolved_agent_id}' is not authorized "
-                            f"to execute action '{action}' per agent_skill_map."
+                    if dep not in step_futures:
+                        step_result = (
+                            f"[Dependency Error]: Step {step_num} ({resolved_agent_id}::{action}) "
+                            f"depends on unknown or non-existent Step '{dep}'."
                         )
-                        logger.error(fail_msg)
+                        logger.error(step_result)
                         results_history[step_num] = {
                             "step": step_num,
                             "agent": resolved_agent_id,
                             "action": action,
-                            "output": fail_msg,
+                            "output": step_result,
                         }
-                        return fail_msg
+                        return step_result
+
+                    dep_output = await step_futures[dep]
+
+                    # Short-circuit downstream execution if prerequisite failed or was blocked
+                    if isinstance(dep_output, str) and any(
+                        dep_output.startswith(p)
+                        for p in (
+                            "[Authorization Denied]",
+                            "[Authorization Error]",
+                            "[Dependency Error]",
+                            "[Runtime Error]",
+                        )
+                    ):
+                        step_result = (
+                            f"[Dependency Error]: Step {step_num} ({resolved_agent_id}::{action}) "
+                            f"aborted due to failure in dependency Step {dep}."
+                        )
+                        logger.warning(step_result)
+                        results_history[step_num] = {
+                            "step": step_num,
+                            "agent": resolved_agent_id,
+                            "action": action,
+                            "output": step_result,
+                        }
+                        return step_result
+
+                # 2. Resolve Parameters using completed dependency outputs
+                sorted_history_keys = sorted(results_history.keys(), key=self._step_sort_key)
+                history_list = [results_history[k] for k in sorted_history_keys]
+                resolved_params = self._resolve_step_references(raw_params, history_list)
+
+                # 3. Capability Authorization Guard (agent_skill_map compliance)
+                if not self.librarian.is_skill_available(action, resolved_agent_id):
+                    step_result = (
+                        f"[Authorization Error]: Agent '{resolved_agent_id}' is not authorized "
+                        f"to execute action '{action}' per agent_skill_map."
+                    )
+                    logger.error(step_result)
+                    results_history[step_num] = {
+                        "step": step_num,
+                        "agent": resolved_agent_id,
+                        "action": action,
+                        "output": step_result,
+                    }
+                    return step_result
 
                 logger.info(f"Executing Step {step_num} [{resolved_agent_id}::{action}]")
                 if self.ledger and task_id:
@@ -230,14 +251,14 @@ class DAGPlanExecutor:
 
                     decision = await self.gatekeeper.wait_for_decision(approval_id, timeout=300.0)
                     if decision not in ("APPROVED", "PROCEED"):
-                        failure_msg = f"[Authorization Denied]: Step {step_num} ({resolved_agent_id}::{action}) blocked."
+                        step_result = f"[Authorization Denied]: Step {step_num} ({resolved_agent_id}::{action}) blocked."
                         results_history[step_num] = {
                             "step": step_num,
                             "agent": resolved_agent_id,
                             "action": action,
-                            "output": failure_msg,
+                            "output": step_result,
                         }
-                        return failure_msg
+                        return step_result
 
                     if self.state_mgr and task_id:
                         await self.state_mgr.update_status(task_id=task_id, status=TaskStatus.RUNNING)
@@ -311,7 +332,7 @@ class DAGPlanExecutor:
                 return step_result
 
             finally:
-                # Guarantee step future resolution to prevent downstream async deadlocks
+                # Guarantee step future resolution with populated result to prevent downstream async deadlocks
                 if step_num in step_futures and not step_futures[step_num].done():
                     step_futures[step_num].set_result(step_result)
 
@@ -320,7 +341,7 @@ class DAGPlanExecutor:
 
         # --- Final Assembly ---
         step_outputs: List[str] = []
-        for step_num in sorted(results_history.keys(), key=lambda x: str(x)):
+        for step_num in sorted(results_history.keys(), key=self._step_sort_key):
             step_data = results_history[step_num]
             formatted = f"**Step {step_num} Output ({step_data['agent']})**:\n{step_data['output']}"
             step_outputs.append(formatted)
@@ -361,15 +382,20 @@ class DAGPlanExecutor:
             val = val.replace("$PREVIOUS_STEP_OUTPUT", last_output)
             val = val.replace("$LAST_OUTPUT", last_output)
 
-            for step_data in history:
-                s_idx = str(step_data.get("step", ""))
-                placeholder = f"$STEP_{s_idx}_OUTPUT"
-                if placeholder in val:
-                    raw_step_out = step_data.get("output", "")
-                    sanitized_out = self._sanitize_output_for_injection(
+            history_map = {self._normalize_step_id(item.get("step", "")): item for item in history}
+
+            # Regex token matching avoids substring collisions (e.g. $STEP_1_OUTPUT vs $STEP_10_OUTPUT)
+            def replace_placeholder(match: re.Match) -> str:
+                raw_step_key = match.group(1)
+                norm_key = self._normalize_step_id(raw_step_key)
+                if norm_key in history_map:
+                    raw_step_out = history_map[norm_key].get("output", "")
+                    return self._sanitize_output_for_injection(
                         raw_step_out, max_chars=max_output_chars
                     )
-                    val = val.replace(placeholder, sanitized_out)
+                return match.group(0)
+
+            val = re.sub(r"\$STEP_([a-zA-Z0-9_-]+)_OUTPUT", replace_placeholder, val)
             return val
 
         if isinstance(parameters, dict):

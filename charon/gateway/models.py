@@ -144,7 +144,7 @@ class ToolPatchRequest(BaseModel):
 class DynamicRuleRequest(BaseModel):
     """Payload for defining hard-shortcut override routing rules."""
     trigger: str = Field(..., description="Exact trigger string or prefix (e.g., '#archivist', 'git:').")
-    target_agent: str = Field(..., description="ID of the target agent to receive forced dispatch.")
+    agent_id: str = Field(..., description="ID of the target agent to receive forced dispatch.")
     description: Optional[str] = Field(default="", description="Operator notes explaining rule purpose.")
 
 

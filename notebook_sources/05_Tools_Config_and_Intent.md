@@ -1,7 +1,7 @@
 # Subsystem Domain Context: 05_Tools_Config_and_Intent
-> **Generated:** 2026-08-09 18:25 UTC  
+> **Generated:** 2026-08-10 05:34 UTC  
 > **Charon Core Version:** v8.0  
-> **Git Branch:** `Dynamic-Skill-Bus` | **Commit:** `13ca7e3`
+> **Git Branch:** `main` | **Commit:** `bc5f379`
 
 ---
 
@@ -95,6 +95,7 @@ __all__ = [
     "DEFAULT_TRIAGE_MODEL",
     "DEFAULT_CONCIERGE_MIN_CONFIDENCE",
 ]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -160,6 +161,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     error_file_handler.setFormatter(formatter)
     error_file_handler.setLevel(logging.WARNING)
     root_logger.addHandler(error_file_handler)
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -317,6 +319,7 @@ DEFAULT_TRIAGE_MODEL = os.getenv("CHARON_TRIAGE_MODEL", "llama3.1")
 DEFAULT_CONCIERGE_MIN_CONFIDENCE = float(
     os.getenv("CHARON_CONCIERGE_MIN_CONFIDENCE", "0.80")
 )
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -440,7 +443,7 @@ class BaseAgentPayload(StrictBaseModel):
 ```python
 """
 charon/intent/manifests.py
-System Version: v0.1.0 | File Revision: 2.0.0
+System Version: v0.1.0 | File Revision: 2.1.0
 
 Module: Agent capability manifests and prompt formatting helpers.
 """
@@ -460,7 +463,7 @@ class AgentManifest(BaseModel):
     agent_id: str
     display_name: str
     description: str = ""
-    default_action: str = "answer_query"
+    default_action: str = ""
     priority_weight: float = Field(default=1.0, ge=0.0)
     override_triggers: List[str] = Field(default_factory=list)
     active_tools: List[Dict[str, Any]] = Field(default_factory=list)
@@ -480,6 +483,16 @@ def get_agent_manifest(
     if not agent_data:
         return None
 
+    librarian = SkillLibrarian.get_instance(db_path)
+
+    raw_default = agent_data.get("default_action")
+    if raw_default:
+        default_action = raw_default
+    elif hasattr(librarian, "get_default_action_for_role"):
+        default_action = librarian.get_default_action_for_role("system_generalist") or ""
+    else:
+        default_action = ""
+
     raw_triggers = agent_data.get("override_triggers", [])
     if isinstance(raw_triggers, str):
         triggers = json.loads(raw_triggers or "[]")
@@ -496,7 +509,7 @@ def get_agent_manifest(
         agent_id=agent_data["agent_id"],
         display_name=agent_data["display_name"],
         description=agent_data.get("description", ""),
-        default_action=agent_data.get("default_action", "answer_query"),
+        default_action=default_action,
         priority_weight=float(agent_data.get("priority_weight", 1.0)),
         override_triggers=triggers,
         active_tools=tools,
@@ -511,7 +524,7 @@ def get_triage_agent_descriptions(
 ) -> str:
     """Generates formatted agent capabilities for LLM triage prompts."""
     repo = repo or AgentRepository(db_path)
-    librarian = SkillLibrarian.get_instance()
+    librarian = SkillLibrarian.get_instance(db_path)
     lines = []
 
     active_agents = repo.get_all_active_agents()
@@ -737,7 +750,7 @@ __all__ = [
 ```python
 """
 charon/intent/payloads/dynamic.py
-System Version: v0.1.0 | File Revision: 1.0.0
+System Version: v0.1.0 | File Revision: 1.1.0
 
 Universal payload wrapper for dynamic skill execution.
 Replaces static compile-time Pydantic models with runtime schema validation.
@@ -778,8 +791,13 @@ class DynamicActionPayload(BaseAgentPayload):
         action_details = librarian.get_action_details(self.call_action)
 
         if not action_details:
+            default_action = (
+                librarian.get_default_action_for_role("system_generalist")
+                if hasattr(librarian, "get_default_action_for_role")
+                else ""
+            )
             # Fallback check for raw conversational routing (no specific tool)
-            if self.call_action == "answer_query":
+            if default_action and self.call_action == default_action:
                 return True
             raise ValueError(f"Action '{self.call_action}' is not indexed in the Librarian.")
 
@@ -1038,6 +1056,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nWorkshop HUD terminated.")
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1051,6 +1070,7 @@ System Version: v0.1.0 | File Revision: 1.0.0
 
 Module: Package initialization gateway for tools.
 """
+
 
 ```
 
@@ -1215,6 +1235,7 @@ def transmit_gcode_http(
             f"Network transmission attempt to {target_url} ended. "
             f"G-Code file {gcode_path.name} is staged and ready for manual job dispatch ({e})."
         )
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1524,6 +1545,7 @@ async def run_script_in_subprocess(
                 os.remove(temp_file.name)
             except OSError:
                 pass
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1643,6 +1665,7 @@ def export_kicad_bom(
         err_msg = e.stderr.strip() or e.stdout.strip()
         logger.error(f"BOM export failed: {err_msg}")
         return f"A failure occurred during KiCad BOM export:\n{err_msg}"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1746,6 +1769,7 @@ def flash_platformio_firmware(
         err_msg = e.stderr.strip() or e.stdout.strip()
         logger.error(f"Hardware flash failed: {err_msg}")
         return f"Failed to write to target microcontroller on port '{port}':\n{err_msg}"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1849,6 +1873,7 @@ def git_commit(target_path: Path, commit_message: str) -> Tuple[bool, str, str]:
         return False, "failed", err
     except FileNotFoundError:
         return False, "no_exe", "Warning: Git executable not found on system."
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1969,6 +1994,7 @@ def publish_mqtt_message(
     except Exception as e:
         logger.error(f"[IOT TOOL] MQTT publish failed: {e}")
         return {"status": "error", "topic": topic, "message": str(e)}
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2030,6 +2056,7 @@ def safe_eval_math(expr: str) -> Optional[Union[int, float]]:
     except Exception:
         return None
     return None
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2155,6 +2182,7 @@ def download_pdf_bytes(url: str, timeout: int = 25) -> bytes:
         logger.error(f"curl fallback failed for {url}: {e}")
 
     raise ValueError(f"Unable to retrieve valid PDF payload from {url}.")
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2312,6 +2340,7 @@ async def execute_shell_command(
     except Exception as e:
         logger.error(f"Failed to execute system command '{command_str}': {e}")
         return f"System task execution error: {str(e)}"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2552,6 +2581,7 @@ def fetch_url_raw_content(
             "url": target_url,
             "error": str(e),
         }
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2565,6 +2595,7 @@ System Version: v0.1.0 | File Revision: 1.0.0
 
 Module: Package initialization gateway for utils.
 """
+
 
 ```
 
@@ -2623,6 +2654,7 @@ class ConversationBuffer:
         """Flushes active context buffer (e.g., on topic change or exit)."""
         self.history.clear()
         logger.info("Conversation memory buffer cleared.")
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -3469,6 +3501,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -3673,6 +3706,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -4271,6 +4305,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -4560,6 +4595,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -4813,6 +4849,117 @@ if __name__ == "__main__":
 
 ────────────────────────────────────────────────────────────────────────────────
 
+## Target File: `../scripts/save/populate_agent_skill_map.py`
+
+```python
+#!/usr/bin/env python3
+"""
+scripts/populate_agent_skill_map.py
+
+Exact mapping:
+1. Agent ID = folder name in charon/agents_delete/
+2. Skill Folder = subfolder in charon/agents_delete/<agent_id>/staging/skills/
+3. Skill ID = matches folder name in skill_registry.entry_file_path
+"""
+
+import sqlite3
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
+CHARON_ROOT = Path("~/Projects/Tools/Charon/charon").expanduser()
+LEGACY_AGENTS_DIR = CHARON_ROOT / "agents_delete"
+
+
+def populate():
+    if not DB_PATH.exists():
+        print(f"❌ DB not found at: {DB_PATH}")
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+
+    print("\n" + "=" * 70)
+    print(" 🛠️ POPULATING `agent_skill_map` (EXACT MATCH)")
+    print("=" * 70)
+
+    # 1. Load exact valid agent IDs from agent_registry
+    cursor.execute("SELECT agent_id FROM agent_registry;")
+    valid_agents = {row[0] for row in cursor.fetchall()}
+
+    # 2. Map skill folder names to skill_ids via entry_file_path in skill_registry
+    cursor.execute("SELECT skill_id, entry_file_path FROM skill_registry;")
+    folder_to_skills = defaultdict(list)
+    for skill_id, entry_path in cursor.fetchall():
+        if entry_path:
+            folder_name = Path(entry_path).parent.name
+            folder_to_skills[folder_name].append(skill_id)
+
+    # 3. Load existing mappings to prevent duplication
+    cursor.execute("SELECT agent_id, skill_id FROM agent_skill_map;")
+    existing_mappings = set(cursor.fetchall())
+
+    print(f" ℹ️ DB holds {len(valid_agents)} Agents and {len(folder_to_skills)} Skill Folders.")
+    print(f" ℹ️ Existing mappings in `agent_skill_map`: {len(existing_mappings)}")
+
+    new_mappings = set()
+
+    # 4. Scan agents_delete directories directly
+    for agent_dir in sorted(LEGACY_AGENTS_DIR.iterdir()):
+        if not agent_dir.is_dir():
+            continue
+
+        agent_id = agent_dir.name  # Exact match to agent_registry (e.g., 'archivist')
+        if agent_id not in valid_agents:
+            continue
+
+        skills_dir = agent_dir / "staging" / "skills"
+        if not skills_dir.exists():
+            continue
+
+        agent_count = 0
+        for skill_folder in skills_dir.iterdir():
+            if not skill_folder.is_dir():
+                continue
+
+            folder_name = skill_folder.name
+            matched_skill_ids = folder_to_skills.get(folder_name, [])
+
+            for skill_id in matched_skill_ids:
+                mapping_pair = (agent_id, skill_id)
+                if mapping_pair not in existing_mappings:
+                    new_mappings.add(mapping_pair)
+                    agent_count += 1
+
+        print(f"  • Agent [{agent_id}]: Queued {agent_count} new skill mapping(s)")
+
+    # 5. Insert new unique mappings
+    if new_mappings:
+        cursor.executemany("""
+            INSERT OR IGNORE INTO agent_skill_map (agent_id, skill_id)
+            VALUES (?, ?);
+        """, list(new_mappings))
+        conn.commit()
+
+    # 6. Report final database status
+    cursor.execute("SELECT COUNT(*) FROM agent_skill_map;")
+    total_count = cursor.fetchone()[0]
+
+    print("\n" + "-" * 70)
+    print(f" ➕ New Mappings Added  : {len(new_mappings)}")
+    print(f" ✅ Total Valid Mappings: {total_count}")
+    print("=" * 70 + "\n")
+
+    conn.close()
+
+
+if __name__ == "__main__":
+    populate()
+```
+
+────────────────────────────────────────────────────────────────────────────────
+
 ## Target File: `scripts/preview_mainifest_indexing.py`
 
 ```python
@@ -4890,6 +5037,137 @@ def preview_indexing():
 
 if __name__ == "__main__":
     preview_indexing()
+```
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Target File: `scripts/relink_agent_skills_by_path.py`
+
+```python
+#!/usr/bin/env python3
+"""
+scripts/relink_agent_skills_by_path.py
+
+Rebuilds `agent_skill_map` by matching skill folders inside each agent's
+staging directory to the `entry_file_path` column in `skill_registry`.
+"""
+
+import json
+import sqlite3
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
+CHARON_ROOT = Path("~/Projects/Tools/Charon/charon").expanduser()
+AGENTS_DIR = CHARON_ROOT / "agents_delete"
+
+
+def relink_agent_skills():
+    if not DB_PATH.exists():
+        print(f"❌ DB not found at: {DB_PATH}")
+        sys.exit(1)
+
+    if not AGENTS_DIR.exists():
+        print(f"❌ Agents directory not found at: {AGENTS_DIR}")
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+
+    print("\n" + "=" * 70)
+    print(" 🛠️ REBUILDING `agent_skill_map` VIA STAGING & ENTRY FILE PATHS")
+    print("=" * 70)
+
+    # 1. Map skill folders in DB to their respective skill_ids via entry_file_path
+    cursor.execute("SELECT skill_id, entry_file_path FROM skill_registry;")
+    skill_rows = cursor.fetchall()
+
+    folder_to_skill_ids = defaultdict(list)
+    for skill_id, entry_file_path in skill_rows:
+        if entry_file_path:
+            folder_name = Path(entry_file_path).parent.name
+            folder_to_skill_ids[folder_name].append(skill_id)
+
+    print(f" ℹ️ DB holds {len(skill_rows)} total skills across {len(folder_to_skill_ids)} unique skill folders.")
+
+    # 2. Fetch existing mappings to prevent any duplicates
+    cursor.execute("SELECT agent_id, skill_id FROM agent_skill_map;")
+    existing_mappings = set(cursor.fetchall())
+    print(f" ℹ️ Found {len(existing_mappings)} pre-existing mapping(s) in `agent_skill_map`.")
+
+    # 3. Scan agents directory and match staging folders
+    discovered_mappings = set()
+    agents_processed = 0
+
+    for agent_dir in sorted(AGENTS_DIR.iterdir()):
+        if not agent_dir.is_dir():
+            continue
+
+        staging_dir = agent_dir / "staging"
+        if not staging_dir.exists():
+            continue
+
+        # Resolve normalized agent_id from spec if available, fallback to folder name
+        agent_id = agent_dir.name
+        spec_file = staging_dir / "agent_spec.json"
+        if spec_file.exists():
+            try:
+                spec_data = json.loads(spec_file.read_text(encoding="utf-8"))
+                agent_id = spec_data.get("agent_id", agent_id)
+            except Exception:
+                pass
+
+        agents_processed += 1
+        agent_linked_count = 0
+
+        # Scan subdirectories inside staging/
+        for skill_folder in staging_dir.iterdir():
+            if skill_folder.is_dir():
+                folder_name = skill_folder.name
+
+                # Match staging folder name against skill_registry folder paths
+                matched_skill_ids = folder_to_skill_ids.get(folder_name, [])
+                for skill_id in matched_skill_ids:
+                    discovered_mappings.add((agent_id, skill_id))
+                    agent_linked_count += 1
+
+        print(f"  • Agent [{agent_id}]: Matched {agent_linked_count} skill action bindings.")
+
+    # 4. Deduplicate against current DB state
+    new_mappings = discovered_mappings - existing_mappings
+
+    # 5. Insert recovered mappings
+    if new_mappings:
+        cursor.executemany("""
+            INSERT OR IGNORE INTO agent_skill_map (agent_id, skill_id)
+            VALUES (?, ?);
+        """, list(new_mappings))
+        conn.commit()
+
+    # 6. Final Status Audit
+    cursor.execute("SELECT COUNT(*) FROM agent_skill_map;")
+    total_mappings = cursor.fetchone()[0]
+
+    print("\n" + "-" * 70)
+    print(f" 👥 Agents Scanned       : {agents_processed}")
+    print(f" ➕ New Mappings Added  : {len(new_mappings)}")
+    print(f" ✅ Total Valid Mappings: {total_mappings}")
+    print("=" * 70 + "\n")
+
+    conn.close()
+
+
+if __name__ == "__main__":
+    relink_agent_skills()
+```
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Target File: `scripts/remediate_spec_drift.py`
+
+```python
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -4995,6 +5273,93 @@ if __name__ == "__main__":
 
 ────────────────────────────────────────────────────────────────────────────────
 
+## Target File: `scripts/restore_missing_sources.py`
+
+```python
+import argparse
+import re
+from pathlib import Path
+
+def parse_and_restore(sources_dir: Path, dry_run: bool = True):
+    if not sources_dir.exists():
+        print(f"❌ Error: Directory '{sources_dir}' not found.")
+        return
+
+    md_files = sorted(list(sources_dir.glob("*.md")))
+    if not md_files:
+        print(f"❌ No .md files found in '{sources_dir}'.")
+        return
+
+    print(f"🔍 Found {len(md_files)} markdown bundle(s) in '{sources_dir}'.")
+    if dry_run:
+        print("⚠️  DRY RUN MODE ENABLED — No files will be created or modified on disk.\n")
+    else:
+        print("🚀 LIVE RESTORE MODE — Recovering missing files...\n")
+
+    # Regex matches: ## Target File: `filepath` followed by ```lang ... ```
+    pattern = re.compile(
+        r"## Target File:\s*[`'\"]?(?P<filepath>[^`'\"]+?)[`'\"]?\s*\n+"
+        r"```[a-zA-Z0-9_-]*\n"
+        r"(?P<code>.*?)"
+        r"\n```",
+        re.MULTILINE | re.DOTALL
+    )
+
+    restored_count = 0
+    skipped_count = 0
+
+    for md_file in md_files:
+        print(f"--- Scanning {md_file.name} ---")
+        text = md_file.read_text(encoding="utf-8", errors="ignore")
+
+        matches = list(pattern.finditer(text))
+        if not matches:
+            print("  (No target files matched in this bundle)")
+            continue
+
+        for match in matches:
+            rel_path = match.group("filepath").strip()
+            code = match.group("code")
+            target_file = Path(rel_path)
+
+            # 🔒 HARD SAFEGUARD: Never touch a file that exists on disk
+            if target_file.exists():
+                print(f"  [PRESERVED] Existing file protected: {target_file}")
+                skipped_count += 1
+                continue
+
+            if dry_run:
+                print(f"  [WOULD RESTORE] Missing file: {target_file}")
+            else:
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                target_file.write_text(code + "\n", encoding="utf-8")
+                print(f"  [RESTORED] Recreated missing file: {target_file}")
+
+            restored_count += 1
+
+    print("\n" + "=" * 60)
+    print("📊 SUMMARY")
+    print("=" * 60)
+    print(f"  • Existing files protected (skipped): {skipped_count}")
+    if dry_run:
+        print(f"  • Missing files identified for restore: {restored_count}")
+        print("\n💡 To write missing files to disk, run with `--live`:")
+        print("   python restore_missing_sources.py --live")
+    else:
+        print(f"  • Missing files successfully restored: {restored_count}")
+    print("=" * 60)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Safely restore missing Charon files from notebook bundles.")
+    parser.add_argument("--live", action="store_true", help="Execute live restoration (default is dry-run)")
+    parser.add_argument("--dir", default="notebook_sources", help="Path to notebook sources directory")
+    args = parser.parse_args()
+
+    parse_and_restore(Path(args.dir), dry_run=not args.live)
+```
+
+────────────────────────────────────────────────────────────────────────────────
+
 ## Target File: `scripts/seed_skill_permissions.py`
 
 ```python
@@ -5057,6 +5422,140 @@ def seed_skill_permissions():
 
 if __name__ == "__main__":
     seed_skill_permissions()
+```
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Target File: `scripts/surgical_recover_agent_skill_map.py`
+
+```python
+#!/usr/bin/env python3
+"""
+scripts/surgical_recover_agent_skill_map.py
+
+Non-destructive recovery tool for agent_skill_map.
+Scans disk manifests and agent specs to restore capability links into SQLite.
+Guarantees zero duplication of existing mappings.
+"""
+
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
+CHARON_ROOT = Path("~/Projects/Tools/Charon/charon").expanduser()
+SKILLS_DIR = CHARON_ROOT / "skills_registry" / "dynamic"
+AGENTS_DIR = CHARON_ROOT / "agents"
+
+
+def recover_agent_skill_map():
+    if not DB_PATH.exists():
+        print(f"❌ DB not found at: {DB_PATH}")
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+
+    print("\n" + "=" * 70)
+    print(" 🩹 SURGICAL RECOVERY: `agent_skill_map`")
+    print("=" * 70)
+
+    # 1. Fetch existing state from DB (Read-Only)
+    cursor.execute("SELECT agent_id FROM agent_registry;")
+    valid_agents = {row[0] for row in cursor.fetchall()}
+
+    cursor.execute("SELECT skill_id, action_name FROM skill_registry;")
+    skill_rows = cursor.fetchall()
+    valid_skills = {row[0] for row in skill_rows}
+    action_to_skill = {row[1]: row[0] for row in skill_rows}
+
+    # Fetch existing mappings to prevent any duplicates
+    cursor.execute("SELECT agent_id, skill_id FROM agent_skill_map;")
+    existing_mappings = set(cursor.fetchall())
+
+    print(f" ℹ️ DB holds {len(valid_agents)} Agents and {len(valid_skills)} Skills.")
+    print(f" ℹ️ Found {len(existing_mappings)} existing mapping(s) in `agent_skill_map`.")
+
+    scanned_mappings = set()
+
+    # 2. PASS A: Scan Agent Specs (Agent -> Skills/Actions)
+    if AGENTS_DIR.exists():
+        for spec_path in AGENTS_DIR.rglob("*.json"):
+            try:
+                data = json.loads(spec_path.read_text(encoding="utf-8"))
+                agent_id = data.get("agent_id")
+                if not agent_id or agent_id not in valid_agents:
+                    continue
+
+                declared_items = []
+                for key in ("skills", "actions", "capabilities", "equipped_skills"):
+                    val = data.get(key)
+                    if isinstance(val, list):
+                        declared_items.extend(val)
+
+                for item in declared_items:
+                    if item in valid_skills:
+                        scanned_mappings.add((agent_id, item))
+                    elif item in action_to_skill:
+                        scanned_mappings.add((agent_id, action_to_skill[item]))
+
+            except Exception as e:
+                print(f" ⚠️ Warning reading agent spec {spec_path}: {e}")
+
+    # 3. PASS B: Scan Skill Manifests (Skill -> Agent)
+    if SKILLS_DIR.exists():
+        for manifest_path in SKILLS_DIR.glob("*/manifest.json"):
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                skill_id = data.get("skill_id", manifest_path.parent.name)
+
+                if skill_id not in valid_skills:
+                    continue
+
+                agent_refs = []
+                for key in ("agent_id", "assigned_agent", "target_agent", "agent", "role"):
+                    val = data.get(key)
+                    if isinstance(val, str):
+                        agent_refs.append(val)
+                    elif isinstance(val, list):
+                        agent_refs.extend(val)
+
+                for a_id in agent_refs:
+                    if a_id in valid_agents:
+                        scanned_mappings.add((a_id, skill_id))
+
+            except Exception as e:
+                print(f" ⚠️ Warning reading skill manifest {manifest_path}: {e}")
+
+    # 4. Filter out any mapping that already exists in the table
+    new_mappings = scanned_mappings - existing_mappings
+
+    if not new_mappings:
+        print(" ✨ No new unique mappings found to insert.")
+    else:
+        # Safely insert only genuinely new bindings
+        for agent_id, skill_id in new_mappings:
+            cursor.execute("""
+                INSERT OR IGNORE INTO agent_skill_map (agent_id, skill_id)
+                VALUES (?, ?);
+            """, (agent_id, skill_id))
+
+        conn.commit()
+
+    # 5. Report Final State
+    cursor.execute("SELECT COUNT(*) FROM agent_skill_map;")
+    total_mappings = cursor.fetchone()[0]
+
+    print(f" ➕ Inserted {len(new_mappings)} new unique map records.")
+    print(f" ✅ Total Active Mappings in DB: {total_mappings}")
+    print("=" * 70 + "\n")
+
+    conn.close()
+
+
+if __name__ == "__main__":
+    recover_agent_skill_map()
 ```
 
 ────────────────────────────────────────────────────────────────────────────────

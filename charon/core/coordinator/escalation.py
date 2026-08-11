@@ -1,11 +1,11 @@
 """
 charon/core/coordinator/escalation.py
-System Version: v0.4.1 | File Revision: 2.0.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: 4-Level Self-Healing Escalation Engine.
 Manages automatic step recovery with live TelemetryBus trace emissions,
-strict DB role-to-agent resolution via SkillLibrarian, and fail-fast
-assertions when system roles or default agents are unassigned.
+strict DB role-to-agent resolution via SkillLibrarian,
+and fail-fast assertions when system roles or default agents are unassigned.
 """
 
 import logging
@@ -17,14 +17,14 @@ from charon.core.coordinator.blackboard import (
     TaskStatus,
     UnfulfilledRequirement,
 )
-from charon.core.skills import SkillLibrarian
+from charon.core.skills.librarian import SkillLibrarian
 from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
 logger = logging.getLogger("charon.core.coordinator.escalation")
 
 
 class RoleConfigurationError(RuntimeError):
-    """Raised when a required system role or default agent is not assigned in SQLite state."""
+    """Raised when a required system role or default agent is not assigned in SkillLibrarian state."""
 
 
 class EscalationManager:
@@ -36,36 +36,42 @@ class EscalationManager:
     def _resolve_agent_target(
         self, details: Dict[str, Any], default_system_role: str
     ) -> Tuple[str, str]:
-        """
-        Resolves (role_name, agent_id) from action details or system_roles lookup.
+        """Resolves (role_name, agent_id) from action details or system_roles lookup via SkillLibrarian.
+
+        Strictly relies on DB resolution without string mutation or synthetic fallbacks.
         Fails fast if the role or agent cannot be resolved from database state.
         """
-        raw_role = details.get("primary_role_id") or details.get("role") or default_system_role
-        raw_agent = details.get("primary_agent_id") or details.get("agent")
+        raw_role = (
+            details.get("primary_role_id")
+            or details.get("role")
+            or default_system_role
+        )
+        if not raw_role:
+            raise RoleConfigurationError(
+                "[FATAL ESCALATION FAULT] No valid role identifier provided or resolved from action details."
+            )
 
-        role_name = str(raw_role)
-        agent_id = str(raw_agent) if raw_agent else None
+        role_name = str(getattr(raw_role, "value", raw_role)).strip()
+
+        raw_agent = details.get("primary_agent_id") or details.get("agent")
+        agent_id = str(raw_agent).strip() if raw_agent else None
 
         # Resolve agent_id via librarian if not directly supplied by action details
         if not agent_id:
-            try:
-                if hasattr(self.librarian, "resolve_agent_id_for_role"):
-                    agent_id = self.librarian.resolve_agent_id_for_role(role_name)
-                elif hasattr(self.librarian, "resolve_role"):
-                    agent_id = self.librarian.resolve_role(role_name)
-                elif hasattr(self.librarian, "get_agent_for_role"):
-                    agent_id = self.librarian.get_agent_for_role(role_name)
-            except Exception as e:
-                logger.error(
-                    f"[Escalation] Critical error resolving role '{role_name}' via librarian: {e}"
-                )
-                agent_id = None
+            if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(
+                self.librarian.resolve_agent_id_for_role
+            ):
+                agent_id = self.librarian.resolve_agent_id_for_role(role_name)
+            elif hasattr(self.librarian, "resolve_agent_id") and callable(
+                self.librarian.resolve_agent_id
+            ):
+                agent_id = self.librarian.resolve_agent_id(role_name)
 
-        # Fail-fast assertion: synthetic string fallbacks are prohibited
+        # Fail-fast assertion: synthetic string fallbacks (e.g., agent_id = role_name) are prohibited
         if not agent_id:
             raise RoleConfigurationError(
                 f"[FATAL ESCALATION FAULT] Required system role '{role_name}' "
-                f"is not mapped to an active agent in 'system_roles' or 'agent_registry'."
+                f"is not mapped to an active agent in SkillLibrarian state."
             )
 
         return role_name, str(agent_id)
@@ -86,7 +92,7 @@ class EscalationManager:
 
         logger.warning(
             f"[Escalation] Escalating requirement '{failed_cap_name}' "
-            f"from Level {current_level.value if hasattr(current_level, 'value') else current_level} "
+            f"from Level {getattr(current_level, 'value', current_level)} "
             f"(Reason: {failure_reason})"
         )
 

@@ -1,10 +1,10 @@
 """
 charon/core/coordinator/profile.py
-System Version: v0.4.1 | File Revision: 1.3.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Agent profile definition and capability mapping.
-Defines CapabilityContract and AgentProfile integrated with dynamic SkillLibrarian.
-Enforces active skill status checks and strict schema alignment.
+Defines CapabilityContract and AgentProfile integrated with dynamic SkillLibrarian SSOT.
+Enforces database-first agent and role resolution, active skill status checks, and strict schema alignment.
 """
 
 import logging
@@ -12,9 +12,38 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from pydantic import BaseModel, Field
 
 from charon.core.coordinator.blackboard import EscalationLevel
-from charon.core.skills import SkillLibrarian
+from charon.core.skills.librarian import SkillLibrarian
 
 logger = logging.getLogger("charon.core.coordinator.profile")
+
+
+def _resolve_agent_id(agent_or_role: Any, librarian: Optional[SkillLibrarian] = None) -> str:
+    """Resolves a role name, enum, or identifier to a canonical agent_id via SkillLibrarian SSOT."""
+    if not agent_or_role:
+        return ""
+
+    role_str = str(getattr(agent_or_role, "value", agent_or_role)).strip()
+    if not role_str:
+        return ""
+
+    lib = librarian or SkillLibrarian.get_instance()
+    if hasattr(lib, "resolve_agent_id_for_role") and callable(lib.resolve_agent_id_for_role):
+        try:
+            resolved = lib.resolve_agent_id_for_role(role_str)
+            if resolved:
+                return str(resolved).strip()
+        except Exception as err:
+            logger.debug(f"[Profile] SkillLibrarian failed to resolve role '{role_str}': {err}")
+
+    elif hasattr(lib, "resolve_agent_id") and callable(lib.resolve_agent_id):
+        try:
+            resolved = lib.resolve_agent_id(role_str)
+            if resolved:
+                return str(resolved).strip()
+        except Exception as err:
+            logger.debug(f"[Profile] SkillLibrarian failed to resolve agent ID for '{role_str}': {err}")
+
+    return role_str
 
 
 def get_default_escalation_level() -> EscalationLevel:
@@ -54,16 +83,19 @@ class AgentProfile:
         health_status: Optional[Dict[str, Any]] = None,
         librarian: Optional[SkillLibrarian] = None,
     ):
-        self.agent = agent
-        agent_str = agent.value if hasattr(agent, "value") else str(agent)
         self.librarian = librarian or SkillLibrarian.get_instance()
+        self.agent = agent
+        agent_str = _resolve_agent_id(agent, self.librarian)
 
-        # Resolve display label dynamically via SkillLibrarian accessor or fallback
         display_name = name
         if not display_name:
-            if hasattr(self.librarian, "get_display_name_for_agent"):
+            if hasattr(self.librarian, "get_display_name_for_agent") and callable(
+                self.librarian.get_display_name_for_agent
+            ):
                 display_name = self.librarian.get_display_name_for_agent(agent_str)
-            elif hasattr(self.librarian, "get_display_name_for_role"):
+            elif hasattr(self.librarian, "get_display_name_for_role") and callable(
+                self.librarian.get_display_name_for_role
+            ):
                 display_name = self.librarian.get_display_name_for_role(agent_str)
 
         self.name = display_name or agent_str
@@ -76,8 +108,8 @@ class AgentProfile:
 
     @property
     def agent_id(self) -> str:
-        """Returns the normalized string representation of the agent ID."""
-        return self.agent.value if hasattr(self.agent, "value") else str(self.agent)
+        """Returns the canonical string representation of the agent ID resolved from DB."""
+        return _resolve_agent_id(self.agent, self.librarian)
 
     @property
     def role_id(self) -> str:
@@ -102,7 +134,7 @@ class AgentProfile:
             or details.get("primary_role_id")
             or self.agent_id
         )
-        target_agent_str = target_agent.value if hasattr(target_agent, "value") else str(target_agent)
+        target_agent_str = _resolve_agent_id(target_agent, self.librarian)
 
         req_binaries = details.get("system_requirements") or details.get("required_binaries") or []
 

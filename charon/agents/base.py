@@ -1,9 +1,9 @@
 """
 charon/agents/base.py
-System Version: v0.3.3 | File Revision: 2.7.0
+System Version: v0.3.3 | File Revision: 2.8.0
 
 Module: Core BaseAgent interface defining unified probing, health checks,
-declarative manifest capabilities, dynamic skill lookup via SkillLibrarian,
+declarative manifest capabilities, dynamic skill lookup via SkillLibrarian SSOT,
 Chain-of-Thought (CoT) telemetry broadcasting, response reporting, and rich diagnostic
 contract negotiation routines for all Charon specialist agents.
 """
@@ -48,7 +48,7 @@ class BaseAgent(ABC):
     """Abstract Base Class for all Charon Specialist Agents.
 
     Provides standardized probing, action discovery, health inspection,
-    dynamic skill checkout via SkillLibrarian, Chain-of-Thought (CoT)
+    dynamic skill checkout via SkillLibrarian SSOT, Chain-of-Thought (CoT)
     telemetry broadcasting, user response reporting, and diagnostic contract negotiation.
     """
 
@@ -182,7 +182,7 @@ class BaseAgent(ABC):
     def evaluate_capability(
         self, action: str, params: Optional[Dict[str, Any]] = None
     ) -> SkillContract:
-        """Evaluates whether the agent can handle the requested action natively or dynamically."""
+        """Evaluates whether the agent can handle the requested action natively or dynamically via DB SSOT."""
         is_native = False
         if isinstance(self.supported_actions, dict):
             is_native = action in self.supported_actions or action in getattr(self, "ACTION_MAP", {})
@@ -202,7 +202,7 @@ class BaseAgent(ABC):
         if self.librarian:
             manifest = None
             if hasattr(self.librarian, "get_action_manifest"):
-                manifest = self.librarian.get_action_manifest(action, self.name)
+                manifest = self.librarian.get_action_manifest(action, self.agent_id)
             if not manifest and hasattr(self.librarian, "get_action_details"):
                 manifest = self.librarian.get_action_details(action)
 
@@ -247,19 +247,21 @@ class BaseAgent(ABC):
         raw_prompt: str = "",
         stream_callback: Optional[Callable[[str], None]] = None,
     ) -> Union[str, Dict[str, Any]]:
-        """Primary routing switch for executing native agent actions."""
+        """Primary routing switch for executing agent actions. Must fail fast if unsupported."""
         pass
 
     def execute_dynamic(
         self, action: str, parameters: Dict[str, Any], raw_prompt: str = ""
     ) -> Union[str, Dict[str, Any]]:
-        """Isolated dispatcher for executing dynamically loaded skill plugins."""
+        """Isolated dispatcher for executing dynamically loaded skill plugins bound in DB SSOT."""
         if not self.librarian:
-            raise ValueError(f"[{self.name}] SkillLibrarian is not initialized. Cannot execute dynamic skills.")
+            raise RuntimeError(f"[{self.name}] SkillLibrarian is not initialized. Cannot execute dynamic skills.")
 
-        handler = self.librarian.check_out_skill(action, self.name)
+        handler = self.librarian.check_out_skill(action, self.agent_id)
         if not handler:
-            raise ValueError(f"[{self.name}] Dynamic skill '{action}' could not be checked out or is unauthorized.")
+            raise ValueError(
+                f"[FAIL-FAST] Dynamic skill '{action}' is not registered or unauthorized for agent_id '{self.agent_id}'."
+            )
 
         logger.info(f"[{self.name}] Dispatching dynamic skill execution for action: '{action}'")
         result = handler(agent_name=self.name, parameters=parameters, raw_prompt=raw_prompt)
@@ -279,9 +281,9 @@ class BaseAgent(ABC):
         return result
 
     def health_check(self) -> Dict[str, Any]:
-        """Performs runtime health, dependency checks, and dynamic skill capability aggregation."""
+        """Performs runtime health, dependency checks, and dynamic skill capability aggregation from DB."""
         missing = [req for req in self.system_requirements if shutil.which(req) is None]
-        dynamic_actions = self.librarian.list_available_actions(self.name) if self.librarian else []
+        dynamic_actions = self.librarian.list_available_actions(self.agent_id) if self.librarian else []
 
         return {
             "agent": self.name,
@@ -303,7 +305,7 @@ class BaseAgent(ABC):
             "agent_id": self.agent_id,
             "domain": self.domain,
             "native_actions": self.supported_actions,
-            "dynamic_skills": self.librarian.list_available_actions(self.name) if self.librarian else [],
+            "dynamic_skills": self.librarian.list_available_actions(self.agent_id) if self.librarian else [],
             "manifest": self.get_manifest().model_dump(),
         }
 
@@ -320,7 +322,7 @@ class BaseAgent(ABC):
         }
 
     def get_manifest(self) -> ToolManifest:
-        """Returns declarative capability contract/manifest including native and dynamic skills."""
+        """Returns declarative capability contract/manifest including native and dynamic skills from DB SSOT."""
         actions_list: List[str] = []
         if isinstance(self.supported_actions, dict):
             for category, acts in self.supported_actions.items():
@@ -331,7 +333,7 @@ class BaseAgent(ABC):
         elif isinstance(self.supported_actions, list):
             actions_list.extend(self.supported_actions)
 
-        dynamic_actions = self.librarian.list_available_actions(self.name) if self.librarian else []
+        dynamic_actions = self.librarian.list_available_actions(self.agent_id) if self.librarian else []
         all_actions = sorted(list(set(actions_list + dynamic_actions)))
 
         return ToolManifest(

@@ -1,16 +1,14 @@
 """
 charon/core/engine/engine.py
-System Version: v0.6.0 | File Revision: 3.0.0
+System Version: v0.6.3 | File Revision: 4.0.0
 
 Module: Main Orchestration Engine facade for Charon.
 Enforces strict agent_registry identifier normalization, CBAC Schema V2 compliance,
-active agent validation, quarantine lifecycle handling, and interface parameter decoupling
-per the Janitorial Working Anchor.
+active agent validation, quarantine lifecycle handling, and direct Librarian integration.
 """
 
 import inspect
 import logging
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from charon.core.engine.dag_executor import DAGPlanExecutor
@@ -25,7 +23,7 @@ from charon.intent import RoutingPayload
 
 logger = logging.getLogger("Charon.Engine")
 
-# Mandatory minimum system roles per the Janitorial Working Anchor
+# Mandatory minimum system roles required for core operation
 REQUIRED_SYSTEM_ROLES: Tuple[str, ...] = (
     "system_generalist",
     "system_engineer",
@@ -48,7 +46,7 @@ class OrchestrationEngine:
     ):
         self.librarian = librarian or SkillLibrarian.get_instance()
 
-        # Janitorial Working Anchor: Enforce role resolution on startup
+        # Enforce role resolution on startup
         self._verify_required_system_roles()
 
         self.orchestrator = orchestrator or SessionGateway(
@@ -79,9 +77,8 @@ class OrchestrationEngine:
         Verifies that all required system roles can be resolved by SkillLibrarian.
         Halts execution on startup if any minimum system role cannot be resolved.
         """
-        if hasattr(self.librarian, "validate_core_roles"):
-            if not self.librarian.validate_core_roles():
-                logger.warning("[ENGINE] Librarian reported missing or inactive core role mappings.")
+        if not self.librarian.validate_core_roles():
+            logger.warning("[ENGINE] Librarian reported missing or inactive core role mappings.")
 
         missing_roles = []
         for role in REQUIRED_SYSTEM_ROLES:
@@ -96,7 +93,7 @@ class OrchestrationEngine:
         if missing_roles:
             fatal_msg = (
                 f"CRITICAL STARTUP FAILURE: SkillLibrarian could not resolve required system roles: "
-                f"{missing_roles}. System halting per Janitorial Working Anchor."
+                f"{missing_roles}. System halting."
             )
             logger.critical(fatal_msg)
             raise RuntimeError(fatal_msg)
@@ -122,29 +119,30 @@ class OrchestrationEngine:
         registered in the database, preventing orphaned foreign keys or execution against quarantined agents.
         """
         if not agent_input:
-            return self._get_agent_for_role("default_system_generalist")
+            return self._get_agent_for_role("system_generalist")
 
         try:
-            # 1. Try role-based or ID resolution via SkillLibrarian
+            # 1. Direct Agent ID check: If agent_input is already an active agent ID, return it immediately
+            if self.librarian.is_agent_active(agent_input):
+                return agent_input
+
+            # 2. Try role-based resolution via SkillLibrarian
             resolved_id = self.librarian.resolve_agent_id_for_role(agent_input)
 
-            # 2. Check if librarian provides active agent validation
-            if hasattr(self.librarian, "is_agent_active"):
+            if resolved_id:
                 if not self.librarian.is_agent_active(resolved_id):
                     logger.warning(
                         f"[ENGINE] Resolved agent '{resolved_id}' for input '{agent_input}' is inactive or quarantined. "
                         "Falling back to default generalist."
                     )
-                    return self._get_agent_for_role("default_system_generalist")
-
-            if resolved_id:
+                    return self._get_agent_for_role("system_generalist")
                 return resolved_id
         except Exception as err:
             logger.warning(f"[ENGINE] Failed to resolve agent input '{agent_input}': {err}")
 
-        # 3. Fall back to default generalist if resolution fails
+        # 3. Fallback to default system generalist
         logger.warning(f"[ENGINE] Unrecognized or invalid agent override '{agent_input}'. Falling back to default generalist.")
-        return self._get_agent_for_role("default_system_generalist")
+        return self._get_agent_for_role("system_generalist")
 
     def bind_gateway_context(
         self,
@@ -185,9 +183,8 @@ class OrchestrationEngine:
 
         logger.info(f"Engine processing request [{task_id or 'volatile'}]: '{raw_prompt[:60]}...'")
 
-        # Dynamically resolve roles to agent IDs
-        generalist_agent = self._get_agent_for_role("default_system_generalist")
-        planner_agent = self._get_agent_for_role("default_system_planner")
+        generalist_agent = self._get_agent_for_role("system_generalist")
+        planner_agent = self._get_agent_for_role("system_planner")
         fallback_agent = self._get_agent_for_role("system_fallback")
 
         result: str = ""
@@ -306,7 +303,7 @@ class OrchestrationEngine:
                     except Exception as emit_err:
                         logger.warning(f"Failed to broadcast synthesized response to emitter: {emit_err}")
 
-        # 5. Engine-Level Concierge Proactive Evaluation (Decoupled Interface Fallback)
+        # 5. Engine-Level Concierge Proactive Evaluation
         if (
             self.concierge
             and self.emitter
@@ -314,7 +311,6 @@ class OrchestrationEngine:
             and not result.startswith(("[Awaiting Authorization]", "[Authorization Denied]", "[System Error]"))
         ):
             try:
-                # Decoupled interface contract: avoid assigning agent_id (target_agent) to action_name
                 action_name = getattr(routing, "action", None) or "general_response"
 
                 eval_fn = getattr(
@@ -356,11 +352,12 @@ class OrchestrationEngine:
         if stream_cb:
             ack_msg = ""
             action_str = getattr(extraction, "action", "")
-            params = getattr(extraction, "parameters", {}) if hasattr(extraction, "parameters") else {}
+            params = getattr(extraction, "parameters", {})
 
-            if self.concierge and hasattr(self.concierge, "generate_acknowledgment"):
+            ack_fn = getattr(self.concierge, "generate_acknowledgment", None)
+            if ack_fn:
                 try:
-                    res_ack = self.concierge.generate_acknowledgment(
+                    res_ack = ack_fn(
                         agent=resolved_agent,
                         action=action_str,
                         parameters=params,
@@ -369,8 +366,10 @@ class OrchestrationEngine:
                 except Exception as ack_err:
                     logger.debug(f"[ENGINE] Concierge acknowledgment generation fallback: {ack_err}")
 
-            if not ack_msg and hasattr(self.orchestrator, "get_acknowledgment"):
-                ack_msg = self.orchestrator.get_acknowledgment(resolved_agent, action=action_str, parameters=params)
+            if not ack_msg:
+                orch_ack_fn = getattr(self.orchestrator, "get_acknowledgment", None)
+                if orch_ack_fn:
+                    ack_msg = orch_ack_fn(resolved_agent, action=action_str, parameters=params)
 
             if ack_msg:
                 stream_cb(f"{ack_msg}\n\n")

@@ -306,7 +306,6 @@ scripts/inspect_skill_permission_model.py
 scripts/map_dependencies.py
 scripts/migrate_schema.py
 scripts/overseer_runner.py
-scripts/populate_agent_skill_map.py
 scripts/preview_mainifest_indexing.py
 scripts/relink_agent_skills_by_path.py
 scripts/remediate_spec_drift.py
@@ -319,6 +318,7 @@ scripts/sync_manifests_to_db.py
 scripts/tools_backfill.py
 scripts/verify_db_disk_sync.py
 scripts/db/bootstrap_agent_roster.py
+scripts/save/populate_agent_skill_map.py
 tests/__init__.py
 tests/artifact_manager.py
 tests/conftest.py

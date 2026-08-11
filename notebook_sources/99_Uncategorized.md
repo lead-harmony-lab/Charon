@@ -1,5 +1,5 @@
 # Subsystem Domain Context: 99_Uncategorized
-> **Commit:** `13ca7e3` | **Version:** v8.0
+> **Commit:** `bc5f379` | **Version:** v8.0
 
 ---
 
@@ -16,6 +16,7 @@ Module: System Root Package.
 from charon.__version__ import __version__
 
 __all__ = ["__version__"]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -13183,6 +13184,7 @@ Quarantines all raw SQL and connection logic away from orchestrator, state machi
 """
 from .audit import AuditRepository
 from .permission import PermissionRepository
+from .prompts import PromptRepository
 from .role import RoleRepository
 from .agent import AgentRepository
 from .gap import SkillGapRepository
@@ -13200,6 +13202,7 @@ __all__ = [
     "TickerRepository",
     "PermissionRepository",
     "AuditRepository",
+    "PromptRepository",
 ]
 ```
 
@@ -13210,10 +13213,10 @@ __all__ = [
 ```python
 """
 charon/db/repositories/agent.py
-System Version: v0.6.0 | File Revision: 5.2.0
+System Version: v0.6.0 | File Revision: 5.3.0
 
 Module: Data Access Layer repository for agent configurations, capability descriptions,
-triage priority weights, and system prompts.
+triage priority weights, system prompts, and action capability manifests.
 """
 
 import json
@@ -13280,61 +13283,164 @@ class AgentRepository:
             return [str(row["agent_id"]) for row in cursor.fetchall()]
 
     def get_all_manifests(self) -> Dict[str, Dict[str, Any]]:
-        """Retrieves registered agent manifests and populates capabilities dynamically from agent_skill_map."""
+        """Retrieves registered agent manifests and populates capabilities dynamically from agent_skill_map and skill_registry."""
+        query = """
+            SELECT 
+                a.agent_id,
+                a.display_name,
+                a.description,
+                a.default_action,
+                a.system_prompt,
+                a.priority_weight,
+                a.override_triggers,
+                a.is_active,
+                s.skill_id,
+                s.action_name,
+                s.description AS skill_description,
+                s.parameters,
+                s.status AS skill_status
+            FROM agent_registry a
+            LEFT JOIN agent_skill_map asm ON (a.agent_id = asm.agent_id OR asm.agent_id = '*')
+            LEFT JOIN skill_registry s ON asm.skill_id = s.skill_id AND s.status = 'ACTIVE';
+        """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
-                """
-                SELECT agent_id, display_name, description, system_prompt, default_action,
-                       priority_weight, override_triggers, is_active
-                FROM agent_registry;
-                """
-            )
+            cursor = conn.execute(query)
             rows = cursor.fetchall()
 
-            # Schema V2 Alignment: query sr.status = 'ACTIVE'
-            skill_cursor = conn.execute(
-                """
-                SELECT asm.agent_id, sr.skill_id, sr.action_name
-                FROM agent_skill_map asm
-                JOIN skill_registry sr ON asm.skill_id = sr.skill_id
-                WHERE sr.status = 'ACTIVE';
-                """
-            )
-            agent_skills: Dict[str, List[Dict[str, str]]] = {}
-            for s_row in skill_cursor.fetchall():
-                a_id = s_row["agent_id"]
-                if a_id not in agent_skills:
-                    agent_skills[a_id] = []
-                agent_skills[a_id].append({
-                    "skill_id": s_row["skill_id"],
-                    "action_name": s_row["action_name"],
-                })
-
-            manifests = {}
-            for row in rows:
-                agent_id = row["agent_id"]
+        manifests: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            agent_id = row["agent_id"]
+            if agent_id not in manifests:
                 weight_val = float(row["priority_weight"]) if row["priority_weight"] is not None else 1.0
-                equipped = agent_skills.get(agent_id, []) + agent_skills.get("*", [])
-
                 manifests[agent_id] = {
                     "agent_id": agent_id,
                     "name": row["display_name"],
+                    "display_name": row["display_name"],
                     "description": row["description"] or "",
                     "system_prompt": row["system_prompt"] or "",
                     "default_action": row["default_action"] or "",
                     "weight": weight_val,
                     "priority_weight": weight_val,
                     "override_triggers": json.loads(row["override_triggers"] or "[]"),
-                    "active_tools": [s["action_name"] for s in equipped],
-                    "skills": equipped,
                     "status": "active" if row["is_active"] == 1 else "disabled",
+                    "is_active": bool(row["is_active"]),
+                    "equipped_skills": [],
+                    "active_tools": [],
+                    "skills": [],
+                    "actions": {},
                 }
-            return manifests
+
+            if row["skill_id"]:
+                action_name = row["action_name"]
+
+                # Safely parse JSON parameters
+                params = row["parameters"]
+                if isinstance(params, str):
+                    try:
+                        params = json.loads(params)
+                    except Exception:
+                        params = {}
+                elif not isinstance(params, dict):
+                    params = {}
+
+                skill_info = {
+                    "skill_id": row["skill_id"],
+                    "action_name": action_name,
+                    "description": row["skill_description"] or "",
+                    "parameters": params,
+                }
+
+                if row["skill_id"] not in manifests[agent_id]["equipped_skills"]:
+                    manifests[agent_id]["equipped_skills"].append(row["skill_id"])
+                    manifests[agent_id]["active_tools"].append(action_name)
+                    manifests[agent_id]["skills"].append({
+                        "skill_id": row["skill_id"],
+                        "action_name": action_name,
+                    })
+                    manifests[agent_id]["actions"][action_name] = skill_info
+
+        return manifests
 
     def get_manifest(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves a single agent's manifest by ID."""
-        manifests = self.get_all_manifests()
-        return manifests.get(agent_id)
+        """Fetches an agent manifest and all associated active skill capabilities."""
+        query = """
+            SELECT 
+                a.agent_id,
+                a.display_name,
+                a.description,
+                a.default_action,
+                a.system_prompt,
+                a.priority_weight,
+                a.override_triggers,
+                a.is_active,
+                s.skill_id,
+                s.action_name,
+                s.description AS skill_description,
+                s.parameters,
+                s.status AS skill_status
+            FROM agent_registry a
+            LEFT JOIN agent_skill_map asm ON (a.agent_id = asm.agent_id OR asm.agent_id = '*')
+            LEFT JOIN skill_registry s ON asm.skill_id = s.skill_id AND s.status = 'ACTIVE'
+            WHERE a.agent_id = ? AND a.is_active = 1;
+        """
+        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
+            cursor = conn.execute(query, (agent_id,))
+            rows = cursor.fetchall()
+
+        if not rows:
+            return None
+
+        first = rows[0]
+        weight_val = float(first["priority_weight"]) if first["priority_weight"] is not None else 1.0
+
+        manifest = {
+            "agent_id": first["agent_id"],
+            "name": first["display_name"],
+            "display_name": first["display_name"],
+            "description": first["description"] or "",
+            "system_prompt": first["system_prompt"] or "",
+            "default_action": first["default_action"] or "",
+            "weight": weight_val,
+            "priority_weight": weight_val,
+            "override_triggers": json.loads(first["override_triggers"] or "[]"),
+            "status": "active" if first["is_active"] == 1 else "disabled",
+            "is_active": bool(first["is_active"]),
+            "equipped_skills": [],
+            "active_tools": [],
+            "skills": [],
+            "actions": {},
+        }
+
+        for row in rows:
+            if row["skill_id"]:
+                action_name = row["action_name"]
+
+                params = row["parameters"]
+                if isinstance(params, str):
+                    try:
+                        params = json.loads(params)
+                    except Exception:
+                        params = {}
+                elif not isinstance(params, dict):
+                    params = {}
+
+                skill_info = {
+                    "skill_id": row["skill_id"],
+                    "action_name": action_name,
+                    "description": row["skill_description"] or "",
+                    "parameters": params,
+                }
+
+                if row["skill_id"] not in manifest["equipped_skills"]:
+                    manifest["equipped_skills"].append(row["skill_id"])
+                    manifest["active_tools"].append(action_name)
+                    manifest["skills"].append({
+                        "skill_id": row["skill_id"],
+                        "action_name": action_name,
+                    })
+                    manifest["actions"][action_name] = skill_info
+
+        return manifest
 
     def update_manifest(self, agent_id: str, update_data: Dict[str, Any]) -> bool:
         """Persists updated capability prompts, weights, triggers, or description to DB."""
@@ -13623,7 +13729,7 @@ class SkillGapRepository:
 ```python
 """
 charon/db/repositories/permission.py
-System Version: v0.6.0 | File Revision: 2.1.0
+System Version: v0.6.0 | File Revision: 2.2.0
 
 Repository for Capability-Based Access Control (CBAC) and pre-execution safety gates.
 """
@@ -13646,6 +13752,10 @@ class AuthResult:
 class PermissionRepository:
     def __init__(self, db_path: Union[str, Path]):
         self.db_path = str(db_path)
+
+    def ensure_schema(self) -> None:
+        """Ensures CBAC permission tables exist in DB (no-op if schema managed centrally)."""
+        pass
 
     def authorize_execution(self, role_name: str, skill_id: str) -> AuthResult:
         """Unified gatekeeper check: verifies skill status and role group permissions."""
@@ -13692,6 +13802,127 @@ class PermissionRepository:
         with get_connection(self.db_path) as conn:
             cursor = conn.execute(query, (role_name, group_id))
             return cursor.rowcount > 0
+```
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Target File: `charon/db/repositories/prompts.py`
+
+```python
+"""
+charon/db/repositories/prompts.py
+System Version: v0.1.0 | File Revision: 1.1.0
+
+Repository for system prompt templates, role rosters, and extraction capability schemas.
+"""
+
+import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+from charon.config.paths import STATE_DB_PATH
+from charon.db.connection import get_connection
+
+logger = logging.getLogger("Charon.DB.Repositories.Prompts")
+
+
+class PromptRepository:
+    """Data access layer for system prompt templates, active role rosters, and skill extraction metadata."""
+
+    def __init__(self, db_path: Union[str, Path] = STATE_DB_PATH):
+        self.db_path = db_path
+
+    def get_system_prompt_template(self, role_target: str) -> Optional[str]:
+        """Retrieves system prompt for target role, falling back to default_system_generalist."""
+        query = """
+            SELECT ar.system_prompt 
+            FROM system_roles sr
+            JOIN agent_registry ar ON sr.agent_id = ar.agent_id
+            WHERE (sr.role_name = ? OR sr.role_name = 'default_system_generalist')
+              AND ar.is_active = 1
+              AND ar.system_prompt IS NOT NULL
+              AND ar.system_prompt != ''
+            ORDER BY CASE WHEN sr.role_name = ? THEN 0 ELSE 1 END
+            LIMIT 1
+        """
+        try:
+            with get_connection(self.db_path, read_only=True) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (role_target, role_target))
+                row = cursor.fetchone()
+                if row and row["system_prompt"]:
+                    return str(row["system_prompt"])
+        except Exception as e:
+            logger.warning(f"Failed to fetch prompt template for target '{role_target}': {e}")
+        return None
+
+    def get_active_role_roster(self) -> List[Dict[str, str]]:
+        """Retrieves list of active system roles and their descriptions."""
+        query = """
+            SELECT sr.role_name, sr.description 
+            FROM system_roles sr
+            JOIN agent_registry ar ON sr.agent_id = ar.agent_id
+            WHERE ar.is_active = 1
+            ORDER BY sr.role_name
+        """
+        try:
+            with get_connection(self.db_path, read_only=True) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                return [
+                    {"role_name": row["role_name"], "description": row["description"] or ""}
+                    for row in cursor.fetchall()
+                ]
+        except Exception as e:
+            logger.warning(f"Failed to fetch role roster: {e}")
+            return []
+
+    def get_role_capabilities(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves active skill schemas per system role.
+        Uses UPPER(sk.status) = 'ACTIVE' to match the database schema.
+        """
+        query = """
+            SELECT 
+                sr.role_name,
+                sk.action_name,
+                sk.description,
+                sk.parameters
+            FROM system_roles sr
+            JOIN agent_skill_map asm ON sr.agent_id = asm.agent_id
+            JOIN skill_registry sk ON asm.skill_id = sk.skill_id
+            JOIN agent_registry ar ON sr.agent_id = ar.agent_id
+            WHERE UPPER(sk.status) = 'ACTIVE' AND ar.is_active = 1
+            ORDER BY sr.role_name, sk.action_name
+        """
+        try:
+            with get_connection(self.db_path, read_only=True) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.warning(f"Failed to fetch role capabilities: {e}")
+            return []
+
+    def get_default_action_for_identifier(self, identifier: str) -> Optional[str]:
+        """Retrieves default_action for a given agent_id or role_name."""
+        query = """
+            SELECT ar.default_action 
+            FROM agent_registry ar
+            LEFT JOIN system_roles sr ON ar.agent_id = sr.agent_id
+            WHERE ar.agent_id = ? OR sr.role_name = ?
+            LIMIT 1
+        """
+        try:
+            with get_connection(self.db_path, read_only=True) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (identifier, identifier))
+                row = cursor.fetchone()
+                if row and row["default_action"]:
+                    return str(row["default_action"])
+        except Exception as e:
+            logger.warning(f"Failed to fetch default action for identifier '{identifier}': {e}")
+        return None
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -13891,7 +14122,7 @@ class RoleRepository:
 ```python
 """
 charon/db/repositories/route.py
-System Version: v0.6.0 | File Revision: 6.1.0
+System Version: v0.6.0 | File Revision: 6.1.1
 
 Module: Data Access Layer repository for route mappings, system fallback definitions,
 action trigger resolution, and dynamic shortcut override rules.
@@ -13923,6 +14154,12 @@ class RouteRepository:
         """
         with get_connection(self.db_path) as conn:
             conn.executescript("""
+                CREATE TABLE IF NOT EXISTS system_roles (
+                    role_name TEXT PRIMARY KEY,
+                    description TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS route_registry (
                     route_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action_trigger TEXT UNIQUE NOT NULL,
@@ -13952,6 +14189,11 @@ class RouteRepository:
                 CREATE INDEX IF NOT EXISTS idx_route_active ON route_registry(is_active);
                 CREATE INDEX IF NOT EXISTS idx_dynamic_rule_trigger ON dynamic_routing_rules(trigger);
             """)
+
+            # Ensure system_fallback default role is registered in system_roles
+            conn.execute(
+                "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES ('system_fallback', 'Default system fallback role');"
+            )
 
     def get_system_fallback(self) -> str:
         """Returns the fallback role mapped in the system."""
@@ -14034,6 +14276,14 @@ class RouteRepository:
             )
 
         with get_connection(self.db_path) as conn:
+            # Seed referenced roles if they don't exist yet in system_roles
+            roles_to_ensure = [r for r in (target_role, fallback_role) if r]
+            for role in roles_to_ensure:
+                conn.execute(
+                    "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES (?, ?);",
+                    (role, f"Role for {role}"),
+                )
+
             conn.execute(
                 """
                 INSERT INTO route_registry 
@@ -14085,7 +14335,24 @@ class RouteRepository:
         """
         try:
             with get_connection(self.db_path) as conn:
+                # 1. Ensure fallback role exists in system_roles
+                conn.execute(
+                    "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES ('system_fallback', 'Default system fallback role');"
+                )
+
+                # 2. Pre-seed system_roles with all agent_ids currently in agent_skill_map
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO system_roles (role_name, description)
+                    SELECT DISTINCT agent_id, 'Dynamic agent execution role'
+                    FROM agent_skill_map
+                    WHERE agent_id IS NOT NULL AND agent_id != '*';
+                    """
+                )
+
+                # 3. Synchronize routes into route_registry
                 conn.execute(query)
+
             logger.info("[RouteRepository] Successfully synchronized dynamic routes from skill registry.")
             return True
         except Exception as e:
@@ -14144,7 +14411,7 @@ class RouteRepository:
 ```python
 """
 charon/db/repositories/skill.py
-System Version: v0.6.0 | File Revision: 6.2.0
+System Version: v0.6.0 | File Revision: 6.3.4
 
 Module: Data Access Layer repository for skill dynamic indexing, quarantine lifecycle management,
 agent-capability authorization bindings, and CBAC skill permission assignments.
@@ -14230,6 +14497,10 @@ class SkillRepository:
             conn.execute("DELETE FROM skill_permissions;")
             conn.execute("DELETE FROM skill_registry;")
 
+    def clear_all_skills(self) -> None:
+        """Alias for clear_registry to support clean full re-indexing sweeps."""
+        self.clear_registry()
+
     def clear_all_agent_skill_mappings(self) -> None:
         """Clears all agent-skill capability mappings prior to re-indexing."""
         with get_connection(self.db_path) as conn:
@@ -14284,21 +14555,29 @@ class SkillRepository:
 
     def upsert_skill(
         self,
-        record: Dict[str, Any],
+        record: Optional[Dict[str, Any]] = None,
         required_permissions: Optional[List[str]] = None,
+        **kwargs: Any,
     ) -> None:
         """
         Inserts or updates a skill record and binds required primitive permissions.
         Defaults status to 'QUARANTINED' unless explicitly supplied as 'ACTIVE'.
+        Migrates existing agent mappings if the skill_id changed.
         """
-        rec = dict(record)
-        rec.setdefault("is_global", 0)
+        rec = dict(record) if record else {}
+        rec.update(kwargs)
+
+        req_perms = required_permissions or rec.pop("required_permissions", None)
+
         rec.setdefault("version", "1.0.0")
+        rec.setdefault("category", "General")
+        rec.setdefault("description", "")
         rec.setdefault("status", "QUARANTINED")
         rec.setdefault("quarantine_reason", None)
+        rec.setdefault("is_global", 0)
 
         # Convert boolean is_active to CBAC status string if legacy record passed
-        if "is_active" in rec and "status" not in record:
+        if "is_active" in rec and "status" not in rec:
             rec["status"] = "ACTIVE" if rec["is_active"] else "DISABLED"
 
         for field in (
@@ -14340,15 +14619,45 @@ class SkillRepository:
                 updated_at=CURRENT_TIMESTAMP;
         """
         with get_connection(self.db_path) as conn:
+            # Locate any previous skill entry that shares action_name under a different skill_id
+            cursor = conn.execute(
+                "SELECT skill_id FROM skill_registry WHERE action_name = ? AND skill_id != ?;",
+                (rec["action_name"], rec["skill_id"]),
+            )
+            old_row = cursor.fetchone()
+
+            if old_row:
+                old_skill_id = old_row[0] if isinstance(old_row, (tuple, list)) else old_row["skill_id"]
+
+                # Migrate existing mappings to the new skill_id prior to deletion
+                conn.execute(
+                    "UPDATE OR IGNORE agent_skill_map SET skill_id = ? WHERE skill_id = ?;",
+                    (rec["skill_id"], old_skill_id),
+                )
+                conn.execute(
+                    "UPDATE OR IGNORE skill_permissions SET skill_id = ? WHERE skill_id = ?;",
+                    (rec["skill_id"], old_skill_id),
+                )
+                # Safely delete old parent record now that children are re-linked
+                conn.execute("DELETE FROM skill_registry WHERE skill_id = ?;", (old_skill_id,))
+
             conn.execute(query, rec)
 
             # Bind CBAC permissions if provided
-            if required_permissions:
-                for perm_id in required_permissions:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO skill_permissions (skill_id, perm_id) VALUES (?, ?);",
-                        (rec["skill_id"], perm_id),
-                    )
+            if req_perms:
+                for perm_id in req_perms:
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO skill_permissions (skill_id, perm_id) VALUES (?, ?);",
+                            (rec["skill_id"], perm_id),
+                        )
+                    except Exception as pe:
+                        logger.warning(
+                            "Could not bind permission '%s' to skill '%s': %s",
+                            perm_id,
+                            rec["skill_id"],
+                            pe,
+                        )
 
     def promote_skill(self, skill_id: str) -> bool:
         """Promotes a quarantined skill to ACTIVE status."""
@@ -14397,9 +14706,24 @@ class SkillRepository:
         return self.get_all_active_skills()
 
     def get_skill_by_action(self, action_name: str) -> Optional[Dict[str, Any]]:
-        """Retrieves skill metadata for a specific ACTIVE action contract or skill ID."""
+        """Retrieves an active skill manifest directly by action trigger name or skill_id."""
         query = """
-            SELECT * FROM skill_registry 
+            SELECT 
+                skill_id,
+                action_name,
+                version,
+                category,
+                description,
+                parameters,
+                system_requirements,
+                consumed_artifacts,
+                produced_artifacts,
+                entry_file_path,
+                handler_name,
+                status,
+                quarantine_reason,
+                is_global
+            FROM skill_registry 
             WHERE (action_name = ? OR skill_id = ?) 
               AND status = 'ACTIVE' 
             LIMIT 1;
@@ -18995,6 +19319,7 @@ class ArtifactVersionManager:
         """Completely purges all test artifacts."""
         if self.base_dir.exists():
             shutil.rmtree(self.base_dir, ignore_errors=True)
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -19053,6 +19378,7 @@ def test_workspace(request: pytest.FixtureRequest, artifact_manager: ArtifactVer
     """Provides a versioned, isolated directory for an individual test function."""
     test_name = request.node.name
     return artifact_manager.get_test_run_path(test_name)
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -19204,6 +19530,7 @@ class TestCADManager:
         # Latest versions must remain in main CAD directory
         assert v3.exists()
         assert c2.exists()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -19440,6 +19767,7 @@ def test_invalid_action_raises_exception(cleaner_agent: TheCleaner):
     """Verifies ValueError when an unmapped/invalid action is executed."""
     with pytest.raises(ValueError, match="Unknown action 'non_existent_action'"):
         cleaner_agent.execute(action="non_existent_action", parameters={})
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -19570,6 +19898,7 @@ class TestLogManager:
             result = manager.prune_logs()
 
         assert "An unexpected error occurred while pruning logs: Access denied" in result
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -19648,6 +19977,7 @@ class TestCleanerUtils:
         target, error = resolve_target_workspace()
         assert error is None
         assert target == Path.cwd().resolve()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -20006,6 +20336,7 @@ class TestDeleteProjectWorkspace:
         assert "[SYSTEM EXECUTION REPORT]" in result
         assert "Status: FAILED" in result
         assert "Reason: IO Error" in result
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -20129,6 +20460,7 @@ def mock_subprocess_git():
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=b"", stderr=b"")
         yield mock_run
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -20278,6 +20610,7 @@ class TestTheQuartermasterExecute:
         with patch("charon.intent.QuartermasterPayload.model_validate", return_value=mock_payload):
             with pytest.raises(ValueError, match="Unknown action 'check_inventory' for The_Quartermaster"):
                 qm.execute("check_inventory", {"part_number": "LM7805"})
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -21547,6 +21880,7 @@ class TestIsValidMirrorCandidate:
     )
     def test_is_valid_mirror_candidate(self, url, mpn, expected):
         assert is_valid_mirror_candidate(url, mpn) == expected
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -21819,6 +22153,7 @@ def test_lazy_loading_scout():
 
     scout_instance = agent_cls()
     assert isinstance(scout_instance, TheScout)
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -21915,6 +22250,7 @@ def test_scrape_url_content_with_custom_headers(mock_fetch):
     mock_fetch.assert_called_once_with(
         "https://example.com", headers=custom_headers, max_chars=4000
     )
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -22003,6 +22339,7 @@ def test_perform_web_search_formatting(mock_clean, mock_links):
     assert "Microcontroller board datasheet." in result
     assert "**2. [Untitled](#)**" in result
     assert "No summary available." in result
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -22299,6 +22636,7 @@ def test_export_bom_execution_success(mock_subproc, mock_which, spark_agent, moc
     )
     assert "Bill of Materials (BOM) exported successfully" in result
     mock_subproc.assert_called_once()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -22461,6 +22799,7 @@ def test_find_pcb_file_target_path_none_or_missing(tmp_path):
 
     with patch("charon.agents.spark.utils.resolve_project_dir", return_value=None):
         assert find_pcb_file(params={}) is None
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -22756,6 +23095,7 @@ def test_invalid_action_raises_exception(archivist_agent: TheArchivist):
         archivist_agent.execute(
             action="invalid_action", parameters={"query": "test"}
         )
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -22978,6 +23318,7 @@ class TestTheEngineerAgent:
             parameters={"problem": "Do something", "target_dir": str(tmp_path)},
         )
         assert "Edge Case Resolved" in res or "Failed to Resolve" in res
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -23243,6 +23584,7 @@ def test_lazy_loading_gateway():
 
     agent_cls_alias = get_agent_class("TheGeneralist")
     assert agent_cls_alias is TheGeneralist
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -23456,6 +23798,7 @@ def test_tool_transmit_gcode_http_dry_run(tmp_path):
 
     res = transmit_gcode_http("http://127.0.0.1:5000", gcode, dry_run=True)
     assert "Transmission simulated (Dry Run)" in res
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -23992,6 +24335,7 @@ async def test_unknown_action_raises_value_error(planner):
             mock_validate.return_value = mock_payload
 
             await planner.execute(action="invalid_action_xyz")
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -24229,6 +24573,7 @@ class TestTaskDispatcher:
         res = execute_steward_task(payload="invalid_str_payload")
         assert res["status"] == "error"
         assert "Invalid payload format" in res["message"]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -24371,6 +24716,7 @@ def test_sublogger_inheritance(temp_log_dir):
     assert "CHAROND.Cleaner" in main_content
 
 
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -24447,6 +24793,7 @@ def test_settings_custom_env_vars(monkeypatch):
         assert charon.config.settings.OLLAMA_HOST == "http://192.168.1.100:11434"
         assert charon.config.settings.DEFAULT_HEAVY_MODEL == "qwen2.5-coder"
         assert charon.config.settings.DEFAULT_TRIAGE_MODEL == "phi4"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -24654,6 +25001,7 @@ def test_import_fallback_coverage(monkeypatch):
 
         abs_target = Path("/tmp/absolute_test_path").resolve()
         assert concierge_fallback.resolve_project_path(str(abs_target)) == abs_target
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -24985,6 +25333,7 @@ async def test_dispatch_agent_without_callable_execute(dispatcher):
             user_raw_input="hello",
         )
         assert result == "Agent The_Generalist execution complete."
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -25094,6 +25443,7 @@ async def test_full_dag_execution_with_self_healing_recovery():
 
     # 3. Verify conversation history recorded the turn
     mock_orchestrator.record_turn.assert_called_once()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -25424,6 +25774,7 @@ def test_resolve_step_references(engine):
     assert resolved["int_param"] == 42
     assert resolved["bool_param"] is True
     assert resolved["unused_placeholder"] == "Static text with $STEP_99_OUTPUT"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -25571,6 +25922,7 @@ async def test_clean_step_execution_bypasses_self_healing(mock_orchestrator):
     engine = OrchestrationEngine(orchestrator=orchestrator)
     result = await engine.process_request("Check CAD rules")
     assert "Found 3 CAD rules" in str(result)
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -25996,6 +26348,7 @@ class TestBuildFallbackPayload:
 
         assert isinstance(payload, GeneralistPayload)
         assert payload.prompt == "Emergency prompt"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -26132,6 +26485,7 @@ class TestGetSchemaJson:
             model_json_schema = {"not": "a_function"}
 
         assert get_schema_json(DummyClassWithNonCallableAttributes) == {}
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -26356,6 +26710,7 @@ class TestBridgeMainCLI:
              patch("charon.gateway.bridge.Gio"):
             runpy.run_module("charon.gateway.bridge", run_name="__main__")
             mock_asyncio_run.assert_called_once()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -27060,6 +27415,7 @@ class TestEventEmitter:
                 "action": "execute_script",
                 "approval_id": approval_id,
             }
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -27219,6 +27575,7 @@ class TestGatekeeperManager:
         assert gatekeeper.pending_agent is None
         assert gatekeeper.pending_extraction is None
         assert gatekeeper.pending_raw_input == ""
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -27335,6 +27692,7 @@ class TestAPIKeyMiddleware:
             mock_logger.warning.assert_called_once()
             log_msg = mock_logger.warning.call_args[0][0]
             assert "Unauthorized HTTP access attempt" in log_msg
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -27506,6 +27864,7 @@ class TestWSEvent:
         """Verify validation error when an unknown event type is provided."""
         with pytest.raises(ValidationError):
             WSEvent(event_type="unknown_event")  # type: ignore[arg-type]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -27649,6 +28008,7 @@ class TestWebSocketEndpoint:
             assert data["event_type"] == "status_change"
             assert data["data"]["status"] == "connected"
             assert data["data"]["client_id"] == "node_beta"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -27846,6 +28206,7 @@ async def test_start_loop_handles_inner_exception(mock_sleep, mock_manager, repo
 
     # Broadcast was attempted twice despite the exception in iteration 1
     assert mock_manager.broadcast.call_count == 2
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -28016,6 +28377,7 @@ async def test_send_to_client_socket_failure(manager: ConnectionManager, mock_ev
     assert ws_good in manager.client_sockets["client_1"]
     assert ws_bad not in manager.active_connections
     assert ws_bad not in manager.client_sockets["client_1"]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -28153,6 +28515,7 @@ class TestBaseAgentPayload:
             clean_schema = BaseAgentPayload.get_clean_schema()
             assert "$defs" not in clean_schema
             assert clean_schema == mock_schema
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -28329,6 +28692,7 @@ class TestStewardPayload:
         """Verify invalid protocol literal raises ValidationError."""
         with pytest.raises(ValidationError):
             StewardPayload(protocol="grpc")  # type: ignore
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -28523,6 +28887,7 @@ class TestSystemPayloads:
         assert payload.action == "optimize_databases"
         assert payload.prune_days == 7
         assert payload.requires_approval is False
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -28719,6 +29084,7 @@ class TestScoutPayload:
         """Verify invalid action raises ValidationError."""
         with pytest.raises(ValidationError):
             ScoutPayload(action="execute_hack")  # type: ignore
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -29148,6 +29514,7 @@ class TestAsyncMain:
         """Test synchronous main() wrapper handling KeyboardInterrupt."""
         with patch("charon.cli.async_main", side_effect=KeyboardInterrupt):
             main()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -29232,6 +29599,7 @@ class TestDaemonCLI:
 
             runpy.run_module("charon.daemon", run_name="__main__")
             mock_uvicorn_run.assert_called_once()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -29408,6 +29776,7 @@ class TestDBusLoopLifecycle:
     def test_stop_dbus_loop_when_none(self):
         dbus_server_module._main_loop = None
         stop_dbus_loop()
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -30151,6 +30520,7 @@ class TestSDKFinalCoverage:
             await node._dispatch_ws_message(invalid_payload)
             mock_log.assert_called_once()
             assert "Error parsing or handling WebSocket event payload" in mock_log.call_args[0][0]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -30425,6 +30795,7 @@ if __name__ == "__main__":
         asyncio.run(run_integration_tests())
     except KeyboardInterrupt:
         sys.exit(0)
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -30666,6 +31037,7 @@ class TestTransmitGCodeHTTP:
         result = transmit_gcode_http("http://octopi.local", mock_gcode)
         assert "Network transmission attempt" in result
         assert "Timed out" in result
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -31565,6 +31937,7 @@ class TestSDKFinalCoverage:
         await node._dispatch_ws_message(payload)
 
 
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -31728,6 +32101,7 @@ class TestExportKicadBom:
 
         assert "failure occurred" in result
         assert "Could not parse schematic file" in result
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -31875,6 +32249,7 @@ class TestFlashPlatformioFirmware:
 
         assert "Failed to write to target microcontroller" in result
         assert "Permission denied: /dev/ttyUSB0" in result
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -32014,6 +32389,7 @@ class TestGitCommit:
         assert success is False
         assert status == "no_exe"
         assert "Git executable not found" in msg
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -32242,6 +32618,7 @@ def test_mqtt_publish_exception(mock_single):
 
         assert result["status"] == "error"
         assert "Connection to broker failed" in result["message"]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -32318,6 +32695,7 @@ class TestSafeEvalMath:
         """Triggers line 43 by mocking eval to return a boolean value."""
         with patch("charon.tools.math.eval", return_value=True):
             assert safe_eval_math("1 + 1") is None
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -32574,6 +32952,7 @@ def test_download_pdf_invalid_content(mock_urlopen, mock_subprocess):
         ValueError, match="Unable to retrieve valid PDF payload"
     ):
         pdf.download_pdf_bytes("http://example.com/fake.pdf")
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -32857,6 +33236,7 @@ async def test_execute_shell_command_creation_exception(mock_subprocess):
     result = await system.execute_shell_command("restricted_command")
 
     assert "System task execution error: Permission denied" in result
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -33197,6 +33577,7 @@ def test_fetch_url_raw_content_generic_exception():
         res = fetch_url_raw_content("https://example.com")
         assert res["success"] is False
         assert res["error"] == "Unexpected internal error"
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -33297,6 +33678,7 @@ class TestConversationBuffer:
 
         assert len(buf.history) == 0
         assert "Conversation memory buffer cleared." in caplog.text
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
-````# Subsystem Domain Context: 02_Core_Engine_and_State
-> **Generated:** 2026-08-09 18:25 UTC  
+# Subsystem Domain Context: 02_Core_Engine_and_State
+> **Generated:** 2026-08-10 05:34 UTC  
 > **Charon Core Version:** v8.0  
-> **Git Branch:** `Dynamic-Skill-Bus` | **Commit:** `13ca7e3`
+> **Git Branch:** `main` | **Commit:** `bc5f379`
 
 ---
 
@@ -48,7 +48,7 @@ __all__ = [
     "normalize_agent",
     "get_schema_json",
 ]
-```````
+```
 
 ────────────────────────────────────────────────────────────────────────────────
 
@@ -935,6 +935,7 @@ __all__ = [
     "RequirementDecomposer",
     "EscalationManager",
 ]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1341,12 +1342,12 @@ class TaskBlackboard(StrictBaseModel):
 ```python
 """
 charon/core/coordinator/decomposer.py
-System Version: v0.3.2 | File Revision: 1.5.0
+System Version: v0.3.2 | File Revision: 1.6.0
 
 Module: Requirement Decomposition and Payload Parsing Engine.
 Parses prompts and metadata into discrete blackboard requirements and seed artifacts.
 Updated for dynamic SkillLibrarian queries, Revision 3 SQLite Schema compatibility,
-and agent_id resolution guards.
+and fail-fast default action contract resolution.
 """
 
 import logging
@@ -1392,6 +1393,53 @@ class RequirementDecomposer:
                 agent_id = resolved
 
         return role_name, agent_id
+
+    def _resolve_agent_default_action(self, agent_or_role: Optional[str] = None) -> str:
+        """Dynamically resolves default interface action for an agent/role via SkillLibrarian or manifest.
+
+        If agent_or_role is not provided, resolves default action for the system 'generalist' role.
+
+        Raises:
+            RuntimeError: If default action contract cannot be resolved.
+        """
+        target_agent = agent_or_role
+
+        # 1. Resolve role_name -> agent_id if mapped
+        if target_agent and hasattr(self.librarian, "resolve_agent_id_for_role") and callable(self.librarian.resolve_agent_id_for_role):
+            resolved = self.librarian.resolve_agent_id_for_role(target_agent)
+            if resolved:
+                target_agent = resolved
+
+        # 2. If no target provided, resolve system generalist role
+        if not target_agent:
+            for role_key in ["generalist", "default_generalist", "system_fallback"]:
+                if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(self.librarian.resolve_agent_id_for_role):
+                    resolved = self.librarian.resolve_agent_id_for_role(role_key)
+                    if resolved:
+                        target_agent = resolved
+                        break
+
+        if target_agent:
+            # Query SkillLibrarian API
+            if hasattr(self.librarian, "get_agent_default_action") and callable(self.librarian.get_agent_default_action):
+                action = self.librarian.get_agent_default_action(target_agent)
+                if action:
+                    return str(action)
+
+            # Query Manifest Cache directly
+            try:
+                manifest = get_agent_manifest(target_agent)
+                if manifest:
+                    default_act = manifest.get("default_action") if isinstance(manifest, dict) else getattr(manifest, "default_action", None)
+                    if default_act:
+                        return str(default_act)
+            except Exception:
+                pass
+
+        raise RuntimeError(
+            f"[DECOMPOSER ERROR] Cannot resolve default action contract for target '{agent_or_role or 'generalist'}': "
+            "No 'default_action' mapped in manifest or database state."
+        )
 
     def get_action_capability(self, action_name: str) -> Optional[Dict[str, Any]]:
         """Retrieves action metadata from the dynamic skill registry, filtering for ACTIVE status."""
@@ -1499,17 +1547,24 @@ class RequirementDecomposer:
                         else None
                     )
 
-                    cap_name = hinted_action or (getattr(manifest, "default_action", None) if manifest else None)
+                    manifest_default = (
+                        manifest.get("default_action")
+                        if isinstance(manifest, dict)
+                        else getattr(manifest, "default_action", None)
+                    ) if manifest else None
+
+                    cap_name = hinted_action or manifest_default
                     cap_info = self.get_action_capability(cap_name) if cap_name else None
 
                     if not cap_info:
                         agent_actions = self.librarian.list_available_actions(
-                            getattr(manifest, "name", role_str)
+                            getattr(manifest, "name", role_str) if manifest else role_str
                         )
                         if agent_actions:
                             cap_info = self.get_action_capability(agent_actions[0])
                         else:
-                            cap_info = self.get_action_capability("answer_query")
+                            fallback_action = self._resolve_agent_default_action(agent_id_str or role_str)
+                            cap_info = self.get_action_capability(fallback_action)
 
                     if cap_info:
                         hint_params = (
@@ -1521,7 +1576,7 @@ class RequirementDecomposer:
                         esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
                         blackboard.unfulfilled_requirements.append(
                             UnfulfilledRequirement(
-                                capability_required=cap_info.get("capability_name", cap_name or "answer_query"),
+                                capability_required=cap_info.get("capability_name", cap_info.get("action_name")),
                                 target_artifact_key=produced[0] if produced else None,
                                 escalation_level=esc_level,
                                 assigned_role_override=role_str,
@@ -1533,18 +1588,18 @@ class RequirementDecomposer:
 
         # 4. Default Fallback -> Conversational Query
         if not blackboard.unfulfilled_requirements:
-            cap_info = self.get_action_capability("answer_query")
-            cap_name = cap_info.get("capability_name", "answer_query") if cap_info else "answer_query"
-            esc_level = (
-                cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
-                if cap_info
-                else EscalationLevel.L1_SPECIALIST
-            )
-            produced = (
-                cap_info.get("produced_artifacts", ["response_text"])
-                if cap_info
-                else ["response_text"]
-            )
+            generalist_action = self._resolve_agent_default_action()
+            cap_info = self.get_action_capability(generalist_action)
+            if not cap_info:
+                raise RuntimeError(
+                    f"[DECOMPOSER ERROR] Default generalist action '{generalist_action}' "
+                    "is missing or not active in database."
+                )
+
+            cap_name = cap_info.get("capability_name", generalist_action)
+            esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
+            produced = cap_info.get("produced_artifacts", ["response_text"])
+
             blackboard.unfulfilled_requirements.append(
                 UnfulfilledRequirement(
                     capability_required=cap_name,
@@ -1614,12 +1669,12 @@ class RequirementDecomposer:
 ```python
 """
 charon/core/coordinator/discovery.py
-System Version: v0.4.1 | File Revision: 2.3.0
+System Version: v0.4.1 | File Revision: 2.4.0
 
 Module: Coordinator Agent & Role Discovery & Probing Manager.
 Handles agent and role registration, candidate preplanning, live capability probing,
 host binary availability verification, dynamic profile building, and
-gap detection with hard fail-fast assertions if system roles are missing.
+gap detection with hard fail-fast assertions if system roles or contracts are missing.
 """
 
 import logging
@@ -1648,11 +1703,10 @@ except ImportError:
 logger = logging.getLogger("Charon.Discovery")
 
 FALLBACK_ENGINEER_ROLE = "system_engineer"
-FALLBACK_ENGINEER_ACTION = "solve_edge_case"
 
 
 class RoleConfigurationError(RuntimeError):
-    """Raised when a required system role or default agent is not assigned in SQLite state."""
+    """Raised when a required system role, default agent, or action contract is not assigned in runtime or DB state."""
 
 
 class AgentDiscoveryManager:
@@ -1825,8 +1879,12 @@ class AgentDiscoveryManager:
             except Exception:
                 manifest = None
 
-            manifest_name = getattr(manifest, "name", agent_str.capitalize())
-            default_action = getattr(manifest, "default_action", None)
+            if isinstance(manifest, dict):
+                manifest_name = manifest.get("name", agent_str.capitalize())
+                default_action = manifest.get("default_action")
+            else:
+                manifest_name = getattr(manifest, "name", agent_str.capitalize())
+                default_action = getattr(manifest, "default_action", None)
 
             action_names: List[str] = []
             if hasattr(self.librarian, "list_available_actions"):
@@ -1902,7 +1960,7 @@ class AgentDiscoveryManager:
     ) -> Tuple[AgentProfile, CapabilityContract]:
         """
         Finds an active agent profile equipped to handle the given requirement.
-        Fails hard immediately if missing system roles or unequipped fallbacks occur.
+        Fails hard immediately if missing system roles, unmapped fallback actions, or unequipped agents occur.
         """
         target_cap_name = requirement.capability_required
         available_artifacts = blackboard.available_artifact_keys
@@ -1961,7 +2019,15 @@ class AgentDiscoveryManager:
                     return profile, profile.capabilities[target_cap_name]
 
         # 4. CAPABILITY GAP DETECTED -> Escalate to System Engineer (Fail Fast if Unmapped)
-        engineer_agent_id = self.librarian.resolve_agent_id_for_role(FALLBACK_ENGINEER_ROLE)
+        engineer_agent_id = None
+        if hasattr(self.librarian, "resolve_agent_id_for_role"):
+            engineer_agent_id = self.librarian.resolve_agent_id_for_role(FALLBACK_ENGINEER_ROLE)
+            if not engineer_agent_id:
+                engineer_agent_id = self.librarian.resolve_agent_id_for_role("default_system_engineer")
+
+        if not engineer_agent_id and hasattr(self.librarian, "get_diagnostic_agent"):
+            engineer_agent_id = self.librarian.get_diagnostic_agent()
+
         if not engineer_agent_id:
             raise RoleConfigurationError(
                 f"[FATAL DISCOVERY FAULT] Required system role '{FALLBACK_ENGINEER_ROLE}' "
@@ -1996,14 +2062,35 @@ class AgentDiscoveryManager:
                 f"for role '{FALLBACK_ENGINEER_ROLE}' is not registered or active in 'agent_registry'."
             )
 
-        eng_contract = engineer_profile.capabilities.get(FALLBACK_ENGINEER_ACTION) or CapabilityContract(
-            capability_name=FALLBACK_ENGINEER_ACTION,
-            agent=engineer_agent_id,
-            description="Synthesizes code and tools dynamically to resolve missing system capabilities.",
-            consumed_artifacts=[],
-            produced_artifacts=["code_solution", "execution_result"],
-            escalation_level=escalation_lvl,
-        )
+        # Dynamic fallback action resolution (Fail Fast if default_action missing from agent manifest/DB)
+        engineer_action = None
+        if hasattr(self.librarian, "get_agent_default_action") and callable(self.librarian.get_agent_default_action):
+            engineer_action = self.librarian.get_agent_default_action(engineer_agent_id)
+
+        if not engineer_action and engineer_profile.manifest:
+            m = engineer_profile.manifest
+            if isinstance(m, dict):
+                engineer_action = m.get("default_action")
+            else:
+                engineer_action = getattr(m, "default_action", None)
+
+        if not engineer_action:
+            raise RoleConfigurationError(
+                f"[FATAL DISCOVERY FAULT] Mapped engineer agent '{engineer_agent_id}' "
+                f"has no 'default_action' configured in its manifest or database metadata."
+            )
+
+        eng_contract = engineer_profile.capabilities.get(engineer_action)
+        if not eng_contract:
+            details = self.librarian.get_action_details(engineer_action)
+            if details:
+                eng_contract = self._details_to_contract(details, engineer_agent_id)
+
+        if not eng_contract:
+            raise RoleConfigurationError(
+                f"[FATAL DISCOVERY FAULT] Mapped engineer agent '{engineer_agent_id}' "
+                f"default action '{engineer_action}' could not be resolved into a valid CapabilityContract."
+            )
 
         if not hasattr(requirement, "parameters") or requirement.parameters is None:
             requirement.parameters = {}
@@ -2011,8 +2098,8 @@ class AgentDiscoveryManager:
         requirement.parameters["failed_action"] = target_cap_name
         requirement.parameters["failure_reason"] = "Capability Gap: No registered agent is equipped with this action."
 
-        # Mutate requirement to route through system_engineer / engineer
-        requirement.capability_required = FALLBACK_ENGINEER_ACTION
+        # Mutate requirement to route through resolved engineer agent and action
+        requirement.capability_required = engineer_action
         requirement.assigned_role_override = FALLBACK_ENGINEER_ROLE
         requirement.assigned_agent_override = engineer_agent_id
         if hasattr(requirement, "escalation_level"):
@@ -2028,7 +2115,7 @@ class AgentDiscoveryManager:
 ```python
 """
 charon/core/coordinator/engine.py
-System Version: v0.3.2 | File Revision: 6.3.0
+System Version: v0.3.2 | File Revision: 6.3.1
 
 Module: Core Reflection Engine and Multi-Intent Coordinator Facade.
 Orchestrates prompt decomposition, contract negotiations, dynamic agent discovery,
@@ -2192,6 +2279,31 @@ class Coordinator:
                 return str(agent_id)
 
         return "default_system_engineer"
+
+    def _get_agent_default_action(self, agent_id: str) -> str:
+        """Dynamically resolves default interface action for an agent_id via SkillLibrarian.
+
+        Raises:
+            ValueError: If the target agent manifest does not define a default_action.
+        """
+        librarian = SkillLibrarian.get_instance()
+
+        # 1. Prefer explicit Librarian API method if available
+        if hasattr(librarian, "get_agent_default_action") and callable(librarian.get_agent_default_action):
+            action = librarian.get_agent_default_action(agent_id)
+            if action:
+                return str(action)
+
+        # 2. Query manifest cache directly
+        manifest = librarian.get_agent_manifest(agent_id)
+        if manifest and manifest.get("default_action"):
+            return str(manifest["default_action"])
+
+        # 3. Fail fast: No default action registered for agent
+        raise ValueError(
+            f"[COORDINATOR ERROR] Cannot route task to agent '{agent_id}': "
+            "Agent manifest is missing a required 'default_action' contract."
+        )
 
     def initialize_blackboard(
         self,
@@ -2484,12 +2596,12 @@ class Coordinator:
                 f"{diag.description if diag else response.reason}"
             )
 
-            # Inject context and remap the action so the engineer knows what to fix
+            # Inject context and dynamically resolve target action for the re-routed engineer (fails fast if unconfigured)
             if not hasattr(requirement, "parameters") or requirement.parameters is None:
                 requirement.parameters = {}
             requirement.parameters["failed_action"] = requirement.capability_required
             requirement.parameters["failure_reason"] = diag.description if diag else response.reason
-            requirement.capability_required = "solve_edge_case"
+            requirement.capability_required = self._get_agent_default_action(engineer_agent_id)
             requirement.assigned_agent_override = engineer_agent_id
             return
 
@@ -2547,12 +2659,12 @@ class Coordinator:
                         f"Overriding requirement target to {engineer_agent_id}."
                     )
 
-                    # Inject context and remap the action for negotiation failure as well
+                    # Inject context and dynamically resolve target action for negotiation re-routing (fails fast if unconfigured)
                     if not hasattr(req, "parameters") or req.parameters is None:
                         req.parameters = {}
                     req.parameters["failed_action"] = req.capability_required
                     req.parameters["failure_reason"] = negotiation_resp.reason or "Agent incapable of action."
-                    req.capability_required = "solve_edge_case"
+                    req.capability_required = self._get_agent_default_action(engineer_agent_id)
                     req.assigned_agent_override = engineer_agent_id
                     continue
 
@@ -3290,6 +3402,8 @@ class AgentDispatcher:
         cb = stream_cb or kwargs.get("stream_callback")
 
         librarian = SkillLibrarian.get_instance(self.db_path)
+        default_generalist_action = librarian.get_default_action_for_role("system_generalist")
+
         init_agent_id = (
             initial_agent_id
             or kwargs.get("target_agent")
@@ -3348,7 +3462,7 @@ class AgentDispatcher:
 
             if not step_selection and iteration == 1 and init_agent_id:
                 manifest = get_agent_manifest(init_agent_id)
-                action_hint = initial_action_hint or (manifest.default_action if manifest else "answer_query")
+                action_hint = initial_action_hint or (manifest.default_action if manifest else default_generalist_action)
                 action_details = librarian.get_action_details(action_hint) or {
                     "action_name": action_hint,
                     "agent": init_agent_id,
@@ -3377,7 +3491,7 @@ class AgentDispatcher:
             bound_params = {**blackboard.artifacts, **step_params}
 
             if isinstance(capability_info, dict):
-                action = capability_info.get("action_name", getattr(req, "capability_required", "answer_query"))
+                action = capability_info.get("action_name", getattr(req, "capability_required", default_generalist_action))
                 requested_agent = (
                     capability_info.get("agent")
                     or capability_info.get("assigned_agent")
@@ -3387,7 +3501,7 @@ class AgentDispatcher:
                 )
             else:
                 requested_agent = getattr(capability_info, "agent", init_agent_id)
-                action = getattr(capability_info, "capability_name", getattr(capability_info, "action", "answer_query"))
+                action = getattr(capability_info, "capability_name", getattr(capability_info, "action", default_generalist_action))
 
             target_role, fallback_role = self.router.resolve_route(
                 action_name=action,
@@ -4115,6 +4229,7 @@ __all__ = [
     "SelfHealingHandler",
     "DAGPlanExecutor",
 ]
+
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -5743,7 +5858,7 @@ class IntentParser:
 ```python
 """
 charon/core/prompts.py
-System Version: v0.3.0 | File Revision: 3.1.0
+System Version: v0.3.0 | File Revision: 3.2.0
 
 Module: Dynamic prompt generation and ACK formatting adhering strictly to the
 Janitorial Anchor Directive (Role-based abstraction, DB-driven prompts, and
@@ -5757,7 +5872,7 @@ from typing import Any, Dict, Optional, Union
 
 from charon.config.paths import STATE_DB_PATH
 from charon.core.skills.librarian import SkillLibrarian
-from charon.db.connection import get_connection
+from charon.db.repositories.prompts import PromptRepository
 
 logger = logging.getLogger("Charon.Core.Prompts")
 
@@ -5777,38 +5892,21 @@ Extract parameters matching the registered action schema for the target role.
 {dynamic_capabilities}"""
 
 
-def _fetch_db_prompt_template(prompt_key: str, db_path: Union[str, Path] = STATE_DB_PATH) -> str:
+def _fetch_db_prompt_template(
+    prompt_key: str,
+    repo: Optional[PromptRepository] = None,
+    db_path: Union[str, Path] = STATE_DB_PATH,
+) -> str:
     """
-    Retrieves a system prompt template strictly from agent_registry / system_roles.
+    Retrieves a system prompt template strictly via PromptRepository.
     Falls back to static default constants if no custom prompt is defined.
     """
-    try:
-        with get_connection(db_path, read_only=True) as conn:
-            cursor = conn.cursor()
+    repo = repo or PromptRepository(db_path)
+    role_target = "role_planner" if "routing" in prompt_key else "default_system_generalist"
 
-            # Determine target role based on key context
-            role_target = "role_planner" if "routing" in prompt_key else "default_system_generalist"
-
-            cursor.execute(
-                """
-                SELECT ar.system_prompt 
-                FROM system_roles sr
-                JOIN agent_registry ar ON sr.agent_id = ar.agent_id
-                WHERE (sr.role_name = ? OR sr.role_name = 'default_system_generalist')
-                  AND ar.is_active = 1
-                  AND ar.system_prompt IS NOT NULL
-                  AND ar.system_prompt != ''
-                ORDER BY CASE WHEN sr.role_name = ? THEN 0 ELSE 1 END
-                LIMIT 1
-                """,
-                (role_target, role_target),
-            )
-            row = cursor.fetchone()
-            if row and row["system_prompt"]:
-                return row["system_prompt"]
-
-    except Exception as e:
-        logger.warning(f"Failed to fetch prompt template '{prompt_key}' from database: {e}")
+    template = repo.get_system_prompt_template(role_target)
+    if template:
+        return template
 
     # Fall back to hardcoded default constants
     if prompt_key == ROUTING_PROMPT_KEY:
@@ -5819,35 +5917,25 @@ def _fetch_db_prompt_template(prompt_key: str, db_path: Union[str, Path] = STATE
     return "{dynamic_content}"
 
 
-def build_routing_prompt(db_path: Union[str, Path] = STATE_DB_PATH) -> str:
+def build_routing_prompt(
+    repo: Optional[PromptRepository] = None,
+    db_path: Union[str, Path] = STATE_DB_PATH,
+) -> str:
     """
     Dynamically builds the routing prompt by populating DB prompt templates
     with available system_roles rather than raw agent_ids.
     """
-    roster_lines = []
+    repo = repo or PromptRepository(db_path)
+    roster_items = repo.get_active_role_roster()
 
-    try:
-        with get_connection(db_path, read_only=True) as conn:
-            cursor = conn.cursor()
-            # Abstraction Rule: Query active system_roles, NEVER raw agent_ids directly
-            cursor.execute(
-                """
-                SELECT sr.role_name, sr.description 
-                FROM system_roles sr
-                JOIN agent_registry ar ON sr.agent_id = ar.agent_id
-                WHERE ar.is_active = 1
-                ORDER BY sr.role_name
-                """
-            )
-            for row in cursor.fetchall():
-                roster_lines.append(f"- {row['role_name']}: {row['description']}")
-    except Exception as e:
-        logger.warning(f"Failed to fetch role roster for routing prompt: {e}")
+    roster_lines = [
+        f"- {item['role_name']}: {item['description']}" for item in roster_items
+    ]
 
     dynamic_roster = "\n".join(roster_lines) if roster_lines else "NO ACTIVE ROLES REGISTERED."
 
     # Load base prompt template directly from database / fallbacks
-    base_template = _fetch_db_prompt_template(ROUTING_PROMPT_KEY, db_path=db_path)
+    base_template = _fetch_db_prompt_template(ROUTING_PROMPT_KEY, repo=repo, db_path=db_path)
 
     if "{dynamic_roster}" in base_template:
         return base_template.format(dynamic_roster=dynamic_roster)
@@ -5855,54 +5943,39 @@ def build_routing_prompt(db_path: Union[str, Path] = STATE_DB_PATH) -> str:
     return f"{base_template}\n\nACTIVE ROLES:\n{dynamic_roster}"
 
 
-def build_extraction_prompt(db_path: Union[str, Path] = STATE_DB_PATH) -> str:
+def build_extraction_prompt(
+    repo: Optional[PromptRepository] = None,
+    db_path: Union[str, Path] = STATE_DB_PATH,
+) -> str:
     """
     Dynamically builds extraction capabilities mapped across roles and skill registries.
     """
+    repo = repo or PromptRepository(db_path)
+    capabilities = repo.get_role_capabilities()
+
     capability_lines = []
+    current_role = ""
 
-    try:
-        with get_connection(db_path, read_only=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT 
-                    sr.role_name,
-                    sk.action_name,
-                    sk.description,
-                    sk.parameters
-                FROM system_roles sr
-                JOIN agent_skill_map asm ON sr.agent_id = asm.agent_id
-                JOIN skill_registry sk ON asm.action_name = sk.action_name
-                JOIN agent_registry ar ON sr.agent_id = ar.agent_id
-                WHERE sk.is_active = 1 AND ar.is_active = 1
-                ORDER BY sr.role_name, sk.action_name
-                """
-            )
+    for row in capabilities:
+        role_name = row["role_name"]
+        if role_name != current_role:
+            capability_lines.append(f"\nFOR ROLE {role_name.upper()}:")
+            current_role = role_name
 
-            current_role = ""
-            for row in cursor.fetchall():
-                role_name = row["role_name"]
-                if role_name != current_role:
-                    capability_lines.append(f"\nFOR ROLE {role_name.upper()}:")
-                    current_role = role_name
+        action = row["action_name"]
+        desc = row["description"]
+        params = row["parameters"] or "{}"
 
-                action = row["action_name"]
-                desc = row["description"]
-                params = row["parameters"] or "{}"
-
-                capability_lines.append(
-                    f'    - {desc} -> Set "action": "{action}", matching schema: {params}'
-                )
-    except Exception as e:
-        logger.warning(f"Failed to fetch role capabilities for extraction prompt: {e}")
+        capability_lines.append(
+            f'    - {desc} -> Set "action": "{action}", matching schema: {params}'
+        )
 
     dynamic_capabilities = (
         "\n".join(capability_lines) if capability_lines else "NO ACTIVE SKILLS REGISTERED."
     )
 
     # Load base extraction prompt template directly from database / fallbacks
-    base_template = _fetch_db_prompt_template(EXTRACTION_PROMPT_KEY, db_path=db_path)
+    base_template = _fetch_db_prompt_template(EXTRACTION_PROMPT_KEY, repo=repo, db_path=db_path)
 
     if "{dynamic_capabilities}" in base_template:
         return base_template.format(dynamic_capabilities=dynamic_capabilities)
@@ -5914,6 +5987,7 @@ def get_agent_ack(
     agent_id_or_role: str,
     action: str = "",
     parameters: Optional[Dict[str, Any]] = None,
+    repo: Optional[PromptRepository] = None,
     db_path: Union[str, Path] = STATE_DB_PATH,
 ) -> str:
     """
@@ -5932,25 +6006,8 @@ def get_agent_ack(
         clean_target = str(target).replace(os.path.expanduser("~"), "~")
         return f"[{display_name}: Executing {action} on '{clean_target}']"
 
-    fallback = "Processing request."
-    try:
-        with get_connection(db_path, read_only=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT ar.default_action 
-                FROM agent_registry ar
-                LEFT JOIN system_roles sr ON ar.agent_id = sr.agent_id
-                WHERE ar.agent_id = ? OR sr.role_name = ?
-                LIMIT 1
-                """,
-                (agent_id_or_role, agent_id_or_role),
-            )
-            row = cursor.fetchone()
-            if row and row["default_action"]:
-                fallback = row["default_action"]
-    except Exception as e:
-        logger.warning(f"Failed to fetch default_action for '{agent_id_or_role}': {e}")
+    repo = repo or PromptRepository(db_path)
+    fallback = repo.get_default_action_for_identifier(agent_id_or_role) or "Processing request."
 
     return f"[{display_name}: {fallback}]"
 
@@ -6768,7 +6825,7 @@ class SkillExecutorMixin:
 ```python
 """
 charon/core/skills/indexer.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.6.0 | File Revision: 6.1.0
 
 Module: Dynamic discovery, skill promotion, route syncing, and database re-indexing mixin.
 Maintains clean separation between immutable code identifiers (skill_id) and prompt contracts (action_name).
@@ -6854,11 +6911,18 @@ class SkillIndexerMixin:
         logger.info("[LIBRARIAN] Executing skill reindexing pipeline...")
 
         try:
-            # Ensure schema state across repositories
-            self.repo.ensure_schema()
-            self.agent_repo.ensure_schema()
-            self.route_repo.ensure_schema()
-            if hasattr(self, "permission_repo") and self.permission_repo is not None:
+            # Ensure schema state across repositories safely
+            if hasattr(self.repo, "ensure_schema"):
+                self.repo.ensure_schema()
+            if hasattr(self.agent_repo, "ensure_schema"):
+                self.agent_repo.ensure_schema()
+            if hasattr(self.route_repo, "ensure_schema"):
+                self.route_repo.ensure_schema()
+            if (
+                hasattr(self, "permission_repo")
+                and self.permission_repo is not None
+                and hasattr(self.permission_repo, "ensure_schema")
+            ):
                 self.permission_repo.ensure_schema()
 
             # Clear existing agent-skill mappings via repository abstraction
@@ -6990,7 +7054,7 @@ class SkillIndexerMixin:
 ```python
 """
 charon/core/skills/librarian.py
-System Version: v0.6.0 | File Revision: 9.0.0
+System Version: v0.6.0 | File Revision: 9.1.0
 
 Module: Central registry, hybrid DB/disk discovery hub, dynamic query bus, and authorization desk.
 Combines RoleResolver, RouteManager, SkillIndexer, SkillQuery, and SkillExecutor mixins.
@@ -7128,6 +7192,21 @@ class SkillLibrarian(
         if manifest and "default_action" in manifest:
             return str(manifest["default_action"])
         return None
+
+    def get_default_action_for_role(self, role_name: str) -> str:
+        """
+        Resolves and returns the default action_name for a given system role.
+        Falls back to resolving the agent mapped to the role.
+        """
+        agent_id = self.resolve_agent_id_for_role(role_name)
+        if not agent_id:
+            return ""
+
+        agent_manifest = self.get_agent_manifest(agent_id) or {}
+        if isinstance(agent_manifest, dict):
+            return agent_manifest.get("default_action") or ""
+
+        return getattr(agent_manifest, "default_action", "")
 
     def reload_all_manifests(self) -> None:
         """Refreshes the in-memory manifest cache directly from AgentRepository."""

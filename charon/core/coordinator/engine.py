@@ -1,11 +1,12 @@
 """
 charon/core/coordinator/engine.py
-System Version: v0.3.2 | File Revision: 6.3.1
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Core Reflection Engine and Multi-Intent Coordinator Facade.
 Orchestrates prompt decomposition, contract negotiations, dynamic agent discovery,
 diagnostic gap dynamic re-routing, blueprint capturing, and stateful reflection loops
 aligned with Revision 3 CBAC database schema & trigger guardrails.
+Enforces canonical role & agent lookup via SkillLibrarian SSOT.
 """
 
 import asyncio
@@ -44,6 +45,37 @@ logger = logging.getLogger("charon.core.coordinator")
 MAX_LOOP_LIMIT = 25
 
 
+def _resolve_agent_id(agent_or_role: Any) -> str:
+    """Resolves a role name, enum, or identifier to a canonical agent_id via SkillLibrarian SSOT."""
+    if not agent_or_role:
+        return ""
+
+    role_str = str(getattr(agent_or_role, "value", agent_or_role)).strip()
+    if not role_str:
+        return ""
+
+    librarian = SkillLibrarian.get_instance()
+    if hasattr(librarian, "resolve_agent_id_for_role") and callable(
+        librarian.resolve_agent_id_for_role
+    ):
+        try:
+            resolved = librarian.resolve_agent_id_for_role(role_str)
+            if resolved:
+                return str(resolved).strip()
+        except Exception as err:
+            logger.debug(f"[Engine] SkillLibrarian failed to resolve role '{role_str}': {err}")
+
+    elif hasattr(librarian, "resolve_agent_id") and callable(librarian.resolve_agent_id):
+        try:
+            resolved = librarian.resolve_agent_id(role_str)
+            if resolved:
+                return str(resolved).strip()
+        except Exception as err:
+            logger.debug(f"[Engine] SkillLibrarian failed to resolve agent ID for '{role_str}': {err}")
+
+    return role_str
+
+
 def get_capability(
     capability_name: str, agent: Optional[Union[str, Any]] = None
 ) -> Optional[CapabilityContract]:
@@ -68,7 +100,7 @@ def get_capability(
         else getattr(librarian, "get_system_fallback", lambda: "system_fallback")()
     )
     raw_agent = agent or details.get("primary_agent_id", default_agent)
-    target_agent = str(raw_agent.value) if hasattr(raw_agent, "value") else str(raw_agent)
+    target_agent = _resolve_agent_id(raw_agent)
 
     return CapabilityContract(
         capability_name=details.get(
@@ -134,10 +166,12 @@ class Coordinator:
         return self.discovery.active_profiles
 
     def register_agent(self, agent_key: Union[str, Any], agent_instance: BaseAgent) -> None:
-        self.discovery.register_agent(agent_key, agent_instance)
+        canonical_key = _resolve_agent_id(agent_key)
+        self.discovery.register_agent(canonical_key, agent_instance)
 
     def probe_agent(self, agent: Union[str, Any], probe_type: str = "full") -> Dict[str, Any]:
-        return self.discovery.probe_agent(agent, probe_type=probe_type)
+        canonical_key = _resolve_agent_id(agent)
+        return self.discovery.probe_agent(canonical_key, probe_type=probe_type)
 
     def probe_all_agents(self, probe_type: str = "full") -> Dict[str, Dict[str, Any]]:
         return self.discovery.probe_all_agents(probe_type=probe_type)
@@ -146,24 +180,21 @@ class Coordinator:
         """Resolves the diagnostic engineer agent ID via system_roles table lookup."""
         librarian = SkillLibrarian.get_instance()
 
-        # 1. Try explicit diagnostic agent accessor
         if hasattr(librarian, "get_diagnostic_agent") and callable(librarian.get_diagnostic_agent):
             res = librarian.get_diagnostic_agent()
             if res:
-                return str(res)
+                return _resolve_agent_id(res)
 
-        # 2. Resolve via system_roles mapping ('default_system_engineer' role -> agent_id)
         if hasattr(librarian, "resolve_agent_id_for_role") and callable(librarian.resolve_agent_id_for_role):
-            res = librarian.resolve_agent_id_for_role("default_system_engineer")
+            res = librarian.resolve_agent_id_for_role("system_engineer")
             if res:
-                return str(res)
+                return _resolve_agent_id(res)
 
-        # 3. Fallback to active agent in discovery registry if role lookup is unpopulated
         for agent_id, agent_obj in self.agents.items():
             if getattr(agent_obj, "is_active", True):
-                return str(agent_id)
+                return _resolve_agent_id(agent_id)
 
-        return "default_system_engineer"
+        return "system_engineer"
 
     def _get_agent_default_action(self, agent_id: str) -> str:
         """Dynamically resolves default interface action for an agent_id via SkillLibrarian.
@@ -171,22 +202,26 @@ class Coordinator:
         Raises:
             ValueError: If the target agent manifest does not define a default_action.
         """
+        canonical_agent = _resolve_agent_id(agent_id)
         librarian = SkillLibrarian.get_instance()
 
-        # 1. Prefer explicit Librarian API method if available
         if hasattr(librarian, "get_agent_default_action") and callable(librarian.get_agent_default_action):
-            action = librarian.get_agent_default_action(agent_id)
+            action = librarian.get_agent_default_action(canonical_agent)
             if action:
                 return str(action)
 
-        # 2. Query manifest cache directly
-        manifest = librarian.get_agent_manifest(agent_id)
-        if manifest and manifest.get("default_action"):
+        manifest = (
+            librarian.get_agent_manifest(canonical_agent)
+            if hasattr(librarian, "get_agent_manifest")
+            else None
+        )
+        if isinstance(manifest, dict) and manifest.get("default_action"):
             return str(manifest["default_action"])
+        elif manifest and getattr(manifest, "default_action", None):
+            return str(getattr(manifest, "default_action"))
 
-        # 3. Fail fast: No default action registered for agent
         raise ValueError(
-            f"[COORDINATOR ERROR] Cannot route task to agent '{agent_id}': "
+            f"[COORDINATOR ERROR] Cannot route task to agent '{canonical_agent}': "
             "Agent manifest is missing a required 'default_action' contract."
         )
 
@@ -258,11 +293,10 @@ class Coordinator:
         self, agent: Union[str, Any], requirement: UnfulfilledRequirement, blackboard: TaskBlackboard
     ) -> ContractResponse:
         """Conducts pre-turn contract negotiation with target agent and logs trace telemetry."""
-        agent_key = agent.value if hasattr(agent, "value") else str(agent)
+        agent_key = _resolve_agent_id(agent)
         agent_instance = self.agents.get(agent_key) or self.agents.get(agent)
-        agent_name = agent_instance.name if agent_instance else agent_key
+        agent_name = getattr(agent_instance, "name", agent_key)
 
-        # Guard against inactive agents (Schema trigger protection)
         if agent_instance and hasattr(agent_instance, "is_active") and not agent_instance.is_active:
             engineer_agent_id = self._get_diagnostic_engineer()
             return ContractResponse(
@@ -339,12 +373,12 @@ class Coordinator:
         """
         override_agent = getattr(requirement, "assigned_agent_override", None)
         if override_agent:
-            target_agent_key = override_agent.value if hasattr(override_agent, "value") else str(override_agent)
+            target_agent_key = _resolve_agent_id(override_agent)
         else:
-            target_agent_key = capability.agent.value if hasattr(capability.agent, "value") else str(capability.agent)
+            target_agent_key = _resolve_agent_id(capability.agent)
 
         agent_instance = self.agents.get(target_agent_key) or self.agents.get(override_agent or capability.agent)
-        agent_name = agent_instance.name if agent_instance else target_agent_key
+        agent_name = getattr(agent_instance, "name", target_agent_key)
 
         if not agent_instance:
             response = ContractResponse(
@@ -458,11 +492,10 @@ class Coordinator:
         response: ContractResponse,
     ) -> None:
         """Evaluates step failure and DiagnosticGap to perform dynamic re-routing or escalation."""
-        agent_str = current_agent.value if hasattr(current_agent, "value") else str(current_agent)
+        agent_str = _resolve_agent_id(current_agent)
         diag = response.diagnostics
         engineer_agent_id = self._get_diagnostic_engineer()
 
-        # Log skill gap if tool missing (Schema FK requirement: requesting_agent -> agent_registry)
         if diag and diag.gap_type == GapType.MISSING_TOOL:
             librarian = SkillLibrarian.get_instance()
             if hasattr(librarian, "record_skill_gap"):
@@ -481,7 +514,6 @@ class Coordinator:
                 f"{diag.description if diag else response.reason}"
             )
 
-            # Inject context and dynamically resolve target action for the re-routed engineer (fails fast if unconfigured)
             if not hasattr(requirement, "parameters") or requirement.parameters is None:
                 requirement.parameters = {}
             requirement.parameters["failed_action"] = requirement.capability_required
@@ -537,14 +569,13 @@ class Coordinator:
 
             negotiation_resp = self.negotiate_contract(target_agent, req, blackboard)
             if negotiation_resp.status == ExecutionStatus.INCAPABLE:
-                target_str = target_agent.value if hasattr(target_agent, "value") else str(target_agent)
+                target_str = _resolve_agent_id(target_agent)
                 if target_str != engineer_agent_id:
                     logger.warning(
                         f"[COORDINATOR] Agent {target_str} incapable during negotiation. "
                         f"Overriding requirement target to {engineer_agent_id}."
                     )
 
-                    # Inject context and dynamically resolve target action for negotiation re-routing (fails fast if unconfigured)
                     if not hasattr(req, "parameters") or req.parameters is None:
                         req.parameters = {}
                     req.parameters["failed_action"] = req.capability_required

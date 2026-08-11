@@ -1,6 +1,6 @@
 """
 charon/db/repositories/skill.py
-System Version: v0.6.0 | File Revision: 6.3.4
+System Version: v0.6.0 | File Revision: 6.3.6
 
 Module: Data Access Layer repository for skill dynamic indexing, quarantine lifecycle management,
 agent-capability authorization bindings, and CBAC skill permission assignments.
@@ -69,6 +69,14 @@ class SkillRepository:
                     FOREIGN KEY (skill_id) REFERENCES skill_registry(skill_id) ON DELETE CASCADE
                 );
 
+                -- Persistent backup table to preserve mappings across connection/indexing sweeps
+                CREATE TABLE IF NOT EXISTS _bkp_agent_skill_map (
+                    agent_id TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (agent_id, skill_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_skill_registry_status ON skill_registry(status);
                 CREATE INDEX IF NOT EXISTS idx_skill_permissions_skill ON skill_permissions(skill_id);
                 CREATE INDEX IF NOT EXISTS idx_agent_skill_map_agent ON agent_skill_map(agent_id);
@@ -79,24 +87,69 @@ class SkillRepository:
     # 1. REGISTRY CLEANUP & DESERIALIZATION UTILITIES
     # =========================================================================
 
-    def clear_registry(self) -> None:
-        """Clears all indexed skills, permission bindings, and agent mappings prior to full re-indexing."""
-        with get_connection(self.db_path) as conn:
-            conn.execute("DELETE FROM agent_skill_map;")
-            conn.execute("DELETE FROM skill_permissions;")
-            conn.execute("DELETE FROM skill_registry;")
+    def clear_registry(self, clear_agent_mappings: bool = False) -> None:
+        """
+        Clears indexed skills and permission bindings prior to re-indexing.
 
-    def clear_all_skills(self) -> None:
+        Args:
+            clear_agent_mappings: If True, clears agent-skill authorization mappings in addition
+                                 to skill registry metadata. Defaults to False to preserve existing
+                                 agent capability grants during routine indexing re-sweeps.
+        """
+        with get_connection(self.db_path) as conn:
+            if clear_agent_mappings:
+                conn.execute("DELETE FROM agent_skill_map;")
+                conn.execute("DELETE FROM _bkp_agent_skill_map;")
+                conn.execute("DELETE FROM skill_permissions;")
+                conn.execute("DELETE FROM skill_registry;")
+            else:
+                # Preserve existing agent mappings in a persistent backup table across connection lifecycles
+                conn.execute("DELETE FROM _bkp_agent_skill_map;")
+                conn.execute("INSERT INTO _bkp_agent_skill_map SELECT * FROM agent_skill_map;")
+                conn.execute("DELETE FROM skill_permissions;")
+                conn.execute("DELETE FROM skill_registry;")
+
+    def clear_all_skills(self, clear_agent_mappings: bool = False) -> None:
         """Alias for clear_registry to support clean full re-indexing sweeps."""
-        self.clear_registry()
+        self.clear_registry(clear_agent_mappings=clear_agent_mappings)
 
-    def clear_all_agent_skill_mappings(self) -> None:
-        """Clears all agent-skill capability mappings prior to re-indexing."""
+    def clear_all_agent_skill_mappings(self, agent_id: Optional[str] = None) -> None:
+        """
+        Clears agent-skill capability mappings.
+
+        Args:
+            agent_id: Optional target agent ID. If provided, only clears mappings for that agent.
+                      If None, clears all mappings across all agents.
+        """
         with get_connection(self.db_path) as conn:
-            conn.execute("DELETE FROM agent_skill_map;")
+            if agent_id:
+                conn.execute("DELETE FROM agent_skill_map WHERE agent_id = ?;", (agent_id,))
+                conn.execute("DELETE FROM _bkp_agent_skill_map WHERE agent_id = ?;", (agent_id,))
+            else:
+                conn.execute("DELETE FROM agent_skill_map;")
+                conn.execute("DELETE FROM _bkp_agent_skill_map;")
+
+    def _get_permissions_map_for_skills(
+        self, conn: Any, skill_ids: List[str]
+    ) -> Dict[str, List[str]]:
+        """Batch fetches permissions for multiple skills to eliminate N+1 query patterns."""
+        if not skill_ids:
+            return {}
+        placeholders = ",".join(["?"] * len(skill_ids))
+        cursor = conn.execute(
+            f"SELECT skill_id, perm_id FROM skill_permissions WHERE skill_id IN ({placeholders});",
+            skill_ids,
+        )
+        perm_map: Dict[str, List[str]] = {sid: [] for sid in skill_ids}
+        for r in cursor.fetchall():
+            perm_map[r["skill_id"]].append(str(r["perm_id"]))
+        return perm_map
 
     def _parse_skill_row(
-        self, row: Any, conn: Optional[Any] = None
+        self,
+        row: Any,
+        conn: Optional[Any] = None,
+        permissions_map: Optional[Dict[str, List[str]]] = None,
     ) -> Dict[str, Any]:
         """Helper to convert a SQLite Row object to a dictionary and deserialize embedded JSON strings."""
         data = dict(row)
@@ -115,10 +168,12 @@ class SkillRepository:
             elif raw_val is None:
                 data[json_field] = {} if json_field == "parameters" else []
 
-        # Populate required primitive CBAC permissions if database connection is available
+        # Populate required primitive CBAC permissions
         skill_id = data.get("skill_id")
         if skill_id:
-            if conn:
+            if permissions_map is not None:
+                data["required_permissions"] = permissions_map.get(skill_id, [])
+            elif conn:
                 cursor = conn.execute(
                     "SELECT perm_id FROM skill_permissions WHERE skill_id = ?;",
                     (skill_id,),
@@ -128,9 +183,7 @@ class SkillRepository:
                     for r in cursor.fetchall()
                 ]
             else:
-                data["required_permissions"] = self.get_skill_permissions(
-                    skill_id
-                )
+                data["required_permissions"] = self.get_skill_permissions(skill_id)
         else:
             data["required_permissions"] = []
 
@@ -151,7 +204,7 @@ class SkillRepository:
         """
         Inserts or updates a skill record and binds required primitive permissions.
         Defaults status to 'QUARANTINED' unless explicitly supplied as 'ACTIVE'.
-        Migrates existing agent mappings if the skill_id changed.
+        Migrates existing agent mappings safely if the skill_id changed.
         """
         rec = dict(record) if record else {}
         rec.update(kwargs)
@@ -218,19 +271,45 @@ class SkillRepository:
             if old_row:
                 old_skill_id = old_row[0] if isinstance(old_row, (tuple, list)) else old_row["skill_id"]
 
-                # Migrate existing mappings to the new skill_id prior to deletion
+                # Remove potential duplicate mappings that would block UPDATE
                 conn.execute(
-                    "UPDATE OR IGNORE agent_skill_map SET skill_id = ? WHERE skill_id = ?;",
+                    "DELETE FROM agent_skill_map WHERE skill_id = ? AND agent_id IN ("
+                    "  SELECT agent_id FROM agent_skill_map WHERE skill_id = ?"
+                    ");",
+                    (old_skill_id, rec["skill_id"]),
+                )
+                conn.execute(
+                    "UPDATE agent_skill_map SET skill_id = ? WHERE skill_id = ?;",
                     (rec["skill_id"], old_skill_id),
                 )
                 conn.execute(
-                    "UPDATE OR IGNORE skill_permissions SET skill_id = ? WHERE skill_id = ?;",
+                    "DELETE FROM skill_permissions WHERE skill_id = ? AND perm_id IN ("
+                    "  SELECT perm_id FROM skill_permissions WHERE skill_id = ?"
+                    ");",
+                    (old_skill_id, rec["skill_id"]),
+                )
+                conn.execute(
+                    "UPDATE skill_permissions SET skill_id = ? WHERE skill_id = ?;",
                     (rec["skill_id"], old_skill_id),
                 )
                 # Safely delete old parent record now that children are re-linked
                 conn.execute("DELETE FROM skill_registry WHERE skill_id = ?;", (old_skill_id,))
 
             conn.execute(query, rec)
+
+            # Restore mapped permissions from persistent backup table if re-indexing cleared registry
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO agent_skill_map (agent_id, skill_id, created_at)
+                    SELECT agent_id, skill_id, created_at FROM _bkp_agent_skill_map
+                    WHERE skill_id = ?
+                    ON CONFLICT(agent_id, skill_id) DO NOTHING;
+                    """,
+                    (rec["skill_id"],),
+                )
+            except Exception as e:
+                logger.debug("Skip agent_skill_map backup restore: %s", e)
 
             # Bind CBAC permissions if provided
             if req_perms:
@@ -288,7 +367,10 @@ class SkillRepository:
             cursor = conn.execute(
                 "SELECT * FROM skill_registry WHERE status = 'ACTIVE';"
             )
-            return [self._parse_skill_row(row, conn) for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            skill_ids = [r["skill_id"] for r in rows]
+            perm_map = self._get_permissions_map_for_skills(conn, skill_ids)
+            return [self._parse_skill_row(row, conn, perm_map) for row in rows]
 
     def get_all_skills(self) -> List[Dict[str, Any]]:
         """Alias for get_all_active_skills."""
@@ -320,7 +402,10 @@ class SkillRepository:
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
             cursor = conn.execute(query, (action_name, action_name))
             row = cursor.fetchone()
-            return self._parse_skill_row(row, conn) if row else None
+            if not row:
+                return None
+            perm_map = self._get_permissions_map_for_skills(conn, [row["skill_id"]])
+            return self._parse_skill_row(row, conn, perm_map)
 
     def get_skill_by_id(self, skill_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves skill metadata directly by unique skill_id regardless of status."""
@@ -330,7 +415,10 @@ class SkillRepository:
                 (skill_id,),
             )
             row = cursor.fetchone()
-            return self._parse_skill_row(row, conn) if row else None
+            if not row:
+                return None
+            perm_map = self._get_permissions_map_for_skills(conn, [skill_id])
+            return self._parse_skill_row(row, conn, perm_map)
 
     def get_skill_permissions(self, skill_id: str) -> List[str]:
         """Fetches all primitive permission IDs bound to a given skill."""
@@ -429,80 +517,84 @@ class SkillRepository:
     def get_actions_for_agent(
         self, agent_id: str, alt_agent_id: Optional[str] = None
     ) -> List[str]:
-        """Fetches distinct ACTIVE action capability keys granted to an agent (or marked global)."""
-        alt_id = alt_agent_id or agent_id
+        """Fetches distinct ACTIVE action capability keys strictly granted to an agent (or marked global)."""
+        target_id = agent_id  # Do not union-bleed skills from alt_agent_id
         query = """
             SELECT DISTINCT sr.action_name
             FROM skill_registry sr
             LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
             WHERE sr.status = 'ACTIVE'
-              AND (sr.is_global = 1 OR asm.agent_id IN (?, ?, '*'))
+              AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             ORDER BY sr.action_name ASC;
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (agent_id, alt_id))
+            cursor = conn.execute(query, (target_id,))
             return [str(row["action_name"]) for row in cursor.fetchall()]
-
-    def list_available_actions(
-        self, agent_id: str, alt_agent_id: Optional[str] = None
-    ) -> List[str]:
-        """Alias for get_actions_for_agent."""
-        return self.get_actions_for_agent(agent_id, alt_agent_id)
 
     def get_skills_for_agent(
         self, agent_id: str, alt_agent_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Fetches full skill dictionary records for ACTIVE actions accessible to an agent."""
-        alt_id = alt_agent_id or agent_id
+        target_id = agent_id
         query = """
             SELECT DISTINCT sr.*
             FROM skill_registry sr
             LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
             WHERE sr.status = 'ACTIVE'
-              AND (sr.is_global = 1 OR asm.agent_id IN (?, ?, '*'))
+              AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             ORDER BY sr.skill_id ASC;
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (agent_id, alt_id))
-            return [self._parse_skill_row(row, conn) for row in cursor.fetchall()]
+            cursor = conn.execute(query, (target_id,))
+            rows = cursor.fetchall()
+            skill_ids = [r["skill_id"] for r in rows]
+            perm_map = self._get_permissions_map_for_skills(conn, skill_ids)
+            return [self._parse_skill_row(row, conn, perm_map) for row in rows]
 
     def is_skill_available(
         self, action_name: str, agent_id: str, alt_agent_id: Optional[str] = None
     ) -> bool:
         """Verifies if an action contract is ACTIVE and accessible by an agent."""
-        alt_id = alt_agent_id or agent_id
+        target_id = agent_id
         query = """
             SELECT 1
             FROM skill_registry sr
             LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
             WHERE sr.action_name = ?
               AND sr.status = 'ACTIVE'
-              AND (sr.is_global = 1 OR asm.agent_id IN (?, ?, '*'))
+              AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             LIMIT 1;
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (action_name, agent_id, alt_id))
+            cursor = conn.execute(query, (action_name, target_id))
             return cursor.fetchone() is not None
 
     def get_agents_for_action(self, action_name: str) -> List[str]:
-        """Fetches a list of agent_ids authorized to execute a specific action capability."""
+        """Fetches a list of agent_ids authorized to execute an ACTIVE action capability."""
         query = """
-            SELECT asm.agent_id
-            FROM agent_skill_map asm
-            JOIN skill_registry sr ON asm.skill_id = sr.skill_id
-            WHERE sr.action_name = ?;
+            SELECT DISTINCT 
+                CASE 
+                    WHEN sr.is_global = 1 THEN '*'
+                    ELSE asm.agent_id 
+                END AS agent_id
+            FROM skill_registry sr
+            LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
+            WHERE sr.action_name = ?
+              AND sr.status = 'ACTIVE'
+              AND (sr.is_global = 1 OR asm.agent_id IS NOT NULL);
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
             cursor = conn.execute(query, (action_name,))
-            return [str(row["agent_id"]) for row in cursor.fetchall()]
+            return [str(row["agent_id"]) for row in cursor.fetchall() if row["agent_id"]]
 
     def get_equipped_skills_for_agent(self, agent_id: str) -> List[str]:
-        """Fetches distinct ACTIVE skill_ids equipped to an agent via agent_skill_map."""
+        """Fetches distinct ACTIVE skill_ids equipped to an agent via agent_skill_map or global flag."""
         query = """
             SELECT DISTINCT sr.skill_id
-            FROM agent_skill_map asm
-            JOIN skill_registry sr ON asm.skill_id = sr.skill_id
-            WHERE asm.agent_id IN (?, '*') AND sr.status = 'ACTIVE';
+            FROM skill_registry sr
+            LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
+            WHERE sr.status = 'ACTIVE'
+              AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'));
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
             cursor = conn.execute(query, (agent_id,))

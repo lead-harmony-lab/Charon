@@ -1,6 +1,6 @@
 """
 charon/intent/routing.py
-System Version: v0.1.0 | File Revision: 1.2.0
+System Version: v0.1.0 | File Revision: 1.3.0
 
 Module: First pass routing classification and unified intent extraction schemas.
 """
@@ -16,7 +16,7 @@ class RoutingPayload(StrictBaseModel):
     Purely analytical classification. No conversational text generation allowed.
     """
     agent: str = Field(
-        description="The exact agent_id (e.g., 'The_Engineer', 'The_Planner') assigned to execute the requested task. Must match an active agent in the system registry."
+        description="The canonical agent or role identifier (e.g., 'engineer', 'planner', 'generalist') assigned to execute the requested task. Must match an active agent in the system registry."
     )
 
 
@@ -24,7 +24,7 @@ class IntentExtraction(StrictBaseModel):
     """Unified intent extraction payload returned during orchestrator parsing."""
 
     agent: str = Field(
-        description="The exact agent_id assigned to the task."
+        description="The canonical agent or role identifier (e.g., 'engineer', 'planner', 'generalist') assigned to the task."
     )
     action: str = Field(
         description="The dynamic action_name to invoke."

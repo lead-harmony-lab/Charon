@@ -209,7 +209,7 @@ async def create_routing_rule(rule_req: DynamicRuleRequest, request: Request):
 
     rule_id = engine.intent_parser.add_override_rule(
         trigger=rule_req.trigger,
-        target_agent=rule_req.target_agent,
+        agent_id=rule_req.agent_id,
         description=rule_req.description,
     )
 
@@ -217,8 +217,8 @@ async def create_routing_rule(rule_req: DynamicRuleRequest, request: Request):
         "status": "success",
         "rule_id": rule_id,
         "trigger": rule_req.trigger,
-        "target_agent": rule_req.target_agent,
-        "message": f"Shortcut rule created: '{rule_req.trigger}' -> '{rule_req.target_agent}'",
+        "agent_id": rule_req.agent_id,
+        "message": f"Shortcut rule created: '{rule_req.trigger}' -> '{rule_req.agent_id}'",
     }
 
 

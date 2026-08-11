@@ -14,7 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 
 DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-CHARON_ROOT = Path("~/Projects/Tools/Charon/charon").expanduser()
+CHARON_ROOT = Path("/charon").expanduser()
 LEGACY_AGENTS_DIR = CHARON_ROOT / "agents_delete"
 
 

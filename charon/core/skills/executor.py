@@ -1,10 +1,11 @@
 """
 charon/core/skills/executor.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.6.3 | File Revision: 7.0.0
 
 Module: Dynamic module import and skill checkout execution mixin for SkillLibrarian.
 Resolves skill_id and handler_name to safely load disk plugins into runtime callables.
 Integrates CBAC Schema V2 permission gatechecking and Quarantine State verification.
+Enforces strict fail-fast role resolution against database registry.
 """
 
 import importlib.util
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
 from charon.core.skills.base import BaseSkill
+from charon.core.skills.roles import RoleResolutionError
 
 logger = logging.getLogger("Charon.Core.Skills.Executor")
 
@@ -28,43 +30,51 @@ class SkillExecutorMixin:
         Validates authorization constraints, quarantine states, and CBAC permissions,
         then signs out the plugin handler callable.
         Resolves action_name -> skill_id -> entry_file_path + handler_name.
+        Fails fast if agent_name cannot be resolved to an active agent in SQLite.
         """
-        canonical_agent = (
-            self.resolve_agent_id_for_role(agent_name)
-            if hasattr(self, "resolve_agent_id_for_role")
-            else agent_name
-        )
+        # Ground Truth DB Lookup: Fails hard if unresolvable
+        canonical_agent = self.resolve_agent_id_for_role(agent_name)
 
         # 1. Look up skill metadata row to identify skill_id and status
-        row = (
-            self.repo.get_skill_by_action(action)
-            if hasattr(self, "repo") and hasattr(self.repo, "get_skill_by_action")
-            else None
-        )
+        row = self.repo.get_skill_by_action(action)
         if not row:
-            details = self.get_action_details(action) if hasattr(self, "get_action_details") else None
-            if not details:
+            row = self.get_action_details(action)
+            if not row:
                 logger.error(f"[LIBRARIAN] Action contract '{action}' not found in registry.")
                 return None
-            row = details
 
-        skill_id = row.get("skill_id", "unknown") if isinstance(row, dict) else getattr(row, "skill_id", "unknown")
-        status = row.get("status", "QUARANTINED") if isinstance(row, dict) else getattr(row, "status", "QUARANTINED")
+        skill_id = (
+            row.get("skill_id", "unknown")
+            if isinstance(row, dict)
+            else getattr(row, "skill_id", "unknown")
+        )
+        status = (
+            row.get("status", "QUARANTINED")
+            if isinstance(row, dict)
+            else getattr(row, "status", "QUARANTINED")
+        )
 
         # 2. Check quarantine state
         if status == "QUARANTINED":
-            quarantine_reason = row.get("quarantine_reason", "Skill is in dynamic quarantine.")
+            quarantine_reason = (
+                row.get("quarantine_reason", "Skill is in dynamic quarantine.")
+                if isinstance(row, dict)
+                else getattr(row, "quarantine_reason", "Skill is in dynamic quarantine.")
+            )
             logger.warning(
                 f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is QUARANTINED. Reason: {quarantine_reason}"
             )
             return None
         elif status == "DISABLED":
-            logger.warning(f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is DISABLED.")
+            logger.warning(
+                f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is DISABLED."
+            )
             return None
 
         # 3. CBAC Authorization Gatecheck
-        if hasattr(self, "permission_repo") and self.permission_repo is not None:
-            authorized = self.permission_repo.authorize_execution(canonical_agent, skill_id)
+        perm_repo = getattr(self, "permission_repo", None)
+        if perm_repo is not None:
+            authorized = perm_repo.authorize_execution(canonical_agent, skill_id)
             if not authorized:
                 logger.warning(
                     f"[LIBRARIAN] CBAC Access Denied: Agent '{canonical_agent}' unauthorized for skill '{skill_id}' ({action})."
@@ -79,12 +89,15 @@ class SkillExecutorMixin:
                 return None
 
         # 4. Check in-memory registered skills cache
-        if hasattr(self, "_skills") and action in self._skills:
-            in_mem_skill = self._skills[action]
+        skills_map = getattr(self, "_skills", {})
+        if action in skills_map:
+            in_mem_skill = skills_map[action]
             logger.info(f"[LIBRARIAN] In-memory skill contract '{action}' checked out.")
             if isinstance(in_mem_skill, BaseSkill):
                 if inspect.iscoroutinefunction(in_mem_skill.execute):
-                    async def async_in_mem_wrapper(agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs):
+                    async def async_in_mem_wrapper(
+                        agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
+                    ):
                         return await in_mem_skill.execute(
                             agent_name or agent,
                             parameters if parameters is not None else (params or {}),
@@ -102,8 +115,16 @@ class SkillExecutorMixin:
 
         try:
             # Defensive property extraction
-            raw_path = row.get("entry_file_path") if isinstance(row, dict) else getattr(row, "entry_file_path", None)
-            handler_name = row.get("handler_name") if isinstance(row, dict) else getattr(row, "handler_name", "execute")
+            raw_path = (
+                row.get("entry_file_path")
+                if isinstance(row, dict)
+                else getattr(row, "entry_file_path", None)
+            )
+            handler_name = (
+                row.get("handler_name")
+                if isinstance(row, dict)
+                else getattr(row, "handler_name", "execute")
+            )
 
             # Pre-flight Guardrail 1: DB entry missing disk path definition
             if not raw_path:
@@ -142,9 +163,13 @@ class SkillExecutorMixin:
                     and attr is not BaseSkill
                 ):
                     instance = attr()
-                    logger.info(f"[LIBRARIAN] Checked out BaseSkill class '{attr_name}' for action '{action}' ({skill_id}).")
+                    logger.info(
+                        f"[LIBRARIAN] Checked out BaseSkill class '{attr_name}' for action '{action}' ({skill_id})."
+                    )
                     if inspect.iscoroutinefunction(instance.execute):
-                        async def async_base_skill_wrapper(agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs):
+                        async def async_base_skill_wrapper(
+                            agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
+                        ):
                             return await instance.execute(
                                 agent_name or agent,
                                 parameters if parameters is not None else (params or {}),
@@ -161,16 +186,22 @@ class SkillExecutorMixin:
             # Resolution Priority 2: Explicit function corresponding to handler_name
             if handler_name and hasattr(module, handler_name):
                 target_func = getattr(module, handler_name)
-                logger.info(f"[LIBRARIAN] Checked out handler function '{handler_name}' for action '{action}' ({skill_id}).")
+                logger.info(
+                    f"[LIBRARIAN] Checked out handler function '{handler_name}' for action '{action}' ({skill_id})."
+                )
                 return self._wrap_callable(target_func, default_action=action)
 
             # Resolution Priority 3: Fallback module action entrypoint
             if hasattr(module, "execute_action"):
                 target_func = getattr(module, "execute_action")
-                logger.info(f"[LIBRARIAN] Checked out 'execute_action' fallback for action '{action}' ({skill_id}).")
+                logger.info(
+                    f"[LIBRARIAN] Checked out 'execute_action' fallback for action '{action}' ({skill_id})."
+                )
 
                 if inspect.iscoroutinefunction(target_func):
-                    async def async_fallback(agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs):
+                    async def async_fallback(
+                        agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
+                    ):
                         eff_params = parameters if parameters is not None else (params or {})
                         return await target_func(action, eff_params)
                     return async_fallback

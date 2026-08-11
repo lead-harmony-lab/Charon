@@ -1,10 +1,10 @@
 """
 charon/core/prompts.py
-System Version: v0.3.0 | File Revision: 3.2.0
+System Version: v0.4.0 | File Revision: 4.0.0
 
-Module: Dynamic prompt generation and ACK formatting adhering strictly to the
-Janitorial Anchor Directive (Role-based abstraction, DB-driven prompts, and
-SkillLibrarian display accessors).
+Module: Pure DB-driven prompt generation and ACK formatting adhering strictly to
+dynamic routing tables (dynamic_routing_rules, route_registry, system_roles).
+Zero hardcoded string bias. Zero static fallbacks.
 """
 
 import logging
@@ -14,115 +14,136 @@ from typing import Any, Dict, Optional, Union
 
 from charon.config.paths import STATE_DB_PATH
 from charon.core.skills.librarian import SkillLibrarian
+from charon.db.connection import get_connection
 from charon.db.repositories.prompts import PromptRepository
 
 logger = logging.getLogger("Charon.Core.Prompts")
 
-# Fallback keys used to load base system prompts
-ROUTING_PROMPT_KEY = "system_routing_base"
-EXTRACTION_PROMPT_KEY = "system_extraction_base"
 
-# Static fallback templates when DB system prompts are empty or unpopulated
-DEFAULT_ROUTING_PROMPT = """You are Charon's Intent Routing System.
-Analyze user requests and route them to the appropriate active role based on the registered roster below.
-
-{dynamic_roster}"""
-
-DEFAULT_EXTRACTION_PROMPT = """You are Charon's Action Parameter Extractor.
-Extract parameters matching the registered action schema for the target role.
-
-{dynamic_capabilities}"""
+class DynamicRoutingError(RuntimeError):
+    """Raised when the database contains no active routing rules or system roles."""
+    pass
 
 
-def _fetch_db_prompt_template(
-    prompt_key: str,
-    repo: Optional[PromptRepository] = None,
-    db_path: Union[str, Path] = STATE_DB_PATH,
-) -> str:
+def fetch_dynamic_routing_context(db_path: Union[str, Path] = STATE_DB_PATH) -> str:
     """
-    Retrieves a system prompt template strictly via PromptRepository.
-    Falls back to static default constants if no custom prompt is defined.
+    Constructs the routing context strictly from dynamic_routing_rules.
     """
-    repo = repo or PromptRepository(db_path)
-    role_target = "role_planner" if "routing" in prompt_key else "default_system_generalist"
+    query = """
+        SELECT trigger, agent_id, description 
+        FROM dynamic_routing_rules
+        ORDER BY trigger ASC;
+    """
+    try:
+        with get_connection(db_path, read_only=True, row_factory=True) as conn:
+            cursor = conn.execute(query)
+            rules = cursor.fetchall()
 
-    template = repo.get_system_prompt_template(role_target)
-    if template:
-        return template
+        if not rules:
+            return ""
 
-    # Fall back to hardcoded default constants
-    if prompt_key == ROUTING_PROMPT_KEY:
-        return DEFAULT_ROUTING_PROMPT
-    if prompt_key == EXTRACTION_PROMPT_KEY:
-        return DEFAULT_EXTRACTION_PROMPT
-
-    return "{dynamic_content}"
+        rule_lines = [
+            f"- IF request matches '{r['trigger']}' -> ROUTE TO '{r['agent_id']}' ({r['description']})"
+            for r in rules
+        ]
+        return "\n".join(rule_lines)
+    except Exception as err:
+        logger.error(f"[Prompts] Failed to query dynamic_routing_rules: {err}")
+        return ""
 
 
 def build_routing_prompt(
+    target_role_or_agent: Optional[str] = None,
     repo: Optional[PromptRepository] = None,
     db_path: Union[str, Path] = STATE_DB_PATH,
 ) -> str:
     """
-    Dynamically builds the routing prompt by populating DB prompt templates
-    with available system_roles rather than raw agent_ids.
+    Dynamically builds the routing prompt purely from active system roles and
+    dynamic routing rules in SQLite. Fails fast if no DB state is present.
     """
     repo = repo or PromptRepository(db_path)
-    roster_items = repo.get_active_role_roster()
+
+    # 1. Fetch active role roster
+    roster_items = repo.get_active_role_roster() if hasattr(repo, "get_active_role_roster") else []
+
+    # 2. Fetch dynamic routing rules
+    routing_rules = fetch_dynamic_routing_context(db_path)
+
+    if not roster_items and not routing_rules:
+        raise DynamicRoutingError(
+            "[FATAL] Cannot build routing prompt: No active system_roles or dynamic_routing_rules "
+            "found in charon_state.db."
+        )
 
     roster_lines = [
-        f"- {item['role_name']}: {item['description']}" for item in roster_items
+        f"- Role '{item['role_name']}': {item['description']}"
+        for item in roster_items
+        if isinstance(item, dict)
     ]
 
-    dynamic_roster = "\n".join(roster_lines) if roster_lines else "NO ACTIVE ROLES REGISTERED."
+    prompt_parts = []
 
-    # Load base prompt template directly from database / fallbacks
-    base_template = _fetch_db_prompt_template(ROUTING_PROMPT_KEY, repo=repo, db_path=db_path)
+    # Optional role-specific system prompt override from agent_registry
+    if target_role_or_agent and hasattr(repo, "get_system_prompt_template"):
+        custom_base = repo.get_system_prompt_template(target_role_or_agent)
+        if custom_base:
+            prompt_parts.append(custom_base)
 
-    if "{dynamic_roster}" in base_template:
-        return base_template.format(dynamic_roster=dynamic_roster)
+    if roster_lines:
+        prompt_parts.append("ACTIVE ROLES:\n" + "\n".join(roster_lines))
 
-    return f"{base_template}\n\nACTIVE ROLES:\n{dynamic_roster}"
+    if routing_rules:
+        prompt_parts.append("DYNAMIC ROUTING RULES:\n" + routing_rules)
+
+    return "\n\n".join(prompt_parts)
 
 
 def build_extraction_prompt(
+    target_role_or_agent: Optional[str] = None,
     repo: Optional[PromptRepository] = None,
     db_path: Union[str, Path] = STATE_DB_PATH,
 ) -> str:
     """
-    Dynamically builds extraction capabilities mapped across roles and skill registries.
+    Dynamically builds capability extraction schemas mapped across active roles
+    and skill registries directly from SQLite.
     """
     repo = repo or PromptRepository(db_path)
-    capabilities = repo.get_role_capabilities()
+
+    capabilities = repo.get_role_capabilities() if hasattr(repo, "get_role_capabilities") else []
+    if not capabilities:
+        raise DynamicRoutingError(
+            "[FATAL] Cannot build extraction prompt: No active skill schemas registered in skill_registry."
+        )
 
     capability_lines = []
     current_role = ""
 
     for row in capabilities:
-        role_name = row["role_name"]
+        if not isinstance(row, dict):
+            continue
+        role_name = row.get("role_name", "UNKNOWN")
         if role_name != current_role:
             capability_lines.append(f"\nFOR ROLE {role_name.upper()}:")
             current_role = role_name
 
-        action = row["action_name"]
-        desc = row["description"]
-        params = row["parameters"] or "{}"
+        action = row.get("action_name", "")
+        desc = row.get("description", "")
+        params = row.get("parameters") or "{}"
 
         capability_lines.append(
-            f'    - {desc} -> Set "action": "{action}", matching schema: {params}'
+            f'    - {desc} -> Action: "{action}", Schema: {params}'
         )
 
-    dynamic_capabilities = (
-        "\n".join(capability_lines) if capability_lines else "NO ACTIVE SKILLS REGISTERED."
-    )
+    prompt_parts = []
 
-    # Load base extraction prompt template directly from database / fallbacks
-    base_template = _fetch_db_prompt_template(EXTRACTION_PROMPT_KEY, repo=repo, db_path=db_path)
+    if target_role_or_agent and hasattr(repo, "get_system_prompt_template"):
+        custom_base = repo.get_system_prompt_template(target_role_or_agent)
+        if custom_base:
+            prompt_parts.append(custom_base)
 
-    if "{dynamic_capabilities}" in base_template:
-        return base_template.format(dynamic_capabilities=dynamic_capabilities)
+    prompt_parts.append("ACTIVE CAPABILITIES:\n" + "\n".join(capability_lines))
 
-    return f"{base_template}\n\nACTIVE CAPABILITIES:\n{dynamic_capabilities}"
+    return "\n\n".join(prompt_parts)
 
 
 def get_agent_ack(
@@ -134,12 +155,11 @@ def get_agent_ack(
 ) -> str:
     """
     Formats a status acknowledgment using SkillLibrarian presentation accessors
-    to resolve human-readable display names instead of leaking raw IDs.
+    to resolve human-readable display names dynamically from DB state.
     """
     params = parameters or {}
     target = params.get("target_path") or params.get("query") or params.get("command") or ""
 
-    # Always retrieve presentation label via SkillLibrarian accessor
     display_name = SkillLibrarian.get_display_name_for_role(agent_id_or_role)
     if display_name == agent_id_or_role:
         display_name = SkillLibrarian.get_display_name_for_agent(agent_id_or_role)
@@ -149,15 +169,18 @@ def get_agent_ack(
         return f"[{display_name}: Executing {action} on '{clean_target}']"
 
     repo = repo or PromptRepository(db_path)
-    fallback = repo.get_default_action_for_identifier(agent_id_or_role) or "Processing request."
+    fallback = "Processing request."
+    try:
+        if hasattr(repo, "get_default_action_for_identifier") and callable(repo.get_default_action_for_identifier):
+            fallback = repo.get_default_action_for_identifier(agent_id_or_role) or fallback
+    except Exception as err:
+        logger.debug(f"[Prompts] Failed to query default action for identifier '{agent_id_or_role}': {err}")
 
     return f"[{display_name}: {fallback}]"
 
 
 def __getattr__(name: str) -> Any:
-    """
-    Backward-compatibility interface resolving dynamic calls via DB getters.
-    """
+    """Backward-compatibility interface resolving dynamic calls via DB getters."""
     if name == "CHARON_ROUTING_PROMPT":
         return build_routing_prompt()
     if name == "EXTRACTION_SYSTEM_PROMPT":

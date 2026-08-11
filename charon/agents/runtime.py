@@ -1,9 +1,10 @@
 """
 charon/agents/runtime.py
-System Version: v0.4.0 | File Revision: 1.1.0
+System Version: v0.4.0 | File Revision: 1.2.0
 
 Universal Data-Driven Agent Runtime.
 Instantiated dynamically by the Router using metadata stored in SQLite agent_registry.
+Enforces strict DB SSOT skill resolution and fail-fast execution with zero mock fallbacks.
 """
 
 import json
@@ -20,6 +21,7 @@ class RuntimeAgent(BaseAgent):
     """
     Universal concrete implementation of BaseAgent.
     Hydrated with persona, system prompt, active tools, and weights from agent_registry.
+    Executes skills mapped to agent_id in DB SSOT and fails fast on unregistered actions.
     """
 
     def __init__(
@@ -59,24 +61,28 @@ class RuntimeAgent(BaseAgent):
     ) -> Union[str, Dict[str, Any]]:
         """
         Primary execution dispatch:
-        1. Checks for dynamic skill handler in SkillLibrarian.
-        2. Executes dynamic skill if present, or falls back to prompt-driven processing.
+        1. Queries SkillLibrarian SSOT for dynamic skill registered to this agent_id.
+        2. Executes registered skill handler.
+        3. FAILS FAST if action is not registered in the database for this agent persona.
         """
         self.report_progress(f"Executing action '{action}' via agent persona '{self.agent_id}'", action=action)
 
-        # 1. Check if action maps to a dynamic skill checkout
-        if self.librarian and self.librarian.get_action_manifest(action, self.name):
+        if not self.librarian:
+            raise RuntimeError(f"[FAIL-FAST] SkillLibrarian unavailable for runtime agent '{self.agent_id}'.")
+
+        # 1. Resolve registered skill handler via Librarian SSOT
+        has_action = False
+        if hasattr(self.librarian, "get_action_manifest"):
+            has_action = bool(self.librarian.get_action_manifest(action, self.agent_id))
+        elif hasattr(self.librarian, "list_available_actions"):
+            has_action = action in self.librarian.list_available_actions(self.agent_id)
+
+        if has_action:
             logger.info(f"[{self.name}] Dispatching to dynamic skill handler for action '{action}'")
             return self.execute_dynamic(action, parameters, raw_prompt)
 
-        # 2. Native/Prompt execution fallback
-        logger.info(f"[{self.name}] No dynamic skill handler for '{action}'. Running core agent task.")
-        fallback_msg = f"Action '{action}' executed under persona '{self.name}'."
-        self.report_response(fallback_msg)
-
-        return {
-            "status": "success",
-            "agent_id": self.agent_id,
-            "action": action,
-            "result": fallback_msg,
-        }
+        # 2. FAIL FAST: Reject unregistered skill execution immediately
+        raise ValueError(
+            f"[FAIL-FAST] Unregistered action '{action}' requested for agent '{self.agent_id}' ({self.name}). "
+            f"Action must be registered in the database 'skills' table bound to this agent_id."
+        )

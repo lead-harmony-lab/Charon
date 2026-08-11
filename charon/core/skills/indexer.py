@@ -1,11 +1,12 @@
 """
 charon/core/skills/indexer.py
-System Version: v0.6.0 | File Revision: 6.1.0
+System Version: v0.6.3 | File Revision: 7.0.0
 
 Module: Dynamic discovery, skill promotion, route syncing, and database re-indexing mixin.
 Maintains clean separation between immutable code identifiers (skill_id) and prompt contracts (action_name).
 All direct SQL execution extracted to repository layer.
 Integrates CBAC Schema V2 permission indexing and quarantine status preservation.
+Enforces strict fail-fast role resolution against database registry.
 """
 
 import json
@@ -17,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from charon.config.paths import DYNAMIC_SKILLS_DIR
 from charon.core.skills.base import BaseSkill
 from charon.core.skills.models import SkillManifest
+from charon.core.skills.roles import RoleResolutionError
 
 logger = logging.getLogger("Charon.Core.Skills.Indexer")
 
@@ -79,6 +81,7 @@ class SkillIndexerMixin:
         Unified pipeline for skill indexing and role-based route synchronization.
         Establishes skill_registry entries and maps agent capability FKs via agent_skill_map.
         Saves CBAC Schema V2 required permissions and preserves active quarantine states.
+        Fails fast if any manifest references an invalid role or agent not present in SQLite.
         """
         if not self.db_path.parent.exists():
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,13 +200,13 @@ class SkillIndexerMixin:
                             for raw_agent_id in allowed_agents_list:
                                 if raw_agent_id == "*":
                                     continue
-                                canonical_id = (
-                                    self.resolve_agent_id_for_role(raw_agent_id)
-                                    if hasattr(self, "resolve_agent_id_for_role")
-                                    else raw_agent_id
-                                )
+                                # Strict DB lookup: Fails immediately if raw_agent_id/role is unmapped in SQLite
+                                canonical_id = self.resolve_agent_id_for_role(raw_agent_id)
                                 self.repo.link_agent_to_skill(canonical_id, action_skill_id)
 
+                except RoleResolutionError as rre:
+                    logger.error(f"[LIBRARIAN] Role Resolution Error indexing manifest {manifest_path}: {rre}")
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"[LIBRARIAN] Failed to index manifest {manifest_path}: {e}",
@@ -220,3 +223,4 @@ class SkillIndexerMixin:
             logger.info("[LIBRARIAN] Skill reindexing and routing sync complete.")
         except Exception as e:
             logger.error(f"[LIBRARIAN] Reindexing pipeline failed: {e}", exc_info=True)
+            raise
