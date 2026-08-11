@@ -1,7 +1,7 @@
 # Subsystem Domain Context: 03_Gateway_CLI_and_IPC
-> **Generated:** 2026-08-10 05:34 UTC  
+> **Generated:** 2026-08-11 06:46 UTC  
 > **Charon Core Version:** v8.0  
-> **Git Branch:** `main` | **Commit:** `bc5f379`
+> **Git Branch:** `Streamline-Dynamic-Routing` | **Commit:** `c416670`
 
 ---
 
@@ -514,9 +514,10 @@ __all__ = [
 ```python
 """
 charon/cli/librarian/cli.py
-System Version: v0.1.0 | File Revision: 1.2.0
+System Version: v0.2.0 | File Revision: 2.0.0
 
-Module: CLI subcommands dispatcher and TUI session launcher.
+Module: CLI subcommands dispatcher and TUI session launcher for Charon Librarian.
+Aligned with Schema V3.
 """
 
 import argparse
@@ -533,7 +534,12 @@ from charon.cli.librarian.lifecycle import (
     run_rename,
 )
 from charon.cli.librarian.manifest import run_check
-from charon.cli.librarian.permissions import run_list, run_permission_change
+from charon.cli.librarian.permissions import (
+    run_list,
+    run_permission_change,
+    set_default_action,
+)
+from charon.cli.librarian.purge_gaps import purge_resolved_gaps
 
 
 def main(args: Optional[List[str]] = None) -> int:
@@ -551,7 +557,7 @@ def main(args: Optional[List[str]] = None) -> int:
     subparsers.add_parser("sync", help="Re-index filesystem manifests into SQLite registry.")
     subparsers.add_parser("audit", help="Audit database registry vs filesystem state drift.")
 
-    # RBAC Management
+    # RBAC & Action Management
     grant_p = subparsers.add_parser("grant", help="Grant agent skill authorization.")
     grant_p.add_argument("skill_id", type=str)
     grant_p.add_argument("agent", type=str)
@@ -559,6 +565,15 @@ def main(args: Optional[List[str]] = None) -> int:
     revoke_p = subparsers.add_parser("revoke", help="Revoke agent skill authorization.")
     revoke_p.add_argument("skill_id", type=str)
     revoke_p.add_argument("agent", type=str)
+
+    default_action_p = subparsers.add_parser(
+        "set-default-action", help="Set default execution action for an agent."
+    )
+    default_action_p.add_argument("agent_id", type=str, help="Target agent ID")
+    default_action_p.add_argument("action_name", type=str, help="Default action name")
+
+    # Maintenance
+    subparsers.add_parser("purge-gaps", help="Purge resolved skill gaps and vacuum DB.")
 
     # Ingestion & Editing
     create_p = subparsers.add_parser("create", help="Scaffold a new skill package.")
@@ -611,9 +626,17 @@ def main(args: Optional[List[str]] = None) -> int:
     elif parsed.subcommand in ("grant", "revoke"):
         return run_permission_change(
             skill_id=parsed.skill_id,
-            agent_name=parsed.agent,
+            agent_id=parsed.agent,
             action=parsed.subcommand,
         )
+    elif parsed.subcommand == "set-default-action":
+        return set_default_action(
+            agent_id=parsed.agent_id,
+            action_name=parsed.action_name,
+        )
+    elif parsed.subcommand == "purge-gaps":
+        purge_resolved_gaps()
+        return 0
     elif parsed.subcommand == "create":
         return run_create(
             skill_id=parsed.skill_id,
@@ -654,14 +677,18 @@ if __name__ == "__main__":
 ```python
 """
 charon/cli/librarian/database.py
-System Version: v0.3.0 | File Revision: 1.3.1
+System Version: v0.3.0 | File Revision: 2.0.0
 
 Module: SQLite registry synchronization, agent_skill_map verification, and drift auditing.
+Updated to support namespaced action unrolling and accurate FK schema alignment.
 """
 
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+import re
+from typing import Any, Dict, List, Set, Tuple
+
 from rich.console import Console
 from rich.table import Table
 
@@ -676,6 +703,12 @@ from charon.db.connection import get_connection
 
 console = Console()
 logger = logging.getLogger("charon.cli.librarian.database")
+
+
+def _slugify(text: str) -> str:
+    """Converts display names/categories to clean snake_case identifiers."""
+    text = re.sub(r"[^\w\s-]", "", text.lower())
+    return re.sub(r"[-\s]+", "_", text).strip("_")
 
 
 def run_sync() -> int:
@@ -704,20 +737,20 @@ def run_sync() -> int:
 
 
 def _audit_agent_skill_map(conn) -> List[Tuple[str, str]]:
-    """Identifies orphaned records in agent_skill_map referencing missing actions/skills."""
+    """Identifies orphaned records in agent_skill_map referencing missing skill_ids."""
     cursor = conn.cursor()
-    # Check if agent_skill_map exists
     cursor.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_skill_map'"
     )
     if not cursor.fetchone():
         return []
 
+    # Joined on skill_id to match agent_skill_map foreign key schema
     cursor.execute("""
-        SELECT asm.agent_id, asm.action_name
+        SELECT asm.agent_id, asm.skill_id
         FROM agent_skill_map asm
-        LEFT JOIN skill_registry sr ON asm.action_name = sr.action_name
-        WHERE sr.action_name IS NULL
+        LEFT JOIN skill_registry sr ON asm.skill_id = sr.skill_id
+        WHERE sr.skill_id IS NULL
     """)
     return cursor.fetchall()
 
@@ -728,21 +761,19 @@ def run_audit() -> int:
         "[bold blue]🔍 Auditing SQLite Skill Registry & agent_skill_map vs Filesystem...[/bold blue]\n"
     )
 
-    db_skills: Dict[str, int] = {}
+    db_registered_actions: Set[str] = set()
+    db_registered_skills: Set[str] = set()
     orphaned_mappings: List[Tuple[str, str]] = []
 
     if STATE_DB_PATH.exists():
         try:
             with get_connection(STATE_DB_PATH, read_only=True) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT skill_id, COUNT(action_name) 
-                    FROM skill_registry 
-                    GROUP BY skill_id
-                """)
-                db_skills = {row[0]: row[1] for row in cursor.fetchall()}
+                cursor.execute("SELECT skill_id, action_name FROM skill_registry")
+                for row in cursor.fetchall():
+                    db_registered_skills.add(row[0])
+                    db_registered_actions.add(row[1])
 
-                # Audit agent_skill_map for integrity faults
                 orphaned_mappings = _audit_agent_skill_map(conn)
 
         except Exception as e:
@@ -751,7 +782,7 @@ def run_audit() -> int:
             )
             return 1
 
-    disk_skills: Dict[str, Dict[str, Any]] = {}
+    disk_manifests: Dict[str, Dict[str, Any]] = {}
     search_dirs = [
         PKG_STAGED_SKILLS_DIR,
         PKG_DYNAMIC_SKILLS_DIR,
@@ -767,70 +798,60 @@ def run_audit() -> int:
                     data = json.load(f)
                     sid = data.get("skill_id")
                     if sid:
+                        category = data.get("category", "General")
+                        category_slug = _slugify(category)
                         actions = data.get("supported_actions", {})
-                        action_count = (
-                            len(actions) if isinstance(actions, dict) else 0
-                        )
-                        disk_skills[sid] = {
+
+                        expected_actions = []
+                        if isinstance(actions, dict):
+                            for action_key in actions.keys():
+                                expected_actions.append(f"{category_slug}:{action_key}")
+
+                        disk_manifests[sid] = {
                             "path": manifest_path,
-                            "action_count": action_count,
-                            "stage": data.get("stage", "Unknown"),
+                            "category": category,
+                            "expected_actions": expected_actions,
                         }
             except Exception as e:
                 logger.warning(f"Failed to read manifest at {manifest_path}: {e}")
                 continue
 
-    all_skill_ids = sorted(
-        list(set(db_skills.keys()) | set(disk_skills.keys()))
-    )
-
-    if not all_skill_ids:
+    if not disk_manifests and not db_registered_skills:
         console.print(
             "[yellow]No skills discovered in SQLite or on disk.[/yellow]"
         )
         return 0
 
     table = Table(title="Charon Skill Registry vs Filesystem Audit")
-    table.add_column("Skill ID", style="bold white")
-    table.add_column("Disk Status", justify="center")
-    table.add_column("DB Status", justify="center")
-    table.add_column("Action Handlers (Disk / DB)", justify="center")
+    table.add_column("Manifest Skill ID", style="bold white")
+    table.add_column("Category", style="cyan")
+    table.add_column("Disk Actions", justify="center")
+    table.add_column("DB Indexed Actions", justify="center")
     table.add_column("Drift Analysis", style="yellow")
 
     drift_count = 0
 
-    for sid in all_skill_ids:
-        in_disk = sid in disk_skills
-        in_db = sid in db_skills
+    for sid, meta in disk_manifests.items():
+        expected_actions = meta["expected_actions"]
+        indexed_actions = [
+            act for act in expected_actions if act in db_registered_actions
+        ]
 
-        disk_actions = disk_skills[sid]["action_count"] if in_disk else 0
-        db_actions = db_skills.get(sid, 0)
+        disk_count = len(expected_actions)
+        db_count = len(indexed_actions)
 
-        disk_str = (
-            "[green]EXISTS[/green]" if in_disk else "[red]MISSING[/red]"
-        )
-        db_str = (
-            "[green]INDEXED[/green]" if in_db else "[red]NOT INDEXED[/red]"
-        )
-        action_str = f"{disk_actions} / {db_actions}"
+        action_str = f"{disk_count} / {db_count}"
 
-        if in_disk and not in_db:
-            analysis = "[bold red]Unindexed Skill[/bold red] (Run sync to add)"
+        if db_count == 0:
+            analysis = "[bold red]Unindexed Skill[/bold red] (Run sync to index)"
             drift_count += 1
-        elif in_db and not in_disk:
-            analysis = (
-                "[bold red]Orphaned DB Record[/bold red] (Run sync to purge)"
-            )
-            drift_count += 1
-        elif disk_actions != db_actions:
-            analysis = (
-                "[bold yellow]Action Mismatch[/bold yellow] (Run sync to update)"
-            )
+        elif db_count < disk_count:
+            analysis = f"[bold yellow]Partial Actions Indexed[/bold yellow] ({disk_count - db_count} missing)"
             drift_count += 1
         else:
             analysis = "[dim green]In Sync[/dim green]"
 
-        table.add_row(sid, disk_str, db_str, action_str, analysis)
+        table.add_row(sid, meta["category"], str(disk_count), str(db_count), analysis)
 
     console.print(table)
 
@@ -842,9 +863,9 @@ def run_audit() -> int:
         )
         map_table = Table(title="Orphaned Agent Skill Mappings")
         map_table.add_column("Agent ID", style="bold cyan")
-        map_table.add_column("Missing Action Name", style="bold red")
-        for agent_id, action_name in orphaned_mappings:
-            map_table.add_row(agent_id, action_name)
+        map_table.add_column("Missing Skill ID", style="bold red")
+        for agent_id, skill_id in orphaned_mappings:
+            map_table.add_row(agent_id, skill_id)
         console.print(map_table)
 
     if drift_count > 0:
@@ -871,7 +892,7 @@ if __name__ == "__main__":
 ```python
 """
 charon/cli/librarian/forge.py
-System Version: v0.1.0 | File Revision: 3.0.0
+System Version: v0.2.0 | File Revision: 3.1.0
 
 Module: Charon Skill Forge utility integrated within Librarian.
 Handles querying open skill gaps, forging candidate dynamic skill scaffolds,
@@ -885,13 +906,14 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
 
+from charon.cli.librarian.service import register_and_bind_skill
 from charon.config.paths import (
     DYNAMIC_SKILLS_DIR,
     PKG_DYNAMIC_SKILLS_DIR,
     PKG_STAGED_SKILLS_DIR,
     STATE_DB_PATH,
 )
-from charon.core.skills import SkillLibrarian, SkillManifest
+from charon.core.skills import SkillLibrarian
 from charon.db.repositories import SkillGapRepository, SkillRepository
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] [FORGE] %(message)s")
@@ -918,7 +940,7 @@ def forge_skill_scaffold(
     output_dir: Optional[Path] = None,
     system_requirements: Optional[List[str]] = None,
 ) -> Path:
-    """Synthesizes a skill blueprint scaffold on disk (manifest.json + plugin.py)."""
+    """Synthesizes a skill blueprint scaffold on disk (manifest.json + plugin.py) aligned with V3 schema."""
     skill_id = f"{action_name}_skill"
     base_dir = output_dir or (PKG_STAGED_SKILLS_DIR / skill_id)
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -927,9 +949,15 @@ def forge_skill_scaffold(
         "skill_id": skill_id,
         "version": "0.1.0",
         "stage": "Staged",
-        "shelf_tags": [target_agent, "*"],
+        "category": "Dynamic",
+        "description": f"Dynamic skill handler for action '{action_name}'",
+        "allowed_agents": [target_agent],
         "supported_actions": {
-            action_name: "execute"
+            action_name: {
+                "description": f"Executes '{action_name}'",
+                "handler_name": "execute",
+                "parameters": {},
+            }
         },
         "system_requirements": system_requirements or [],
         "consumed_artifacts": [],
@@ -938,7 +966,8 @@ def forge_skill_scaffold(
 
     manifest_path = base_dir / "manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest_data, f, indent=2)
+        json.dump(manifest_data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
 
     plugin_code = f'''"""
 Dynamic skill plugin for action '{action_name}'.
@@ -970,10 +999,9 @@ def execute(agent_name: str, parameters: Dict[str, Any], raw_prompt: str = "") -
 
 
 def register_disk_skills(db_path: Path = STATE_DB_PATH) -> int:
-    """Scans search paths, parses manifest.json files, and populates skill_registry."""
+    """Scans search paths, parses manifest.json files, and populates Schema V3 DB tables."""
     search_paths = [PKG_DYNAMIC_SKILLS_DIR, PKG_STAGED_SKILLS_DIR, DYNAMIC_SKILLS_DIR]
     count = 0
-    repo = SkillRepository(str(db_path))
 
     for search_path in search_paths:
         expanded = Path(search_path).expanduser().resolve()
@@ -982,31 +1010,25 @@ def register_disk_skills(db_path: Path = STATE_DB_PATH) -> int:
         for manifest_path in expanded.rglob("manifest.json"):
             try:
                 manifest_content = manifest_path.read_text(encoding="utf-8")
-                manifest = SkillManifest.model_validate_json(manifest_content)
+                manifest_data = json.loads(manifest_content)
                 plugin_entry = manifest_path.parent / "plugin.py"
 
                 if not plugin_entry.exists():
-                    logger.warning(f"Skipping {manifest.skill_id}: missing plugin.py at {plugin_entry}")
+                    logger.warning(
+                        f"Skipping {manifest_data.get('skill_id', manifest_path.parent.name)}: missing plugin.py at {plugin_entry}"
+                    )
                     continue
 
-                for action, handler in manifest.supported_actions.items():
-                    record = {
-                        "action_name": action,
-                        "skill_id": manifest.skill_id,
-                        "version": getattr(manifest, "version", "0.1.0"),
-                        "category": getattr(manifest, "category", "general"),
-                        "description": getattr(manifest, "description", ""),
-                        "parameters": json.dumps(getattr(manifest, "parameters", {})),
-                        "manifest_json": manifest_content,
-                        "system_requirements": json.dumps(manifest.system_requirements),
-                        "consumed_artifacts": json.dumps(manifest.consumed_artifacts),
-                        "produced_artifacts": json.dumps(manifest.produced_artifacts),
-                        "entry_file_path": str(plugin_entry.resolve()),
-                        "handler_name": handler,
-                    }
-                    repo.upsert_skill(record)
-                    count += 1
-                logger.info(f"Indexed dynamic action '{action}' -> {manifest.skill_id} ({handler})")
+                # Delegate directly to the V3 registration service
+                register_and_bind_skill(
+                    skill_manifest=manifest_data,
+                    entry_file_path=plugin_entry,
+                    db_path=db_path,
+                )
+                count += 1
+                logger.info(
+                    f"Indexed dynamic action(s) for '{manifest_data.get('skill_id')}' from {manifest_path}"
+                )
             except Exception as exc:
                 logger.error(f"Error processing {manifest_path}: {exc}")
 
@@ -1015,8 +1037,13 @@ def register_disk_skills(db_path: Path = STATE_DB_PATH) -> int:
 
 def sync_db(db_path: Path = STATE_DB_PATH) -> int:
     """Ensures schema consistency and re-indexes all disk skills into the registry."""
-    repo = SkillRepository(str(db_path))
-    repo.ensure_schema()
+    try:
+        repo = SkillRepository(str(db_path))
+        if hasattr(repo, "ensure_schema"):
+            repo.ensure_schema()
+    except Exception as exc:
+        logger.warning(f"Could not execute SkillRepository schema verification: {exc}")
+
     return register_disk_skills(db_path)
 
 
@@ -1025,28 +1052,29 @@ def promote_and_resolve_gap(
     skill_dir: Path,
     db_path: Path = STATE_DB_PATH,
 ) -> bool:
-    """Indexes newly forged skill via SkillLibrarian and updates gap status via repository."""
-    librarian = SkillLibrarian.get_instance()
-
+    """Indexes newly forged skill via SkillLibrarian/register_disk_skills and marks gap as resolved."""
     indexed_count = 0
-    if hasattr(librarian, "index_skill_directory"):
-        indexed_count = librarian.index_skill_directory(skill_dir)
-    elif hasattr(librarian, "scan_and_index"):
-        indexed_count = librarian.scan_and_index(skill_dir)
-    else:
-        indexed_count = register_disk_skills(db_path)
+    try:
+        librarian = SkillLibrarian.get_instance()
+        if hasattr(librarian, "index_skill_directory"):
+            indexed_count = librarian.index_skill_directory(skill_dir)
+        elif hasattr(librarian, "scan_and_index"):
+            indexed_count = librarian.scan_and_index(skill_dir)
+    except Exception as exc:
+        logger.debug(f"Librarian instance lookup fallback: {exc}")
 
     if indexed_count == 0:
-        logger.warning(
-            f"Librarian returned 0 indexed skills for {skill_dir}. "
-            "Re-running full DB schema sync fallback..."
-        )
-        sync_db(db_path)
+        logger.info("Re-running V3 service sync fallback...")
+        indexed_count = register_disk_skills(db_path)
 
-    repo = SkillGapRepository(db_path)
-    repo.resolve_gap(gap_id)
+    try:
+        repo = SkillGapRepository(db_path)
+        repo.resolve_gap(gap_id)
+        logger.info(f"✅ Marked Gap ID {gap_id} as 'resolved' in state database.")
+    except Exception as e:
+        logger.error(f"Failed to resolve gap ID {gap_id} in database: {e}")
+        return False
 
-    logger.info(f"✅ Marked Gap ID {gap_id} as 'resolved' in state database.")
     return True
 
 
@@ -1074,7 +1102,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve_p.add_argument("--agent", required=True, help="Requesting agent name")
     resolve_p.add_argument("--db", type=Path, default=STATE_DB_PATH, help="Path to charon_state.db")
 
-    sync_p = subparsers.add_parser("sync", help="Synchronize the database schema and re-index disk skills")
+    sync_p = subparsers.add_parser("sync", help="Synchronize database schema and re-index disk skills")
     sync_p.add_argument("--db", type=Path, default=STATE_DB_PATH, help="Path to charon_state.db")
 
     return parser
@@ -1142,32 +1170,116 @@ if __name__ == "__main__":
 ```python
 """
 charon/cli/librarian/ingestion.py
-System Version: v0.1.0 | File Revision: 1.2.0
+System Version: v0.1.0 | File Revision: 2.1.0
 
 Module: Dynamic skill creation, file ingestion, and interactive $EDITOR editing launcher.
 Templates are dynamically loaded from charon/skills/templates/ rather than hardcoded.
+Refactored with AST pre-validation, schema compliance checks, transaction safety,
+and interactive skill identifier resolution with collision prevention.
 """
 
+import ast
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
-from typing import Optional
+from typing import Optional, Tuple
 
 from rich.console import Console
+from rich.prompt import Confirm, Prompt
 
 from charon.cli.librarian.database import run_sync
 from charon.cli.librarian.manifest import validate_manifest_file
 from charon.cli.librarian.permissions import find_skill_manifest
 from charon.cli.librarian.service import register_and_bind_skill
-from charon.config.paths import PKG_STAGED_SKILLS_DIR
+from charon.config.paths import PKG_DYNAMIC_SKILLS_DIR, PKG_STAGED_SKILLS_DIR
 
 console = Console()
 
 SKILLS_TEMPLATES_DIR = (
     Path(__file__).resolve().parents[2] / "skills" / "templates"
 )
+
+
+def _slugify(text: str) -> str:
+    """Normalizes raw input strings into clean snake_case identifiers."""
+    text = re.sub(r"[^\w\s-]", "", text.lower())
+    return re.sub(r"[-\s]+", "_", text).strip("_")
+
+
+def is_skill_id_taken(skill_id: str) -> bool:
+    """Checks if a skill identifier already exists in staged or dynamic registries."""
+    staged_path = PKG_STAGED_SKILLS_DIR / skill_id
+    dynamic_path = PKG_DYNAMIC_SKILLS_DIR / skill_id
+    return staged_path.exists() or dynamic_path.exists()
+
+
+def resolve_ingestion_skill_id(
+    source_path: Path, explicit_id: Optional[str] = None
+) -> Optional[str]:
+    """Interactively resolves and validates a non-colliding skill identifier with the user."""
+    manifest_id = None
+
+    # Pre-read manifest skill_id if source is a directory with a manifest
+    if source_path.is_dir():
+        manifest_file = source_path / "manifest.json"
+        if manifest_file.exists():
+            try:
+                data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                manifest_id = data.get("skill_id")
+            except Exception:
+                pass
+
+    raw_proposed = explicit_id or manifest_id or source_path.stem
+    proposed_id = _slugify(raw_proposed)
+
+    console.print("\n[bold cyan]📦 Skill Ingestion Setup[/bold cyan]")
+    console.print(f"Target Source: [dim]{source_path}[/dim]")
+    console.print(f"Proposed Skill ID: [bold yellow]{proposed_id}[/bold yellow]")
+
+    # Check for collision on proposed name
+    if is_skill_id_taken(proposed_id):
+        console.print(
+            f"[bold red]⚠️ Collision Alert:[/bold red] Skill ID '[cyan]{proposed_id}[/cyan]' already exists in staged or dynamic registries."
+        )
+        use_proposed = False
+    else:
+        use_proposed = Confirm.ask(
+            f"Ingest skill using identifier '[bold green]{proposed_id}[/bold green]'?",
+            default=True,
+        )
+
+    if use_proposed:
+        return proposed_id
+
+    # Interactive prompt loop for custom identifier
+    while True:
+        custom_input = Prompt.ask(
+            "\n[bold cyan]Enter custom skill identifier[/bold cyan] (or 'cancel' to abort)"
+        ).strip()
+
+        if custom_input.lower() == "cancel" or not custom_input:
+            console.print("[yellow]Ingestion cancelled by user.[/yellow]")
+            return None
+
+        clean_id = _slugify(custom_input)
+
+        if not clean_id:
+            console.print(
+                "[bold red]Error:[/bold red] Invalid identifier. Must contain alphanumeric characters."
+            )
+            continue
+
+        if is_skill_id_taken(clean_id):
+            console.print(
+                f"[bold red]Error:[/bold red] Skill ID '[cyan]{clean_id}[/cyan]' is already taken. Please choose another."
+            )
+            continue
+
+        console.print(f"[bold green]✓ Approved identifier:[/bold green] {clean_id}")
+        return clean_id
 
 
 def get_template_content(
@@ -1187,17 +1299,44 @@ def get_template_content(
     return content
 
 
+def verify_plugin_entrypoint(plugin_path: Path) -> Tuple[bool, str]:
+    """Uses AST parsing to verify that plugin.py is syntactically valid and exposes a handler."""
+    if not plugin_path.exists():
+        return False, f"Plugin file missing at: {plugin_path}"
+
+    try:
+        tree = ast.parse(plugin_path.read_text(encoding="utf-8"), filename=str(plugin_path))
+        declared_functions = {
+            node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        }
+
+        # Plugin must define execute_action OR at least one handle_* function
+        if "execute_action" not in declared_functions and not any(
+            f.startswith("handle_") for f in declared_functions
+        ):
+            return (
+                False,
+                "Plugin must define 'execute_action' router or at least one 'handle_<action>' function.",
+            )
+
+        return True, ""
+    except SyntaxError as e:
+        return False, f"Syntax error in plugin file '{plugin_path.name}': {e}"
+
+
 def run_create(skill_id: str, category: str = "General", target_agent: Optional[str] = None) -> int:
     """Scaffolds a new skill template package driven by charon/skills/templates/."""
-    target_dir = PKG_STAGED_SKILLS_DIR / skill_id
-    if target_dir.exists():
+    clean_skill_id = _slugify(skill_id)
+
+    if is_skill_id_taken(clean_skill_id):
         console.print(
-            f"[bold red]Error:[/bold red] Target directory already exists: {target_dir}"
+            f"[bold red]Error:[/bold red] Skill ID '[cyan]{clean_skill_id}[/cyan]' already exists in staged or dynamic registries."
         )
         return 1
 
+    target_dir = PKG_STAGED_SKILLS_DIR / clean_skill_id
     target_dir.mkdir(parents=True, exist_ok=True)
-    replacements = {"SKILL_ID": skill_id, "CATEGORY": category}
+    replacements = {"SKILL_ID": clean_skill_id, "CATEGORY": category}
 
     try:
         manifest_content = get_template_content("manifest.json", replacements)
@@ -1209,9 +1348,16 @@ def run_create(skill_id: str, category: str = "General", target_agent: Optional[
         manifest_path.write_text(manifest_content, encoding="utf-8")
         plugin_path.write_text(plugin_content, encoding="utf-8")
 
+        # 1. AST Static Verification
+        valid_ast, ast_err = verify_plugin_entrypoint(plugin_path)
+        if not valid_ast:
+            console.print(f"[bold red]AST Validation Error:[/bold red] {ast_err}")
+            shutil.rmtree(target_dir)
+            return 1
+
         manifest_data = json.loads(manifest_content)
 
-        # Atomic 4-step registration & binding
+        # 2. Atomic Registration & Binding
         register_and_bind_skill(
             skill_manifest=manifest_data,
             entry_file_path=plugin_path,
@@ -1219,29 +1365,28 @@ def run_create(skill_id: str, category: str = "General", target_agent: Optional[
         )
 
         console.print(
-            f"[bold green]✅ Scaffolded and bound new skill '[cyan]{skill_id}[/cyan]' at:[/bold green] {target_dir}"
+            f"[bold green]✅ Scaffolded and bound new skill '[cyan]{clean_skill_id}[/cyan]' at:[/bold green] {target_dir}"
         )
         return run_sync()
+
     except Exception as e:
-        console.print(
-            f"[bold red]Error creating skill scaffold:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Error creating skill scaffold:[/bold red] {e}")
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
         return 1
 
 
 def run_ingest(source_path: Path, skill_id: Optional[str] = None, target_agent: Optional[str] = None) -> int:
-    """Ingests external standalone Python files or folders into staged skills using templates for fallback metadata."""
+    """Ingests external standalone Python files or folders into staged skills using templates for fallbacks."""
     source_path = source_path.expanduser().resolve()
     if not source_path.exists():
-        console.print(
-            f"[bold red]Error:[/bold red] Source path '{source_path}' does not exist."
-        )
+        console.print(f"[bold red]Error:[/bold red] Source path '{source_path}' does not exist.")
         return 1
 
-    sid = (
-        skill_id
-        or source_path.stem.lower().replace("-", "_").replace(" ", "_")
-    )
+    sid = resolve_ingestion_skill_id(source_path, explicit_id=skill_id)
+    if not sid:
+        return 1
+
     target_dir = PKG_STAGED_SKILLS_DIR / sid
 
     if target_dir.exists():
@@ -1253,79 +1398,99 @@ def run_ingest(source_path: Path, skill_id: Optional[str] = None, target_agent: 
     target_dir.mkdir(parents=True, exist_ok=True)
     replacements = {"SKILL_ID": sid, "CATEGORY": "Ingested"}
 
-    if source_path.is_file():
-        shutil.copy(source_path, target_dir / "plugin.py")
-        manifest_content = get_template_content("manifest.json", replacements)
-        (target_dir / "manifest.json").write_text(manifest_content, encoding="utf-8")
-
-    elif source_path.is_dir():
-        shutil.copytree(source_path, target_dir, dirs_exist_ok=True)
-
-        if not (target_dir / "plugin.py").exists():
-            py_files = list(target_dir.glob("*.py"))
-            if len(py_files) == 1:
-                py_files[0].rename(target_dir / "plugin.py")
-            elif not py_files:
-                plugin_content = get_template_content(
-                    "plugin.py", replacements
-                )
-                (target_dir / "plugin.py").write_text(plugin_content, encoding="utf-8")
-
-        if not (target_dir / "manifest.json").exists():
-            console.print(
-                "[yellow]No manifest.json found in directory. Generating schema scaffold from template...[/yellow]"
-            )
-            manifest_content = get_template_content(
-                "manifest.json", replacements
-            )
+    try:
+        if source_path.is_file():
+            shutil.copy(source_path, target_dir / "plugin.py")
+            manifest_content = get_template_content("manifest.json", replacements)
             (target_dir / "manifest.json").write_text(manifest_content, encoding="utf-8")
 
-    manifest_path = target_dir / "manifest.json"
-    plugin_path = target_dir / "plugin.py"
+        elif source_path.is_dir():
+            shutil.copytree(source_path, target_dir, dirs_exist_ok=True)
 
-    if manifest_path.exists() and plugin_path.exists():
-        try:
-            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            register_and_bind_skill(
-                skill_manifest=manifest_data,
-                entry_file_path=plugin_path,
-                target_agent_id=target_agent,
+            if not (target_dir / "plugin.py").exists():
+                py_files = list(target_dir.glob("*.py"))
+                if len(py_files) == 1:
+                    py_files[0].rename(target_dir / "plugin.py")
+                elif not py_files:
+                    plugin_content = get_template_content("plugin.py", replacements)
+                    (target_dir / "plugin.py").write_text(plugin_content, encoding="utf-8")
+
+            if not (target_dir / "manifest.json").exists():
+                console.print(
+                    "[yellow]No manifest.json found in directory. Generating schema scaffold from template...[/yellow]"
+                )
+                manifest_content = get_template_content("manifest.json", replacements)
+                (target_dir / "manifest.json").write_text(manifest_content, encoding="utf-8")
+
+        manifest_path = target_dir / "manifest.json"
+        plugin_path = target_dir / "plugin.py"
+
+        # Force manifest skill_id parity with approved folder identifier
+        if manifest_path.exists():
+            try:
+                mdata = json.loads(manifest_path.read_text(encoding="utf-8"))
+                mdata["skill_id"] = sid
+                manifest_path.write_text(json.dumps(mdata, indent=2), encoding="utf-8")
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not update manifest skill_id field: {e}[/yellow]")
+
+        # 1. AST Entrypoint Verification
+        valid_ast, ast_err = verify_plugin_entrypoint(plugin_path)
+        if not valid_ast:
+            console.print(f"[bold red]AST Validation Error:[/bold red] {ast_err}")
+            shutil.rmtree(target_dir)
+            return 1
+
+        # 2. Schema Integrity Check
+        is_valid, errors, _ = validate_manifest_file(manifest_path, auto_fix=True)
+        if not is_valid:
+            console.print(
+                "[bold red]❌ Manifest failed schema validation:[/bold red]\n"
+                + "\n".join(errors)
             )
-        except Exception as e:
-            console.print(f"[bold yellow]Warning:[/bold yellow] Pre-binding helper skipped ({e}). Executing indexer sync...")
+            shutil.rmtree(target_dir)
+            return 1
 
-    console.print(
-        f"[bold green]✅ Ingested '[cyan]{sid}[/cyan]' into staged skills at {target_dir}.[/bold green]"
-    )
-    return run_sync()
+        # 3. Register and Bind
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        register_and_bind_skill(
+            skill_manifest=manifest_data,
+            entry_file_path=plugin_path,
+            target_agent_id=target_agent,
+        )
+
+        console.print(
+            f"[bold green]✅ Ingested '[cyan]{sid}[/cyan]' into staged skills at {target_dir}.[/bold green]"
+        )
+        return run_sync()
+
+    except Exception as e:
+        console.print(f"[bold red]Ingestion failed:[/bold red] {e}")
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        return 1
 
 
 def run_edit(skill_id: str) -> int:
     """Opens a skill manifest in $EDITOR, then validates and syncs automatically on exit."""
     manifest_path = find_skill_manifest(skill_id)
     if not manifest_path:
-        console.print(
-            f"[bold red]Error:[/bold red] Could not locate skill '{skill_id}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] Could not locate skill '{skill_id}'.")
         return 1
 
     editor = os.environ.get("EDITOR", "nano")
-    console.print(
-        f"[bold cyan]Opening {manifest_path} with {editor}...[/bold cyan]"
-    )
+    console.print(f"[bold cyan]Opening {manifest_path} with {editor}...[/bold cyan]")
     subprocess.call([editor, str(manifest_path)])
 
-    is_valid, errors, _ = validate_manifest_file(
-        manifest_path, auto_fix=True
-    )
+    is_valid, errors, _ = validate_manifest_file(manifest_path, auto_fix=True)
     if not is_valid:
         console.print(
-            f"[bold red]❌ Manifest contains schema errors after edit:[/bold red]\n"
+            "[bold red]❌ Manifest contains schema errors after edit:[/bold red]\n"
             + "\n".join(errors)
         )
         return 1
 
-    console.print("[bold green]✅ Validation passed.[/bold green]")
+    console.print("[bold green]✅ Manifest validation passed.[/bold green]")
     return run_sync()
 ```
 
@@ -1336,36 +1501,92 @@ def run_edit(skill_id: str) -> int:
 ```python
 """
 charon/cli/librarian/lifecycle.py
-System Version: v0.1.0 | File Revision: 1.1.0
+System Version: v0.2.0 | File Revision: 2.1.0
 
 Module: Skill lifecycle operations: promotion, demotion/quarantine, renaming, and purging.
+Features strict isolation guards to prevent unintended directory deletion or database record wipes.
 """
 
 import json
 import logging
-import shutil
 from pathlib import Path
+import re
+import shutil
 from typing import List, Optional
+
 from rich.console import Console
 
+from charon.cli.librarian.database import run_sync
+from charon.cli.librarian.manifest import validate_manifest_file
+from charon.cli.librarian.permissions import find_skill_manifest
 from charon.config.paths import (
     DYNAMIC_SKILLS_DIR,
     PKG_DYNAMIC_SKILLS_DIR,
     PKG_STAGED_SKILLS_DIR,
+    STATE_DB_PATH,
 )
-from charon.cli.librarian.database import run_sync
-from charon.cli.librarian.permissions import find_skill_manifest
+from charon.db.connection import get_connection
 
 console = Console()
 logger = logging.getLogger("charon.cli.librarian.lifecycle")
 
 
+def _slugify(text: str) -> str:
+    """Normalizes raw input strings into clean snake_case identifiers."""
+    if not text:
+        return ""
+    text = re.sub(r"[^\w\s-]", "", text.lower())
+    return re.sub(r"[-\s]+", "_", text).strip("_")
+
+
+def _cleanup_agent_mappings_for_skill(skill_id: str) -> None:
+    """
+    Purges corresponding bindings from agent_skill_map BEFORE database resync.
+
+    SAFETY GUARANTEE: Uses explicit parameter binding scoped strictly to `skill_id`.
+    Never executes global tables resets or un-parameterized DELETE statements.
+    """
+    if not STATE_DB_PATH.exists() or not skill_id:
+        return
+    try:
+        with get_connection(STATE_DB_PATH) as conn:
+            cursor = conn.cursor()
+            # Delete ONLY mappings for this explicit skill_id
+            cursor.execute(
+                "DELETE FROM agent_skill_map WHERE skill_id = ?",
+                (skill_id,),
+            )
+            # Delete ONLY skill_registry record for this explicit skill_id
+            cursor.execute(
+                "DELETE FROM skill_registry WHERE skill_id = ?",
+                (skill_id,),
+            )
+            conn.commit()
+            logger.info(f"Purged database records scoped strictly to skill_id='{skill_id}'")
+    except Exception as e:
+        logger.warning(f"Failed to purge DB records for skill '{skill_id}': {e}")
+
+
 def run_promote(skill_id: str) -> int:
-    """Promotes a staged skill into active production dynamic status."""
-    staged_manifest = find_skill_manifest(skill_id, stage_filter="Staged")
+    """Promotes a staged skill into active production dynamic status after schema validation."""
+    clean_id = _slugify(skill_id)
+    if not clean_id:
+        console.print("[bold red]Error:[/bold red] Invalid skill_id provided.")
+        return 1
+
+    staged_manifest = find_skill_manifest(clean_id, stage_filter="Staged")
     if not staged_manifest:
         console.print(
-            f"[bold red]Error:[/bold red] Skill '{skill_id}' with stage='Staged' not found."
+            f"[bold red]Error:[/bold red] Skill '{clean_id}' with stage='Staged' not found."
+        )
+        return 1
+
+    # Pre-check schema validity before promoting
+    is_valid, errors, _ = validate_manifest_file(staged_manifest, auto_fix=True)
+    if not is_valid:
+        console.print(
+            "[bold red]❌ Cannot promote invalid skill manifest:[/bold red]\n"
+            + "\n".join(errors)
         )
         return 1
 
@@ -1373,7 +1594,7 @@ def run_promote(skill_id: str) -> int:
     target_dir = PKG_DYNAMIC_SKILLS_DIR / staged_dir.name
 
     existing_dynamic_manifest = find_skill_manifest(
-        skill_id, stage_filter="Dynamic"
+        clean_id, stage_filter="Dynamic"
     )
     old_dynamic_dir: Optional[Path] = (
         existing_dynamic_manifest.parent
@@ -1389,11 +1610,13 @@ def run_promote(skill_id: str) -> int:
             data = json.load(f)
             data["stage"] = "Dynamic"
             f.seek(0)
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, ensure_ascii=False)
             f.truncate()
+            f.write("\n")
 
     shutil.rmtree(staged_dir)
 
+    # Clean up redundant dynamic dir if target moved locations
     if (
         old_dynamic_dir
         and old_dynamic_dir.exists()
@@ -1405,17 +1628,22 @@ def run_promote(skill_id: str) -> int:
         )
 
     console.print(
-        f"[bold green]✅ Promoted[/bold green] skill '[bold white]{skill_id}[/bold white]' -> [cyan]{target_dir}[/cyan]"
+        f"[bold green]✅ Promoted[/bold green] skill '[bold white]{clean_id}[/bold white]' -> [cyan]{target_dir}[/cyan]"
     )
     return run_sync()
 
 
 def run_demote(skill_id: str) -> int:
     """Demotes/quarantines a dynamic skill back to staged status for debugging."""
-    dynamic_manifest = find_skill_manifest(skill_id, stage_filter="Dynamic")
+    clean_id = _slugify(skill_id)
+    if not clean_id:
+        console.print("[bold red]Error:[/bold red] Invalid skill_id provided.")
+        return 1
+
+    dynamic_manifest = find_skill_manifest(clean_id, stage_filter="Dynamic")
     if not dynamic_manifest:
         console.print(
-            f"[bold red]Error:[/bold red] Active dynamic skill '{skill_id}' not found."
+            f"[bold red]Error:[/bold red] Active dynamic skill '{clean_id}' not found."
         )
         return 1
 
@@ -1431,83 +1659,134 @@ def run_demote(skill_id: str) -> int:
             data = json.load(f)
             data["stage"] = "Staged"
             f.seek(0)
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, ensure_ascii=False)
             f.truncate()
+            f.write("\n")
 
     console.print(
-        f"[bold yellow]⚠️ Demoted[/bold yellow] skill '[bold white]{skill_id}[/bold white]' -> [cyan]{target_dir}[/cyan]"
+        f"[bold yellow]⚠️ Demoted[/bold yellow] skill '[bold white]{clean_id}[/bold white]' -> [cyan]{target_dir}[/cyan]"
     )
     return run_sync()
 
 
 def run_rename(old_skill_id: str, new_skill_id: str) -> int:
-    """Renames a skill_id inside its manifest, updates folder structure, and updates SQLite indexing."""
-    manifest_path = find_skill_manifest(old_skill_id)
+    """Renames a skill_id inside its manifest, updates folder structure, and syncs SQLite indexing."""
+    clean_old_id = _slugify(old_skill_id)
+    clean_new_id = _slugify(new_skill_id)
+
+    if not clean_old_id or not clean_new_id:
+        console.print("[bold red]Error:[/bold red] Source and target skill IDs must be non-empty.")
+        return 1
+
+    manifest_path = find_skill_manifest(clean_old_id)
     if not manifest_path:
         console.print(
-            f"[bold red]Error:[/bold red] Could not locate skill '{old_skill_id}'."
+            f"[bold red]Error:[/bold red] Could not locate skill '{clean_old_id}'."
         )
         return 1
 
+    skill_dir = manifest_path.parent
+    target_dir = skill_dir.parent / clean_new_id
+
+    # COLLISION GUARD: Prevent overwriting an existing non-target folder
+    if target_dir.exists() and target_dir.resolve() != skill_dir.resolve():
+        console.print(
+            f"[bold red]Error:[/bold red] Target directory already exists: {target_dir}"
+        )
+        return 1
+
+    # In-place manifest update for skill_id
     with open(manifest_path, "r+", encoding="utf-8") as f:
         data = json.load(f)
-        data["skill_id"] = new_skill_id
+        data["skill_id"] = clean_new_id
         f.seek(0)
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
         f.truncate()
+        f.write("\n")
 
-    skill_dir = manifest_path.parent
-    if skill_dir.name == old_skill_id:
-        target_dir = skill_dir.parent / new_skill_id
-        if not target_dir.exists():
-            skill_dir.rename(target_dir)
-            console.print(
-                f"[dim]Renamed skill folder {skill_dir} -> {target_dir}[/dim]"
-            )
+    if skill_dir.name != clean_new_id:
+        skill_dir.rename(target_dir)
+        console.print(
+            f"[dim]Renamed skill folder {skill_dir} -> {target_dir}[/dim]"
+        )
+
+    # Scoped database cleanup for old ID to avoid orphaned DB records
+    _cleanup_agent_mappings_for_skill(clean_old_id)
 
     console.print(
-        f"[bold green]✅ Renamed[/bold green] '{old_skill_id}' -> '[bold cyan]{new_skill_id}[/bold cyan]'."
+        f"[bold green]✅ Renamed[/bold green] '{clean_old_id}' -> '[bold cyan]{clean_new_id}[/bold cyan]'."
     )
     return run_sync()
 
 
 def run_delete_skill(skill_id: str) -> int:
-    """Purges all directory instances of a skill and cleans SQLite registry."""
-    search_dirs = [
+    """
+    Purges directory instances of a specific skill and cleans corresponding SQLite records.
+
+    SAFETY ISOLATION GUARANTEES:
+      1. Requires explicit non-empty skill_id (prevents empty/wildcard matching).
+      2. Validates child subfolder depth to prevent wiping root skill directories.
+      3. Scopes DB removal queries strictly to the target skill_id.
+    """
+    clean_id = _slugify(skill_id)
+    if not clean_id:
+        console.print("[bold red]Error:[/bold red] Cannot execute deletion with an empty or invalid skill_id.")
+        return 1
+
+    search_roots = [
         PKG_STAGED_SKILLS_DIR,
         PKG_DYNAMIC_SKILLS_DIR,
         DYNAMIC_SKILLS_DIR,
     ]
+
+    # Protected root directories that must NEVER be deleted
+    protected_roots = {r.resolve() for r in search_roots if r.exists()}
+    protected_roots.update({Path.home().resolve(), Path.cwd().resolve(), Path("/").resolve()})
+
     deleted_paths: List[Path] = []
 
-    for root in search_dirs:
+    for root in search_roots:
         if not root.exists():
             continue
+
         for manifest_path in list(root.rglob("manifest.json")):
+            skill_dir = manifest_path.parent.resolve()
+
+            # SAFETY GUARD 1: Absolute protection against wiping root container directories
+            if skill_dir in protected_roots:
+                logger.warning(
+                    f"Skipping deletion at {manifest_path}: Manifest is located directly in root directory {skill_dir}."
+                )
+                continue
+
             try:
                 with open(manifest_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                if data.get("skill_id") == skill_id:
-                    skill_dir = manifest_path.parent
+
+                manifest_id = data.get("skill_id")
+
+                # SAFETY GUARD 2: Explicit equality match on skill_id
+                if manifest_id == clean_id or manifest_id == skill_id:
                     if skill_dir.exists():
                         shutil.rmtree(skill_dir)
                         deleted_paths.append(skill_dir)
             except Exception as e:
-                logger.error(
-                    f"Error inspecting manifest at {manifest_path}: {e}"
-                )
+                logger.error(f"Error inspecting manifest at {manifest_path}: {e}")
 
     if not deleted_paths:
         console.print(
-            f"[bold red]Error:[/bold red] Could not locate any skill folder for '{skill_id}'."
+            f"[bold red]Error:[/bold red] Could not locate any skill folder matching '{clean_id}'."
         )
         return 1
+
+    # SAFETY GUARD 3: Targeted DB cleanup scoped only to target skill_id
+    _cleanup_agent_mappings_for_skill(clean_id)
 
     for p in deleted_paths:
         console.print(f"[bold yellow]🗑️ Purged directory:[/bold yellow] {p}")
 
     console.print(
-        f"[bold green]✅ Successfully deleted skill '[bold cyan]{skill_id}[/bold cyan]'.[/bold green]"
+        f"[bold green]✅ Successfully deleted skill '[bold cyan]{clean_id}[/bold cyan]'.[/bold green]"
     )
     return run_sync()
 ```
@@ -1519,10 +1798,11 @@ def run_delete_skill(skill_id: str) -> int:
 ```python
 """
 charon/cli/librarian/manifest.py
-System Version: v0.1.0 | File Revision: 1.1.0
+System Version: v0.2.0 | File Revision: 2.0.0
 
 Module: Dynamic, schema-driven manifest validation and auto-migration engine.
 Leverages Pydantic SkillManifest model directly to eliminate hardcoded format constraints.
+Refactored for multi-action unrolling, robust schema fallback, and clean CLI diagnostics.
 """
 
 import json
@@ -1549,6 +1829,15 @@ def _migrate_raw_dict(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     """Dynamically converts legacy/deprecated dictionary keys to the current SkillManifest schema."""
     migrated = dict(raw)
     modified = False
+
+    # Ensure required top-level defaults
+    if "category" not in migrated or not migrated["category"]:
+        migrated["category"] = "General"
+        modified = True
+
+    if "version" not in migrated or not migrated["version"]:
+        migrated["version"] = "1.0.0"
+        modified = True
 
     # Standardize actions / legacy keys into supported_actions mapping
     if "actions" in migrated and "supported_actions" not in migrated:
@@ -1578,6 +1867,20 @@ def _migrate_raw_dict(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
         }
         modified = True
 
+    # Standardize shorthand string actions into full canonical dictionaries
+    if "supported_actions" in migrated and isinstance(migrated["supported_actions"], dict):
+        for act_key, act_val in list(migrated["supported_actions"].items()):
+            if isinstance(act_val, str):
+                migrated["supported_actions"][act_key] = {
+                    "description": act_val,
+                    "parameters": {}
+                }
+                modified = True
+            elif isinstance(act_val, dict):
+                if "description" not in act_val or not act_val["description"]:
+                    act_val["description"] = f"Execution action handler for {act_key}"
+                    modified = True
+
     return migrated, modified
 
 
@@ -1594,6 +1897,9 @@ def validate_manifest_file(
     except Exception as e:
         return False, [f"JSON Parse Error: {e}"], False
 
+    if not isinstance(raw_data, dict):
+        return False, ["Invalid manifest structure: root JSON must be an object"], False
+
     migrated_data, was_migrated = _migrate_raw_dict(raw_data)
 
     try:
@@ -1603,13 +1909,14 @@ def validate_manifest_file(
         if (was_migrated or auto_fix) and auto_fix:
             canonical_data = manifest.model_dump(exclude_none=True)
             with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(canonical_data, f, indent=2)
+                json.dump(canonical_data, f, indent=2, ensure_ascii=False)
+                f.write("\n")
             was_fixed = True
 
         return True, [], was_fixed
     except ValidationError as ve:
         errors = [
-            f"[{' -> '.join(str(x) for x in err['loc'])}]: {err['msg']}"
+            f"Field '{' -> '.join(str(x) for x in err['loc'])}': {err['msg']}"
             for err in ve.errors()
         ]
         return False, errors, False
@@ -1627,6 +1934,8 @@ def run_check(
     manifest_files: List[Path] = []
 
     for path in target_paths:
+        if not path.exists():
+            continue
         if path.is_file() and path.name == "manifest.json":
             manifest_files.append(path)
         elif path.is_dir():
@@ -1641,6 +1950,7 @@ def run_check(
     table = Table(title="Charon Skill Manifest Validation Report")
     table.add_column("Manifest Path", style="cyan", overflow="fold")
     table.add_column("Skill ID", style="bold white")
+    table.add_column("Category", style="magenta")
     table.add_column("Actions", justify="center")
     table.add_column("Status", justify="center")
     table.add_column("Notes / Errors", style="dim")
@@ -1650,11 +1960,10 @@ def run_check(
         is_valid, errors, was_fixed = validate_manifest_file(
             manifest_path, auto_fix=auto_fix
         )
-        rel_path = str(manifest_path.resolve())
         try:
             rel_path = str(manifest_path.relative_to(Path.cwd()))
         except ValueError:
-            pass
+            rel_path = str(manifest_path.resolve())
 
         if is_valid:
             status_str = (
@@ -1666,16 +1975,18 @@ def run_check(
                 with open(manifest_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 skill_id = data.get("skill_id", "unknown")
+                category = data.get("category", "General")
                 actions_count = str(len(data.get("supported_actions", {})))
             except Exception:
-                skill_id, actions_count = "unknown", "?"
+                skill_id, category, actions_count = "unknown", "General", "?"
 
             note = "Migrated to canonical schema" if was_fixed else "OK"
-            table.add_row(rel_path, skill_id, actions_count, status_str, note)
+            table.add_row(rel_path, skill_id, category, actions_count, status_str, note)
         else:
             total_invalid += 1
             table.add_row(
                 rel_path,
+                "-",
                 "-",
                 "0",
                 "[bold red]INVALID[/bold red]",
@@ -1693,8 +2004,10 @@ def run_check(
 ```python
 """
 charon/cli/librarian/permissions.py
+System Version: v0.2.0 | File Revision: 2.0.0
 
 Module: DB-backed authorization management, default action configuration, and inventory views.
+Aligned with Schema V3.
 """
 
 import json
@@ -1745,22 +2058,39 @@ def find_skill_manifest(
 
 def run_permission_change(skill_id: str, agent_id: str, action: str) -> int:
     """Grants or revokes an agent's binding to a skill in agent_skill_map."""
+    action_clean = action.lower().strip()
+    if action_clean not in ("grant", "revoke"):
+        console.print(
+            f"[bold red]Error:[/bold red] Invalid permission action '{action}'. Use 'grant' or 'revoke'."
+        )
+        return 1
+
     with get_connection(STATE_DB_PATH) as conn:
         cursor = conn.cursor()
 
-        # Validate skill exists
-        cursor.execute("SELECT skill_id FROM skill_registry WHERE skill_id = ?", (skill_id,))
+        # Validate skill exists in registry
+        cursor.execute(
+            "SELECT skill_id FROM skill_registry WHERE skill_id = ? LIMIT 1",
+            (skill_id,),
+        )
         if not cursor.fetchone():
-            console.print(f"[bold red]Error:[/bold red] Skill ID '{skill_id}' not found in DB.")
+            console.print(
+                f"[bold red]Error:[/bold red] Skill ID '{skill_id}' not found in DB."
+            )
             return 1
 
-        # Validate agent exists
-        cursor.execute("SELECT agent_id FROM agent_registry WHERE agent_id = ?", (agent_id,))
+        # Validate agent exists in registry
+        cursor.execute(
+            "SELECT agent_id FROM agent_registry WHERE agent_id = ? LIMIT 1",
+            (agent_id,),
+        )
         if not cursor.fetchone():
-            console.print(f"[bold red]Error:[/bold red] Agent ID '{agent_id}' not found in DB.")
+            console.print(
+                f"[bold red]Error:[/bold red] Agent ID '{agent_id}' not found in DB."
+            )
             return 1
 
-        if action == "grant":
+        if action_clean == "grant":
             cursor.execute(
                 """
                 INSERT INTO agent_skill_map (agent_id, skill_id)
@@ -1769,14 +2099,18 @@ def run_permission_change(skill_id: str, agent_id: str, action: str) -> int:
                 """,
                 (agent_id, skill_id),
             )
-            console.print(f"[bold green]✅ Granted[/bold green] agent '{agent_id}' access to skill '[bold cyan]{skill_id}[/bold cyan]'.")
+            console.print(
+                f"[bold green]✅ Granted[/bold green] agent '{agent_id}' access to skill '[bold cyan]{skill_id}[/bold cyan]'."
+            )
 
-        elif action == "revoke":
+        elif action_clean == "revoke":
             cursor.execute(
                 "DELETE FROM agent_skill_map WHERE agent_id = ? AND skill_id = ?",
                 (agent_id, skill_id),
             )
-            console.print(f"[bold green]✅ Revoked[/bold green] agent '{agent_id}' access from skill '[bold cyan]{skill_id}[/bold cyan]'.")
+            console.print(
+                f"[bold green]✅ Revoked[/bold green] agent '{agent_id}' access from skill '[bold cyan]{skill_id}[/bold cyan]'."
+            )
 
         conn.commit()
     return 0
@@ -1787,18 +2121,22 @@ def set_default_action(agent_id: str, action_name: str) -> int:
     with get_connection(STATE_DB_PATH) as conn:
         cursor = conn.cursor()
 
-        # Ensure action exists in skill_registry and is active
+        # Ensure action exists in skill_registry and check status
         cursor.execute(
-            "SELECT skill_id, status FROM skill_registry WHERE action_name = ?",
+            "SELECT skill_id, status FROM skill_registry WHERE action_name = ? LIMIT 1",
             (action_name,),
         )
         row = cursor.fetchone()
         if not row:
-            console.print(f"[bold red]Error:[/bold red] Action '{action_name}' does not exist in skill_registry.")
+            console.print(
+                f"[bold red]Error:[/bold red] Action '{action_name}' does not exist in skill_registry."
+            )
             return 1
 
         if row[1] != "ACTIVE":
-            console.print(f"[bold yellow]Warning:[/bold yellow] Action '{action_name}' belongs to skill '{row[0]}' which has status '{row[1]}'.")
+            console.print(
+                f"[bold yellow]Warning:[/bold yellow] Action '{action_name}' belongs to skill '{row[0]}' which has status '{row[1]}'."
+            )
 
         cursor.execute(
             """
@@ -1810,11 +2148,15 @@ def set_default_action(agent_id: str, action_name: str) -> int:
         )
 
         if cursor.rowcount == 0:
-            console.print(f"[bold red]Error:[/bold red] Agent '{agent_id}' not found in agent_registry.")
+            console.print(
+                f"[bold red]Error:[/bold red] Agent '{agent_id}' not found in agent_registry."
+            )
             return 1
 
         conn.commit()
-        console.print(f"[bold green]✅ Set default action for agent '[cyan]{agent_id}[/cyan]' to '[bold yellow]{action_name}[/bold yellow]'.")
+        console.print(
+            f"[bold green]✅ Set default action for agent '[cyan]{agent_id}[/cyan]' to '[bold yellow]{action_name}[/bold yellow]'."
+        )
     return 0
 
 
@@ -1836,25 +2178,27 @@ def run_list() -> int:
                 s.action_name,
                 s.status,
                 s.category,
-                GROUP_CONCAT(asm.agent_id, ', ') AS agents
+                GROUP_CONCAT(DISTINCT asm.agent_id) AS agents
             FROM skill_registry s
             LEFT JOIN agent_skill_map asm ON s.skill_id = asm.skill_id
             GROUP BY s.skill_id, s.action_name, s.status, s.category
+            ORDER BY s.skill_id ASC, s.action_name ASC
             """
         )
         rows = cursor.fetchall()
         for row in rows:
             skill_id, action_name, status, category, agents = row
+            formatted_agents = agents.replace(",", ", ") if agents else "[dim]None[/dim]"
             table.add_row(
                 skill_id,
                 action_name,
                 status,
                 category or "General",
-                agents or "[dim]None[/dim]",
+                formatted_agents,
             )
 
     console.print(table)
-    console.print(f"\n[bold]Total Registered Skills:[/bold] {len(rows)}\n")
+    console.print(f"\n[bold]Total Registered Actions:[/bold] {len(rows)}\n")
     return 0
 ```
 
@@ -1865,16 +2209,18 @@ def run_list() -> int:
 ```python
 """
 charon/cli/librarian/purge_gaps.py
-System Version: v0.1.0 | File Revision: 1.1.0
+System Version: v0.2.0 | File Revision: 1.2.0
 
 Module: Database maintenance utilities for purging resolved gap records and optimizing state DB.
+Aligned with Schema V3.
 """
 
 import logging
+import sys
 from charon.config.paths import STATE_DB_PATH
 from charon.db.connection import get_connection
 
-logger = logging.getLogger("Charon.CLI.Librarian")
+logger = logging.getLogger("charon.cli.librarian.purge_gaps")
 
 
 def purge_resolved_gaps() -> int:
@@ -1886,11 +2232,12 @@ def purge_resolved_gaps() -> int:
         logger.info(f"[MAINTENANCE] Database file not found at {STATE_DB_PATH}. Skipping purge.")
         return 0
 
-    # 1. Execute the purge within standard managed transaction
+    # 1. Execute the purge within a standard managed transaction
     with get_connection(STATE_DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM skill_gaps WHERE status = 'resolved'")
+        cursor.execute("DELETE FROM skill_gaps WHERE LOWER(status) = 'resolved'")
         purged_count = cursor.rowcount
+        conn.commit()
 
     # 2. Run VACUUM in autocommit mode if any records were purged
     if purged_count > 0:
@@ -1908,7 +2255,8 @@ def purge_resolved_gaps() -> int:
 
 
 if __name__ == "__main__":
-    purge_resolved_gaps()
+    logging.basicConfig(level=logging.INFO)
+    sys.exit(0 if purge_resolved_gaps() >= 0 else 1)
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -1918,9 +2266,11 @@ if __name__ == "__main__":
 ```python
 """
 charon/cli/librarian/service.py
+System Version: v0.2.0 | File Revision: 2.0.0
 
-Encapsulated service method for registering skills, performing agent bindings,
+Encapsulated service methods for registering skills, performing targeted agent bindings,
 and seeding role-based routes according to the V3 database schema.
+Guarantees strict isolation on all mutations and deletion operations.
 """
 
 import json
@@ -1931,7 +2281,7 @@ from typing import Any, Dict, Optional
 from charon.config.paths import STATE_DB_PATH
 from charon.db.connection import get_connection
 
-logger = logging.getLogger("Charon.CLI.Librarian.Service")
+logger = logging.getLogger("charon.cli.librarian.service")
 
 
 def register_and_bind_skill(
@@ -1942,14 +2292,17 @@ def register_and_bind_skill(
     initial_status: str = "ACTIVE",
 ) -> None:
     """
-    Executes skill lifecycle registration in an atomic transaction:
-      1. UPSERT into skill_registry (Keyed on skill_id)
+    Executes skill lifecycle registration in an atomic, scoped transaction:
+      1. UPSERT into skill_registry (Keyed on skill_id, action_name)
       2. INSERT into agent_skill_map (Relational authorization: agent_id <-> skill_id)
       3. UPSERT into route_registry (Action trigger <-> system_roles)
     """
     db_file = db_path or STATE_DB_PATH
 
-    skill_id = skill_manifest["skill_id"]
+    skill_id = skill_manifest.get("skill_id")
+    if not skill_id:
+        raise ValueError("Skill manifest must contain a valid 'skill_id'.")
+
     version = skill_manifest.get("version", "1.0.0")
     category = skill_manifest.get("category", "General")
     description = skill_manifest.get("description", "")
@@ -1964,22 +2317,32 @@ def register_and_bind_skill(
     is_global = 1 if ("*" in allowed_agents or skill_manifest.get("is_global", False)) else 0
     actions: Dict[str, Any] = skill_manifest.get("supported_actions", {})
 
+    # Default fallback if no supported_actions defined
+    if not actions:
+        actions = {skill_id: {"description": description, "handler_name": "handle_default"}}
+
+    resolved_entry_path = str(entry_file_path.resolve())
+
     with get_connection(db_file) as conn:
         cursor = conn.cursor()
 
+        # -----------------------------------------------------------------
+        # STEP 1: skill_registry (UPSERT action rows for this skill)
+        # -----------------------------------------------------------------
         for action_name, action_def in actions.items():
             if isinstance(action_def, dict):
-                act_desc = action_def.get("description", description or f"Executes '{action_name}'")
-                handler_name = action_def.get("handler", f"handle_{action_name}")
+                act_desc = action_def.get("description") or description or f"Executes '{action_name}'"
+                handler_name = (
+                    action_def.get("handler_name")
+                    or action_def.get("handler")
+                    or f"handle_{action_name}"
+                )
                 params = json.dumps(action_def.get("parameters", {}))
             else:
                 act_desc = description or f"Executes '{action_name}'"
-                handler_name = action_def
+                handler_name = str(action_def) if action_def else f"handle_{action_name}"
                 params = json.dumps({})
 
-            # -----------------------------------------------------------------
-            # STEP 1: skill_registry (Primary Key: skill_id)
-            # -----------------------------------------------------------------
             cursor.execute(
                 """
                 INSERT INTO skill_registry (
@@ -1987,8 +2350,7 @@ def register_and_bind_skill(
                     parameters, system_requirements, consumed_artifacts, 
                     produced_artifacts, entry_file_path, handler_name, status, is_global
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(skill_id) DO UPDATE SET
-                    action_name=excluded.action_name,
+                ON CONFLICT(skill_id, action_name) DO UPDATE SET
                     version=excluded.version,
                     category=excluded.category,
                     description=excluded.description,
@@ -2012,41 +2374,22 @@ def register_and_bind_skill(
                     sys_reqs,
                     consumed,
                     produced,
-                    str(entry_file_path.resolve()),
+                    resolved_entry_path,
                     handler_name,
                     initial_status,
                     is_global,
                 ),
             )
 
-            # -----------------------------------------------------------------
-            # STEP 2: agent_skill_map (Maps agent_id <-> skill_id)
-            # -----------------------------------------------------------------
-            if target_agent_id:
-                cursor.execute(
-                    """
-                    INSERT INTO agent_skill_map (agent_id, skill_id)
-                    SELECT agent_id, ? FROM agent_registry WHERE agent_id = ? AND is_active = 1
-                    ON CONFLICT(agent_id, skill_id) DO NOTHING
-                    """,
-                    (skill_id, target_agent_id),
-                )
-            elif is_global:
-                cursor.execute(
-                    """
-                    INSERT INTO agent_skill_map (agent_id, skill_id)
-                    SELECT agent_id, ? FROM agent_registry WHERE is_active = 1
-                    ON CONFLICT(agent_id, skill_id) DO NOTHING
-                    """,
-                    (skill_id,),
-                )
-
-            # -----------------------------------------------------------------
-            # STEP 3: route_registry (Binds action_trigger -> target_role)
-            # -----------------------------------------------------------------
+            # -------------------------------------------------------------
+            # STEP 2: route_registry (Binds action_trigger -> target_role)
+            # -------------------------------------------------------------
             target_role = None
             if target_agent_id:
-                cursor.execute("SELECT role_name FROM system_roles WHERE agent_id = ?", (target_agent_id,))
+                cursor.execute(
+                    "SELECT role_name FROM system_roles WHERE agent_id = ?",
+                    (target_agent_id,)
+                )
                 role_row = cursor.fetchone()
                 if role_row:
                     target_role = role_row[0]
@@ -2079,8 +2422,85 @@ def register_and_bind_skill(
                 (action_name, target_role, act_desc),
             )
 
+        # -----------------------------------------------------------------
+        # STEP 3: agent_skill_map (Maps agent_id <-> skill_id)
+        # -----------------------------------------------------------------
+        if target_agent_id:
+            cursor.execute(
+                """
+                INSERT INTO agent_skill_map (agent_id, skill_id)
+                SELECT agent_id, ? FROM agent_registry WHERE agent_id = ? AND is_active = 1
+                ON CONFLICT(agent_id, skill_id) DO NOTHING
+                """,
+                (skill_id, target_agent_id),
+            )
+        elif is_global:
+            cursor.execute(
+                """
+                INSERT INTO agent_skill_map (agent_id, skill_id)
+                SELECT agent_id, ? FROM agent_registry WHERE is_active = 1
+                ON CONFLICT(agent_id, skill_id) DO NOTHING
+                """,
+                (skill_id,),
+            )
+        else:
+            # Explicitly bind specifically allowed agents
+            for agent_id in allowed_agents:
+                if agent_id and agent_id != "*":
+                    cursor.execute(
+                        """
+                        INSERT INTO agent_skill_map (agent_id, skill_id)
+                        SELECT agent_id, ? FROM agent_registry WHERE agent_id = ? AND is_active = 1
+                        ON CONFLICT(agent_id, skill_id) DO NOTHING
+                        """,
+                        (skill_id, agent_id),
+                    )
+
         conn.commit()
         logger.info(f"[SERVICE] Successfully registered skill '{skill_id}' in state DB.")
+
+
+def unregister_skill(
+    skill_id: str,
+    db_path: Optional[Path] = None,
+) -> None:
+    """
+    Safely unregisters a single skill from the database.
+
+    ISOLATION GUARANTEE:
+    - Scoped strictly to the provided `skill_id`.
+    - Purges matching rows in `skill_registry` and `agent_skill_map`.
+    - Removes corresponding `route_registry` triggers bound to this skill's actions.
+    - NEVER wipes or alters unrelated skill or agent records.
+    """
+    if not skill_id:
+        logger.warning("[SERVICE] Empty skill_id passed to unregister_skill. Aborting.")
+        return
+
+    db_file = db_path or STATE_DB_PATH
+    if not db_file.exists():
+        return
+
+    with get_connection(db_file) as conn:
+        cursor = conn.cursor()
+
+        # Find action triggers associated with this skill to clean route_registry safely
+        cursor.execute("SELECT action_name FROM skill_registry WHERE skill_id = ?", (skill_id,))
+        action_rows = cursor.fetchall()
+        action_triggers = [row[0] for row in action_rows if row[0]]
+
+        # Delete from agent_skill_map (Scoped to skill_id)
+        cursor.execute("DELETE FROM agent_skill_map WHERE skill_id = ?", (skill_id,))
+
+        # Delete from skill_registry (Scoped to skill_id)
+        cursor.execute("DELETE FROM skill_registry WHERE skill_id = ?", (skill_id,))
+
+        # Delete from route_registry (Scoped to this skill's action triggers)
+        for trigger in action_triggers:
+            cursor.execute("DELETE FROM route_registry WHERE action_trigger = ?", (trigger,))
+
+        conn.commit()
+        logger.info(f"[SERVICE] Safely unregistered skill_id='{skill_id}' from database.")
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2107,9 +2527,11 @@ __all__ = ["LibrarianTUI"]
 ```python
 """
 charon/cli/librarian/tui/app.py
-System Version: v0.1.0 | File Revision: 1.4.0
+System Version: v0.1.0 | File Revision: 1.5.0
 
 Module: LibrarianTUI application orchestrator and main menu navigation loop.
+Refactored to support interactive ingestion name resolution, staged folder sanitization,
+and automatic pre-run synchronization.
 """
 
 from pathlib import Path
@@ -2122,6 +2544,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.syntax import Syntax
 
+from charon.cli.librarian.database import run_sync
 from charon.cli.librarian.forge import main as run_forge
 from charon.cli.librarian.ingestion import SKILLS_TEMPLATES_DIR, run_create, run_ingest
 from charon.cli.librarian.tui.diagnostics import run_diagnostics_suite
@@ -2142,9 +2565,13 @@ class LibrarianTUI:
         try:
             if hasattr(self.librarian, "agent_repo") and self.librarian.agent_repo:
                 agents = self.librarian.agent_repo.get_all_agents()
-                return [
-                    a.agent_id if hasattr(a, "agent_id") else str(a) for a in agents
+                active_agents = [
+                    a.agent_id if hasattr(a, "agent_id") else str(a)
+                    for a in agents
+                    if getattr(a, "is_active", True)
                 ]
+                if active_agents:
+                    return sorted(active_agents)
         except Exception:
             pass
 
@@ -2186,9 +2613,10 @@ class LibrarianTUI:
                     "    ├── manifest.json    (Schema metadata: ID, actions, requirements)\n"
                     "    └── plugin.py        (Python entrypoint module handling action callbacks)\n\n"
                     "#### 💡 Ingestion Rules & Automated Normalization\n"
+                    "* **Interactive Resolution**: User is prompted to confirm or customize the `skill_id` slug upon import.\n"
                     "* **Standalone `.py` File**: Copied as `plugin.py` into `skills/staged/<skill_id>/`; boilerplate `manifest.json` generated from template.\n"
                     "* **Directory without Manifest**: Copied to staged area, entrypoint normalized to `plugin.py`, and `manifest.json` generated from template.\n"
-                    "* **Full Package Directory**: Validated against `SkillManifest` Pydantic schema and indexed into SQLite.\n\n"
+                    "* **Staged Sanitization**: Pre-existing folders in `staged/` are auto-slugified and synced during DB maintenance checks.\n\n"
                     "*Documentation Reference:* `https://docs.charon.internal/skills/ingestion`"
                 )
                 console.print(
@@ -2301,19 +2729,14 @@ class LibrarianTUI:
                     Prompt.ask("Press Enter to try again")
                     continue
 
-                inferred_id = source_path.stem.lower().replace("-", "_").replace(" ", "_")
-                sid_input = Prompt.ask("Custom skill_id", default=inferred_id).strip()
-
-                if sid_input.lower() == "b":
-                    continue
-                if sid_input.lower() == "q":
-                    console.print("[bold cyan]Librarian session closed.[/bold cyan]")
-                    sys.exit(0)
-
-                run_ingest(source_path=source_path, skill_id=sid_input)
+                # run_ingest handles interactive naming, collision detection, and user confirmation
+                run_ingest(source_path=source_path)
                 Prompt.ask("\nPress Enter to return")
 
     def start(self):
+        # Enforce initial DB sync and staged folder sanitization on startup
+        run_sync()
+
         while True:
             skills = discover_skills()
             self.agents = self._fetch_registered_agents()
@@ -2551,7 +2974,7 @@ def resolve_all_dependencies(broken_skills: List[Dict]):
 ```python
 """
 charon/cli/librarian/tui/discovery.py
-System Version: v0.1.0 | File Revision: 2.3.0
+System Version: v0.1.0 | File Revision: 2.3.1
 
 Module: V3-aligned skill discovery, manifest parsing, database permission queries,
 agent default skill bindings, and decoupled dual-pathway integrity auditing.
@@ -2639,13 +3062,14 @@ def resolve_skill_contract(
     if row:
         return (row[0] or row[1], row[1])
 
-    # 2. Path-based resolution (match folder name in entry_file_path)
+    # 2. Path-based resolution (handles Unix '/' and Windows '\' path separators)
     cursor.execute(
         """
         SELECT action_name, skill_id FROM skill_registry 
         WHERE entry_file_path LIKE ? OR entry_file_path LIKE ?
+           OR entry_file_path LIKE ? OR entry_file_path LIKE ?
         """,
-        (f"%/{identifier}/%", f"%/{norm_id}/%"),
+        (f"%/{identifier}/%", f"%/{norm_id}/%", f"%\\{identifier}\\%", f"%\\{norm_id}\\%"),
     )
     row = cursor.fetchone()
     if row:
@@ -2727,6 +3151,14 @@ def grant_agent_permission(agent_id: str, skill_id: str) -> None:
             _, target_sk_id = resolve_skill_contract(cursor, skill_id)
             if not target_sk_id:
                 target_sk_id = skill_id
+
+            # Validate skill existence in skill_registry to prevent foreign key violations
+            cursor.execute("SELECT 1 FROM skill_registry WHERE skill_id = ?", (target_sk_id,))
+            if not cursor.fetchone():
+                logger.warning(
+                    f"Cannot grant permission: skill '{target_sk_id}' is not yet indexed in skill_registry."
+                )
+                return
 
             cursor.execute(
                 """
@@ -2935,7 +3367,6 @@ def audit_agent_skill_integrity() -> Dict[str, Any]:
         with get_connection(STATE_DB_PATH, read_only=True) as conn:
             cursor = conn.cursor()
 
-            # Query all active agents and their default action registry alignment
             cursor.execute(
                 """
                 SELECT 
@@ -2991,7 +3422,9 @@ def audit_filesystem_manifest_health() -> Dict[str, Any]:
         with get_connection(STATE_DB_PATH, read_only=True) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT entry_file_path FROM skill_registry")
-            registered_paths = {row[0] for row in cursor.fetchall() if row[0]}
+            registered_paths = {
+                str(Path(row[0]).resolve()) for row in cursor.fetchall() if row[0]
+            }
     except Exception as e:
         logger.error(f"Failed to query skill_registry paths: {e}")
 
@@ -3077,10 +3510,10 @@ def save_manifest(skill: Dict[str, Any], librarian: SkillLibrarian) -> None:
 ```python
 """
 charon/cli/librarian/tui/views.py
-System Version: v0.1.0 | File Revision: 2.1.0
+System Version: v0.1.0 | File Revision: 2.2.0
 
 Module: Rich visual rendering components, main menu header, and interactive catalog/inspector views.
-Includes support for Schema V3 agent-to-skill default action bindings.
+Includes automatic sync hooks before rendering to guarantee staged folder sanitization.
 """
 
 import json
@@ -3211,6 +3644,7 @@ def display_skill_table(skills: List[Dict[str, Any]], title: str):
 def view_catalog(agents: List[str], librarian: SkillLibrarian, initial_filter: Optional[str] = None):
     """Displays interactive catalog navigation menu and handles filtered views."""
     while True:
+        run_sync()  # Ensure staged directories and DB mappings are aligned before discovery
         skills = discover_skills()
         broken_deps_count = sum(1 for s in skills if s.get("missing_requirements"))
         render_header(len(skills), len(agents), broken_deps_count)
@@ -5568,7 +6002,7 @@ class ToolPatchRequest(BaseModel):
 class DynamicRuleRequest(BaseModel):
     """Payload for defining hard-shortcut override routing rules."""
     trigger: str = Field(..., description="Exact trigger string or prefix (e.g., '#archivist', 'git:').")
-    target_agent: str = Field(..., description="ID of the target agent to receive forced dispatch.")
+    agent_id: str = Field(..., description="ID of the target agent to receive forced dispatch.")
     description: Optional[str] = Field(default="", description="Operator notes explaining rule purpose.")
 
 
@@ -6246,7 +6680,7 @@ async def create_routing_rule(rule_req: DynamicRuleRequest, request: Request):
 
     rule_id = engine.intent_parser.add_override_rule(
         trigger=rule_req.trigger,
-        target_agent=rule_req.target_agent,
+        agent_id=rule_req.agent_id,
         description=rule_req.description,
     )
 
@@ -6254,8 +6688,8 @@ async def create_routing_rule(rule_req: DynamicRuleRequest, request: Request):
         "status": "success",
         "rule_id": rule_id,
         "trigger": rule_req.trigger,
-        "target_agent": rule_req.target_agent,
-        "message": f"Shortcut rule created: '{rule_req.trigger}' -> '{rule_req.target_agent}'",
+        "agent_id": rule_req.agent_id,
+        "message": f"Shortcut rule created: '{rule_req.trigger}' -> '{rule_req.agent_id}'",
     }
 
 

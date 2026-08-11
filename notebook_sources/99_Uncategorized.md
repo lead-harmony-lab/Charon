@@ -1,5 +1,5 @@
 # Subsystem Domain Context: 99_Uncategorized
-> **Commit:** `bc5f379` | **Version:** v8.0
+> **Commit:** `c416670` | **Version:** v8.0
 
 ---
 
@@ -44,10 +44,11 @@ __all__ = ["BaseAgent", "CapabilityType", "SkillContract"]
 ```python
 """
 charon/agents/runtime.py
-System Version: v0.4.0 | File Revision: 1.1.0
+System Version: v0.4.0 | File Revision: 1.2.0
 
 Universal Data-Driven Agent Runtime.
 Instantiated dynamically by the Router using metadata stored in SQLite agent_registry.
+Enforces strict DB SSOT skill resolution and fail-fast execution with zero mock fallbacks.
 """
 
 import json
@@ -64,6 +65,7 @@ class RuntimeAgent(BaseAgent):
     """
     Universal concrete implementation of BaseAgent.
     Hydrated with persona, system prompt, active tools, and weights from agent_registry.
+    Executes skills mapped to agent_id in DB SSOT and fails fast on unregistered actions.
     """
 
     def __init__(
@@ -103,27 +105,31 @@ class RuntimeAgent(BaseAgent):
     ) -> Union[str, Dict[str, Any]]:
         """
         Primary execution dispatch:
-        1. Checks for dynamic skill handler in SkillLibrarian.
-        2. Executes dynamic skill if present, or falls back to prompt-driven processing.
+        1. Queries SkillLibrarian SSOT for dynamic skill registered to this agent_id.
+        2. Executes registered skill handler.
+        3. FAILS FAST if action is not registered in the database for this agent persona.
         """
         self.report_progress(f"Executing action '{action}' via agent persona '{self.agent_id}'", action=action)
 
-        # 1. Check if action maps to a dynamic skill checkout
-        if self.librarian and self.librarian.get_action_manifest(action, self.name):
+        if not self.librarian:
+            raise RuntimeError(f"[FAIL-FAST] SkillLibrarian unavailable for runtime agent '{self.agent_id}'.")
+
+        # 1. Resolve registered skill handler via Librarian SSOT
+        has_action = False
+        if hasattr(self.librarian, "get_action_manifest"):
+            has_action = bool(self.librarian.get_action_manifest(action, self.agent_id))
+        elif hasattr(self.librarian, "list_available_actions"):
+            has_action = action in self.librarian.list_available_actions(self.agent_id)
+
+        if has_action:
             logger.info(f"[{self.name}] Dispatching to dynamic skill handler for action '{action}'")
             return self.execute_dynamic(action, parameters, raw_prompt)
 
-        # 2. Native/Prompt execution fallback
-        logger.info(f"[{self.name}] No dynamic skill handler for '{action}'. Running core agent task.")
-        fallback_msg = f"Action '{action}' executed under persona '{self.name}'."
-        self.report_response(fallback_msg)
-
-        return {
-            "status": "success",
-            "agent_id": self.agent_id,
-            "action": action,
-            "result": fallback_msg,
-        }
+        # 2. FAIL FAST: Reject unregistered skill execution immediately
+        raise ValueError(
+            f"[FAIL-FAST] Unregistered action '{action}' requested for agent '{self.agent_id}' ({self.name}). "
+            f"Action must be registered in the database 'skills' table bound to this agent_id."
+        )
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -4160,12 +4166,12 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 ```python
 """
 Plugin entrypoint module for code_self_healing_solver.
+Standardized for direct async execution without asyncio.run event loop hijacks.
 """
 
-import asyncio
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 import ollama
 
 from charon.config.paths import PROJECTS_DIR, resolve_project_path
@@ -4177,13 +4183,12 @@ logger = logging.getLogger("CHAROND.Skills.SelfHealingSolver")
 async def handle_solve_edge_case(params: Dict[str, Any]) -> Dict[str, Any]:
     problem = params.get("problem") or params.get("prompt") or params.get("task")
     if not problem or not str(problem).strip():
-        return {
-            "status": "error",
-            "message": "A 'problem' or 'prompt' parameter is required.",
-        }
+        raise ValueError("[SELF_HEALING_SOLVER] Parameter 'problem' or 'prompt' is required.")
 
-    max_attempts = int(params.get("max_attempts", 3))
-    timeout = float(params.get("timeout", 30.0))
+    # Strict bounds when invoked via runtime engine
+    max_attempts = min(int(params.get("max_attempts", 1)), 2)  # Cap at max 2 attempts
+    timeout = float(params.get("timeout", 15.0))              # 15s execution timeout
+
     target_dir_raw = params.get("target_dir") or params.get("base_path")
     target_dir = (
         str(resolve_project_path(target_dir_raw))
@@ -4206,71 +4211,55 @@ async def handle_solve_edge_case(params: Dict[str, Any]) -> Dict[str, Any]:
     last_code = ""
 
     for attempt in range(1, max_attempts + 1):
-        if attempt == 1:
-            prompt_text = f"Task: {problem}\nTarget Workspace: {target_dir}"
-        else:
-            prompt_text = (
-                f"Task: {problem}\nTarget Workspace: {target_dir}\n\n"
-                f"CRITICAL: Previous attempt failed with output:\n```\n{feedback}\n```\n\n"
-                f"Previous Code:\n```python\n{last_code}\n```\n\n"
-                f"Fix the bug and return the complete corrected Python script."
-            )
+        prompt_text = (
+            f"Task: {problem}\nTarget Workspace: {target_dir}"
+            if attempt == 1
+            else f"Task: {problem}\nFeedback from attempt {attempt-1}:\n{feedback}\nFix and return corrected code."
+        )
 
-        try:
-            response = await client.generate(
-                model=model_name, system=system_prompt, prompt=prompt_text
-            )
-            raw_response = response.get("response", "").strip()
-            code_match = re.search(
-                r"```(?:python)?\s*(.*?)\s*```", raw_response, re.DOTALL
-            )
-            code = (
-                code_match.group(1).strip()
-                if code_match
-                else raw_response.strip()
-            )
+        response = await client.generate(
+            model=model_name, system=system_prompt, prompt=prompt_text
+        )
+        raw_response = response.get("response", "").strip()
+        code_match = re.search(r"```(?:python)?\s*(.*?)\s*```", raw_response, re.DOTALL)
+        code = code_match.group(1).strip() if code_match else raw_response.strip()
 
-            if not code:
-                feedback = "Inference engine returned empty script block."
+        if not code:
+            feedback = "Inference engine returned empty script block."
+            continue
+
+        last_code = code
+        output, is_success = await run_script_in_subprocess(
+            code, cwd=target_dir, python_cmd=python_cmd, timeout=timeout
+        )
+
+        if is_success:
+            audit_ok, audit_msg = audit_written_artifacts(code, cwd=target_dir)
+            if not audit_ok:
+                feedback = f"{output}\n\n{audit_msg}"
                 continue
 
-            last_code = code
-            output, is_success = await run_script_in_subprocess(
-                code, cwd=target_dir, python_cmd=python_cmd, timeout=timeout
-            )
+            return {
+                "status": "success",
+                "attempts": attempt,
+                "output": output,
+                "verification": audit_msg,
+                "final_code": code,
+            }
 
-            if is_success:
-                audit_ok, audit_msg = audit_written_artifacts(
-                    code, cwd=target_dir
-                )
-                if not audit_ok:
-                    feedback = f"{output}\n\n{audit_msg}"
-                    continue
+        feedback = output
 
-                return {
-                    "status": "success",
-                    "attempts": attempt,
-                    "output": output,
-                    "verification": audit_msg,
-                    "final_code": code,
-                }
-            else:
-                feedback = output
-
-        except Exception as e:
-            feedback = f"Execution failure: {str(e)}"
-
-    return {
-        "status": "failure",
-        "attempts": max_attempts,
-        "last_error": feedback,
-        "last_code": last_code,
-    }
+    # HARD FAIL: Raise exception so Dispatcher/Router halts instead of retrying silently
+    raise RuntimeError(
+        f"[SOLVER FAULT] Self-healing code execution failed after {max_attempts} attempts. "
+        f"Last error output:\n{feedback}"
+    )
 
 
-def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+# Native Async Entrypoint (Replaces synchronous execute_action wrapper)
+async def execute_action_async(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
     if action_name == "solve_edge_case":
-        return asyncio.run(handle_solve_edge_case(params))
+        return await handle_solve_edge_case(params)
     raise ValueError(
         f"Action '{action_name}' is not supported by skill 'code_self_healing_solver'."
     )
@@ -13213,10 +13202,11 @@ __all__ = [
 ```python
 """
 charon/db/repositories/agent.py
-System Version: v0.6.0 | File Revision: 5.3.0
+System Version: v0.6.2 | File Revision: 6.0.0
 
 Module: Data Access Layer repository for agent configurations, capability descriptions,
 triage priority weights, system prompts, and action capability manifests.
+Strictly relies on Database as SSOT with zero code-level fallback synthesis.
 """
 
 import json
@@ -13236,14 +13226,14 @@ class AgentRepository:
         self.db_path = str(db_path)
 
     def ensure_schema(self) -> None:
-        """Initializes agent_registry table and executes schema migrations if needed at startup."""
+        """Initializes agent_registry table and executes schema migrations at startup."""
         with get_connection(self.db_path) as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS agent_registry (
                     agent_id TEXT PRIMARY KEY,
                     display_name TEXT NOT NULL,
                     description TEXT DEFAULT '',
-                    default_action TEXT NOT NULL DEFAULT 'answer_query',
+                    default_action TEXT DEFAULT '',
                     system_prompt TEXT DEFAULT '',
                     priority_weight REAL DEFAULT 1.0,
                     override_triggers TEXT DEFAULT '[]',
@@ -13251,6 +13241,8 @@ class AgentRepository:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_registry_is_active ON agent_registry(is_active);
             """)
 
             cursor = conn.execute("PRAGMA table_info(agent_registry);")
@@ -13263,193 +13255,145 @@ class AgentRepository:
 
             for col_name, col_type in migrations.items():
                 if col_name not in existing_columns:
-                    logger.info(f"[AgentRepository] Migrating schema: adding '{col_name}' column to agent_registry.")
-                    conn.execute(f"ALTER TABLE agent_registry ADD COLUMN {col_name} {col_type};")
+                    logger.info(
+                        f"[AgentRepository] Migrating schema: adding '{col_name}' column to agent_registry."
+                    )
+                    conn.execute(
+                        f"ALTER TABLE agent_registry ADD COLUMN {col_name} {col_type};"
+                    )
 
-    def get_active_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves active agent metadata and system prompt by agent_id."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
-                "SELECT agent_id, display_name, system_prompt FROM agent_registry WHERE agent_id = ? AND is_active = 1;",
-                (agent_id,),
+    # =========================================================================
+    # 1. HELPER & RESOLUTION UTILITIES
+    # =========================================================================
+
+    def _parse_agent_row(self, row: Any) -> Dict[str, Any]:
+        """Converts an agent Row object into a dictionary with deserialized JSON fields."""
+        data = dict(row)
+
+        if "priority_weight" in data:
+            data["priority_weight"] = (
+                float(data["priority_weight"])
+                if data["priority_weight"] is not None
+                else 1.0
             )
-            row = cursor.fetchone()
-            return dict(row) if row else None
 
-    def get_active_agent_ids(self) -> List[str]:
-        """Retrieves a list of all active agent_ids registered in the system."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute("SELECT agent_id FROM agent_registry WHERE is_active = 1;")
-            return [str(row["agent_id"]) for row in cursor.fetchall()]
+        triggers = data.get("override_triggers")
+        if isinstance(triggers, str) and triggers.strip():
+            try:
+                data["override_triggers"] = json.loads(triggers)
+            except json.JSONDecodeError as e:
+                logger.error(
+                    f"[AgentRepository] Malformed JSON in override_triggers for agent '{data.get('agent_id')}': {e}"
+                )
+                raise
+        elif not isinstance(triggers, list):
+            data["override_triggers"] = []
 
-    def get_all_manifests(self) -> Dict[str, Dict[str, Any]]:
-        """Retrieves registered agent manifests and populates capabilities dynamically from agent_skill_map and skill_registry."""
-        query = """
-            SELECT 
-                a.agent_id,
-                a.display_name,
-                a.description,
-                a.default_action,
-                a.system_prompt,
-                a.priority_weight,
-                a.override_triggers,
-                a.is_active,
-                s.skill_id,
-                s.action_name,
-                s.description AS skill_description,
-                s.parameters,
-                s.status AS skill_status
-            FROM agent_registry a
-            LEFT JOIN agent_skill_map asm ON (a.agent_id = asm.agent_id OR asm.agent_id = '*')
-            LEFT JOIN skill_registry s ON asm.skill_id = s.skill_id AND s.status = 'ACTIVE';
+        if "is_active" in data:
+            data["is_active"] = bool(data["is_active"])
+
+        return data
+
+    def resolve_agent_id(self, identifier: str) -> Optional[str]:
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query)
-            rows = cursor.fetchall()
-
-        manifests: Dict[str, Dict[str, Any]] = {}
-        for row in rows:
-            agent_id = row["agent_id"]
-            if agent_id not in manifests:
-                weight_val = float(row["priority_weight"]) if row["priority_weight"] is not None else 1.0
-                manifests[agent_id] = {
-                    "agent_id": agent_id,
-                    "name": row["display_name"],
-                    "display_name": row["display_name"],
-                    "description": row["description"] or "",
-                    "system_prompt": row["system_prompt"] or "",
-                    "default_action": row["default_action"] or "",
-                    "weight": weight_val,
-                    "priority_weight": weight_val,
-                    "override_triggers": json.loads(row["override_triggers"] or "[]"),
-                    "status": "active" if row["is_active"] == 1 else "disabled",
-                    "is_active": bool(row["is_active"]),
-                    "equipped_skills": [],
-                    "active_tools": [],
-                    "skills": [],
-                    "actions": {},
-                }
-
-            if row["skill_id"]:
-                action_name = row["action_name"]
-
-                # Safely parse JSON parameters
-                params = row["parameters"]
-                if isinstance(params, str):
-                    try:
-                        params = json.loads(params)
-                    except Exception:
-                        params = {}
-                elif not isinstance(params, dict):
-                    params = {}
-
-                skill_info = {
-                    "skill_id": row["skill_id"],
-                    "action_name": action_name,
-                    "description": row["skill_description"] or "",
-                    "parameters": params,
-                }
-
-                if row["skill_id"] not in manifests[agent_id]["equipped_skills"]:
-                    manifests[agent_id]["equipped_skills"].append(row["skill_id"])
-                    manifests[agent_id]["active_tools"].append(action_name)
-                    manifests[agent_id]["skills"].append({
-                        "skill_id": row["skill_id"],
-                        "action_name": action_name,
-                    })
-                    manifests[agent_id]["actions"][action_name] = skill_info
-
-        return manifests
-
-    def get_manifest(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Fetches an agent manifest and all associated active skill capabilities."""
-        query = """
-            SELECT 
-                a.agent_id,
-                a.display_name,
-                a.description,
-                a.default_action,
-                a.system_prompt,
-                a.priority_weight,
-                a.override_triggers,
-                a.is_active,
-                s.skill_id,
-                s.action_name,
-                s.description AS skill_description,
-                s.parameters,
-                s.status AS skill_status
-            FROM agent_registry a
-            LEFT JOIN agent_skill_map asm ON (a.agent_id = asm.agent_id OR asm.agent_id = '*')
-            LEFT JOIN skill_registry s ON asm.skill_id = s.skill_id AND s.status = 'ACTIVE'
-            WHERE a.agent_id = ? AND a.is_active = 1;
+        SSOT Identifier Resolver.
+        Queries SQLite to map any raw identifier (agent_id, display_name, or system_role)
+        directly to its canonical agent_id. Performs NO Python string manipulation.
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (agent_id,))
-            rows = cursor.fetchall()
-
-        if not rows:
+        if not identifier or not str(identifier).strip():
             return None
 
-        first = rows[0]
-        weight_val = float(first["priority_weight"]) if first["priority_weight"] is not None else 1.0
+        clean_id = str(identifier).strip()
 
-        manifest = {
-            "agent_id": first["agent_id"],
-            "name": first["display_name"],
-            "display_name": first["display_name"],
-            "description": first["description"] or "",
-            "system_prompt": first["system_prompt"] or "",
-            "default_action": first["default_action"] or "",
-            "weight": weight_val,
-            "priority_weight": weight_val,
-            "override_triggers": json.loads(first["override_triggers"] or "[]"),
-            "status": "active" if first["is_active"] == 1 else "disabled",
-            "is_active": bool(first["is_active"]),
-            "equipped_skills": [],
-            "active_tools": [],
-            "skills": [],
-            "actions": {},
-        }
+        # Query checks canonical ID, display name, and system_roles table mapping
+        query = """
+            SELECT a.agent_id
+            FROM agent_registry a
+            LEFT JOIN system_roles sr ON sr.agent_id = a.agent_id
+            WHERE LOWER(a.agent_id) = LOWER(?)
+               OR LOWER(a.display_name) = LOWER(?)
+               OR LOWER(sr.role_id) = LOWER(?)
+            LIMIT 1;
+        """
+        with get_connection(self.db_path, read_only=True) as conn:
+            cursor = conn.execute(query, (clean_id, clean_id, clean_id))
+            row = cursor.fetchone()
+            if row:
+                return str(row[0])
 
-        for row in rows:
-            if row["skill_id"]:
-                action_name = row["action_name"]
+            logger.warning(
+                f"[AgentRepository] Fail Fast: Identifier '{clean_id}' could not be resolved in database."
+            )
+            return None
 
-                params = row["parameters"]
-                if isinstance(params, str):
-                    try:
-                        params = json.loads(params)
-                    except Exception:
-                        params = {}
-                elif not isinstance(params, dict):
-                    params = {}
+    # =========================================================================
+    # 2. WRITE & UPSERT OPERATIONS
+    # =========================================================================
 
-                skill_info = {
-                    "skill_id": row["skill_id"],
-                    "action_name": action_name,
-                    "description": row["skill_description"] or "",
-                    "parameters": params,
-                }
+    def upsert_agent(
+        self,
+        record: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> bool:
+        """Inserts or updates an agent record in the agent_registry table."""
+        rec = dict(record) if record else {}
+        rec.update(kwargs)
 
-                if row["skill_id"] not in manifest["equipped_skills"]:
-                    manifest["equipped_skills"].append(row["skill_id"])
-                    manifest["active_tools"].append(action_name)
-                    manifest["skills"].append({
-                        "skill_id": row["skill_id"],
-                        "action_name": action_name,
-                    })
-                    manifest["actions"][action_name] = skill_info
+        if "agent_id" not in rec or "display_name" not in rec:
+            raise ValueError("Agent record must contain at least 'agent_id' and 'display_name'.")
 
-        return manifest
+        rec.setdefault("description", "")
+        rec.setdefault("default_action", "")
+        rec.setdefault("system_prompt", "")
+        rec.setdefault("priority_weight", 1.0)
+        rec.setdefault("is_active", 1)
+
+        rec["priority_weight"] = float(rec["priority_weight"])
+
+        if isinstance(rec["is_active"], bool):
+            rec["is_active"] = 1 if rec["is_active"] else 0
+
+        triggers = rec.get("override_triggers", [])
+        if not isinstance(triggers, str):
+            rec["override_triggers"] = json.dumps(triggers if isinstance(triggers, list) else [])
+
+        query = """
+            INSERT INTO agent_registry (
+                agent_id, display_name, description, default_action,
+                system_prompt, priority_weight, override_triggers, is_active
+            ) VALUES (
+                :agent_id, :display_name, :description, :default_action,
+                :system_prompt, :priority_weight, :override_triggers, :is_active
+            )
+            ON CONFLICT(agent_id) DO UPDATE SET
+                display_name=EXCLUDED.display_name,
+                description=EXCLUDED.description,
+                default_action=EXCLUDED.default_action,
+                system_prompt=EXCLUDED.system_prompt,
+                priority_weight=EXCLUDED.priority_weight,
+                override_triggers=EXCLUDED.override_triggers,
+                is_active=EXCLUDED.is_active,
+                updated_at=CURRENT_TIMESTAMP;
+        """
+        with get_connection(self.db_path) as conn:
+            conn.execute(query, rec)
+        logger.info(f"[AgentRepository] Upserted agent record for '{rec['agent_id']}'.")
+        return True
 
     def update_manifest(self, agent_id: str, update_data: Dict[str, Any]) -> bool:
-        """Persists updated capability prompts, weights, triggers, or description to DB."""
+        """Persists updated capability prompts, weights, triggers, or statuses to DB."""
         fields = []
         params = []
 
+        if "display_name" in update_data:
+            fields.append("display_name = ?")
+            params.append(update_data["display_name"])
         if "description" in update_data:
             fields.append("description = ?")
             params.append(update_data["description"])
+        if "default_action" in update_data:
+            fields.append("default_action = ?")
+            params.append(update_data["default_action"])
         if "system_prompt" in update_data:
             fields.append("system_prompt = ?")
             params.append(update_data["system_prompt"])
@@ -13457,8 +13401,13 @@ class AgentRepository:
             fields.append("priority_weight = ?")
             params.append(float(update_data["priority_weight"]))
         if "override_triggers" in update_data:
+            triggers = update_data["override_triggers"]
+            serialized = triggers if isinstance(triggers, str) else json.dumps(triggers)
             fields.append("override_triggers = ?")
-            params.append(json.dumps(update_data["override_triggers"]))
+            params.append(serialized)
+        if "is_active" in update_data:
+            fields.append("is_active = ?")
+            params.append(1 if update_data["is_active"] else 0)
 
         if not fields:
             return True
@@ -13468,45 +13417,82 @@ class AgentRepository:
 
         query = f"UPDATE agent_registry SET {', '.join(fields)} WHERE agent_id = ?"
 
-        try:
-            with get_connection(self.db_path) as conn:
-                conn.execute(query, params)
-            logger.info(f"[AgentRepository] Updated manifest for agent '{agent_id}'.")
-            return True
-        except Exception as e:
-            logger.error(f"[AgentRepository] Failed to update manifest for agent '{agent_id}': {e}", exc_info=True)
-            return False
+        with get_connection(self.db_path) as conn:
+            cursor = conn.execute(query, params)
+            if cursor.rowcount == 0:
+                logger.warning(f"[AgentRepository] Agent '{agent_id}' not found for update.")
+                return False
+        logger.info(f"[AgentRepository] Updated manifest for agent '{agent_id}'.")
+        return True
 
     def set_tool_status(self, agent_id: str, tool_identifier: str, enabled: bool) -> bool:
         """Enables or revokes an agent capability in agent_skill_map."""
-        try:
-            with get_connection(self.db_path, row_factory=True) as conn:
-                cursor = conn.execute(
-                    "SELECT skill_id FROM skill_registry WHERE action_name = ? OR skill_id = ? LIMIT 1;",
-                    (tool_identifier, tool_identifier),
+        with get_connection(self.db_path, row_factory=True) as conn:
+            cursor = conn.execute(
+                "SELECT skill_id FROM skill_registry WHERE action_name = ? OR skill_id = ? LIMIT 1;",
+                (tool_identifier, tool_identifier),
+            )
+            row = cursor.fetchone()
+            if not row:
+                logger.warning(
+                    f"[AgentRepository] Skill/tool '{tool_identifier}' not found in registry."
                 )
-                row = cursor.fetchone()
-                if not row:
-                    logger.warning(f"[AgentRepository] Skill/tool '{tool_identifier}' not found in registry.")
-                    return False
+                return False
 
-                skill_id = row["skill_id"]
+            skill_id = row["skill_id"]
 
-                if enabled:
-                    conn.execute(
-                        "INSERT INTO agent_skill_map (agent_id, skill_id) VALUES (?, ?) ON CONFLICT DO NOTHING;",
-                        (agent_id, skill_id),
-                    )
-                else:
-                    conn.execute(
-                        "DELETE FROM agent_skill_map WHERE agent_id = ? AND skill_id = ?;",
-                        (agent_id, skill_id),
-                    )
-            logger.info(f"[AgentRepository] Set tool '{tool_identifier}' enabled={enabled} for agent '{agent_id}'.")
-            return True
-        except Exception as e:
-            logger.error(f"[AgentRepository] Failed tool toggle for agent '{agent_id}': {e}", exc_info=True)
-            return False
+            if enabled:
+                conn.execute(
+                    "INSERT INTO agent_skill_map (agent_id, skill_id) VALUES (?, ?) ON CONFLICT DO NOTHING;",
+                    (agent_id, skill_id),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM agent_skill_map WHERE agent_id = ? AND skill_id = ?;",
+                    (agent_id, skill_id),
+                )
+        logger.info(
+            f"[AgentRepository] Set tool '{tool_identifier}' enabled={enabled} for agent '{agent_id}'."
+        )
+        return True
+
+    def delete_agent(self, agent_id: str) -> bool:
+        """Deletes an agent record from the database."""
+        with get_connection(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM agent_registry WHERE agent_id = ?;", (agent_id,))
+            return cursor.rowcount > 0
+
+    def clear_all_agents(self) -> None:
+        """Clears all agents from agent_registry."""
+        with get_connection(self.db_path) as conn:
+            conn.execute("DELETE FROM agent_registry;")
+
+    # =========================================================================
+    # 3. READ & MANIFEST QUERY OPERATIONS (STRICT DB TRUTH)
+    # =========================================================================
+
+    def get_active_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves active agent metadata and system prompt by agent_id."""
+        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
+            cursor = conn.execute(
+                """
+                SELECT agent_id, display_name, description, default_action,
+                       system_prompt, priority_weight, override_triggers, is_active
+                FROM agent_registry
+                WHERE agent_id = ? AND is_active = 1;
+                """,
+                (agent_id,),
+            )
+            row = cursor.fetchone()
+            return self._parse_agent_row(row) if row else None
+
+    def get_active_agent_ids(self) -> List[str]:
+        """Retrieves a list of all active agent_ids registered in the system."""
+        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
+            cursor = conn.execute(
+                "SELECT agent_id FROM agent_registry WHERE is_active = 1 ORDER BY agent_id ASC;"
+            )
+            return [str(row["agent_id"]) for row in cursor.fetchall()]
 
     def get_all_active_agents(self) -> List[Dict[str, Any]]:
         """Retrieves all active agent dicts from the database."""
@@ -13516,10 +13502,98 @@ class AgentRepository:
                 SELECT agent_id, display_name, description, system_prompt, default_action,
                        priority_weight, override_triggers, is_active
                 FROM agent_registry 
-                WHERE is_active = 1;
+                WHERE is_active = 1
+                ORDER BY priority_weight DESC, agent_id ASC;
                 """
             )
-            return [dict(row) for row in cursor.fetchall()]
+            return [self._parse_agent_row(row) for row in cursor.fetchall()]
+
+    def get_all_manifests(self, active_only: bool = True) -> Dict[str, Dict[str, Any]]:
+        """Retrieves registered agent manifests strictly from agent_skill_map bindings."""
+        where_clause = "WHERE a.is_active = 1" if active_only else ""
+        query = f"""
+            SELECT 
+                a.agent_id,
+                a.display_name,
+                a.description,
+                a.default_action,
+                a.system_prompt,
+                a.priority_weight,
+                a.override_triggers,
+                a.is_active,
+                s.skill_id,
+                s.action_name,
+                s.description AS skill_description,
+                s.parameters,
+                s.status AS skill_status
+            FROM agent_registry a
+            LEFT JOIN agent_skill_map asm ON asm.agent_id = a.agent_id
+            LEFT JOIN skill_registry s ON s.skill_id = asm.skill_id AND s.status = 'ACTIVE'
+            {where_clause}
+            ORDER BY a.priority_weight DESC, a.agent_id ASC;
+        """
+        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
+            cursor = conn.execute(query)
+            rows = cursor.fetchall()
+
+            manifests: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                agent_id = row["agent_id"]
+                if agent_id not in manifests:
+                    parsed_agent = self._parse_agent_row(row)
+                    weight_val = parsed_agent["priority_weight"]
+
+                    manifests[agent_id] = {
+                        "agent_id": agent_id,
+                        "display_name": row["display_name"],
+                        "description": row["description"] or "",
+                        "system_prompt": row["system_prompt"] or "",
+                        "default_action": row["default_action"] or "",
+                        "priority_weight": weight_val,
+                        "override_triggers": parsed_agent["override_triggers"],
+                        "is_active": parsed_agent["is_active"],
+                        "equipped_skills": [],
+                        "active_tools": [],
+                        "skills": [],
+                        "actions": {},
+                    }
+
+                if row["skill_id"]:
+                    action_name = row["action_name"]
+                    params = row["parameters"]
+                    if isinstance(params, str) and params.strip():
+                        try:
+                            params = json.loads(params)
+                        except json.JSONDecodeError:
+                            logger.error(
+                                f"[AgentRepository] Malformed parameter JSON for skill '{row['skill_id']}'"
+                            )
+                            raise
+                    elif not isinstance(params, dict):
+                        params = {}
+
+                    skill_info = {
+                        "skill_id": row["skill_id"],
+                        "action_name": action_name,
+                        "description": row["skill_description"] or "",
+                        "parameters": params,
+                    }
+
+                    if row["skill_id"] not in manifests[agent_id]["equipped_skills"]:
+                        manifests[agent_id]["equipped_skills"].append(row["skill_id"])
+                        manifests[agent_id]["active_tools"].append(action_name)
+                        manifests[agent_id]["skills"].append({
+                            "skill_id": row["skill_id"],
+                            "action_name": action_name,
+                        })
+                        manifests[agent_id]["actions"][action_name] = skill_info
+
+            return manifests
+
+    def get_manifest(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Fetches a single agent manifest strictly using explicit database relationships."""
+        manifests = self.get_all_manifests(active_only=False)
+        return manifests.get(agent_id)
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -13811,11 +13885,14 @@ class PermissionRepository:
 ```python
 """
 charon/db/repositories/prompts.py
-System Version: v0.1.0 | File Revision: 1.1.0
+System Version: v0.8.0 | File Revision: 3.1.0
 
 Repository for system prompt templates, role rosters, and extraction capability schemas.
+Relies strictly on SQLite database queries aligned with system_roles (role_name) schema.
+Zero fallback synthesis.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -13830,98 +13907,144 @@ class PromptRepository:
     """Data access layer for system prompt templates, active role rosters, and skill extraction metadata."""
 
     def __init__(self, db_path: Union[str, Path] = STATE_DB_PATH):
-        self.db_path = db_path
+        self.db_path = str(db_path)
 
     def get_system_prompt_template(self, role_target: str) -> Optional[str]:
-        """Retrieves system prompt for target role, falling back to default_system_generalist."""
+        """
+        Retrieves system prompt for target role_name, agent_id, or display_name.
+        Fails fast and returns None if no prompt matches the target in the database.
+        """
+        if not role_target or not str(role_target).strip():
+            return None
+
+        clean_target = str(role_target).strip()
         query = """
             SELECT ar.system_prompt 
-            FROM system_roles sr
-            JOIN agent_registry ar ON sr.agent_id = ar.agent_id
-            WHERE (sr.role_name = ? OR sr.role_name = 'default_system_generalist')
+            FROM agent_registry ar
+            LEFT JOIN system_roles sr ON ar.agent_id = sr.agent_id
+            WHERE (
+                LOWER(ar.agent_id) = LOWER(?)
+                OR LOWER(ar.display_name) = LOWER(?)
+                OR LOWER(sr.role_name) = LOWER(?)
+            )
               AND ar.is_active = 1
               AND ar.system_prompt IS NOT NULL
               AND ar.system_prompt != ''
-            ORDER BY CASE WHEN sr.role_name = ? THEN 0 ELSE 1 END
-            LIMIT 1
+            LIMIT 1;
         """
         try:
-            with get_connection(self.db_path, read_only=True) as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, (role_target, role_target))
+            with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
+                cursor = conn.execute(query, (clean_target, clean_target, clean_target))
                 row = cursor.fetchone()
                 if row and row["system_prompt"]:
                     return str(row["system_prompt"])
         except Exception as e:
-            logger.warning(f"Failed to fetch prompt template for target '{role_target}': {e}")
+            logger.error(
+                f"[PromptRepository] Database query failed for prompt target '{clean_target}': {e}",
+                exc_info=True,
+            )
+            raise
+
+        logger.warning(
+            f"[PromptRepository] Fail Fast: No system prompt found for target '{clean_target}'."
+        )
         return None
 
     def get_active_role_roster(self) -> List[Dict[str, str]]:
-        """Retrieves list of active system roles and their descriptions."""
+        """Retrieves list of active system roles and their descriptions strictly from DB."""
         query = """
             SELECT sr.role_name, sr.description 
             FROM system_roles sr
             JOIN agent_registry ar ON sr.agent_id = ar.agent_id
             WHERE ar.is_active = 1
-            ORDER BY sr.role_name
+            ORDER BY sr.role_name ASC;
         """
         try:
-            with get_connection(self.db_path, read_only=True) as conn:
-                cursor = conn.cursor()
-                cursor.execute(query)
+            with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
+                cursor = conn.execute(query)
                 return [
                     {"role_name": row["role_name"], "description": row["description"] or ""}
                     for row in cursor.fetchall()
                 ]
         except Exception as e:
-            logger.warning(f"Failed to fetch role roster: {e}")
-            return []
+            logger.error(f"[PromptRepository] Failed to fetch active role roster: {e}", exc_info=True)
+            raise
 
     def get_role_capabilities(self) -> List[Dict[str, Any]]:
         """
-        Retrieves active skill schemas per system role.
-        Uses UPPER(sk.status) = 'ACTIVE' to match the database schema.
+        Retrieves active skill schemas per active agent/role.
+        Deserializes JSON parameters strictly, logging errors on malformed payloads.
         """
         query = """
-            SELECT 
-                sr.role_name,
+            SELECT DISTINCT
+                ar.agent_id AS role_name,
                 sk.action_name,
                 sk.description,
                 sk.parameters
-            FROM system_roles sr
-            JOIN agent_skill_map asm ON sr.agent_id = asm.agent_id
-            JOIN skill_registry sk ON asm.skill_id = sk.skill_id
-            JOIN agent_registry ar ON sr.agent_id = ar.agent_id
+            FROM agent_registry ar
+            JOIN skill_registry sk ON (
+                sk.is_global = 1 OR EXISTS (
+                    SELECT 1 FROM agent_skill_map asm 
+                    WHERE asm.skill_id = sk.skill_id 
+                      AND (asm.agent_id = ar.agent_id OR asm.agent_id = '*')
+                )
+            )
             WHERE UPPER(sk.status) = 'ACTIVE' AND ar.is_active = 1
-            ORDER BY sr.role_name, sk.action_name
+            ORDER BY ar.agent_id, sk.action_name;
         """
         try:
-            with get_connection(self.db_path, read_only=True) as conn:
-                cursor = conn.cursor()
-                cursor.execute(query)
-                return [dict(row) for row in cursor.fetchall()]
+            with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
+                cursor = conn.execute(query)
+                results = []
+                for row in cursor.fetchall():
+                    item = dict(row)
+                    params = item.get("parameters")
+                    if isinstance(params, str) and params.strip():
+                        try:
+                            item["parameters"] = json.loads(params)
+                        except json.JSONDecodeError as e:
+                            logger.error(
+                                f"[PromptRepository] Corrupt parameters JSON for skill '{item.get('action_name')}': {e}"
+                            )
+                            raise
+                    elif params is None:
+                        item["parameters"] = {}
+                    results.append(item)
+                return results
         except Exception as e:
-            logger.warning(f"Failed to fetch role capabilities: {e}")
-            return []
+            logger.error(f"[PromptRepository] Failed to fetch role capabilities: {e}", exc_info=True)
+            raise
 
     def get_default_action_for_identifier(self, identifier: str) -> Optional[str]:
-        """Retrieves default_action for a given agent_id or role_name."""
+        """Retrieves default_action for a given agent_id, display_name, or role_name."""
+        if not identifier or not str(identifier).strip():
+            return None
+
+        clean_id = str(identifier).strip()
         query = """
             SELECT ar.default_action 
             FROM agent_registry ar
             LEFT JOIN system_roles sr ON ar.agent_id = sr.agent_id
-            WHERE ar.agent_id = ? OR sr.role_name = ?
-            LIMIT 1
+            WHERE (
+                LOWER(ar.agent_id) = LOWER(?)
+                OR LOWER(ar.display_name) = LOWER(?)
+                OR LOWER(sr.role_name) = LOWER(?)
+            )
+            LIMIT 1;
         """
         try:
-            with get_connection(self.db_path, read_only=True) as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, (identifier, identifier))
+            with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
+                cursor = conn.execute(query, (clean_id, clean_id, clean_id))
                 row = cursor.fetchone()
                 if row and row["default_action"]:
                     return str(row["default_action"])
         except Exception as e:
-            logger.warning(f"Failed to fetch default action for identifier '{identifier}': {e}")
+            logger.error(
+                f"[PromptRepository] Failed to fetch default action for identifier '{clean_id}': {e}",
+                exc_info=True,
+            )
+            raise
+
         return None
 ```
 
@@ -13932,7 +14055,7 @@ class PromptRepository:
 ```python
 """
 charon/db/repositories/role.py
-System Version: v0.6.0 | File Revision: 6.1.0
+System Version: v0.6.2 | File Revision: 7.0.0
 
 Module: Data Access Layer repository for system role mappings, fallback agent selection,
 agent entrypoint reflection, role criticality checks, and agent lifecycle plug/unplug execution.
@@ -13960,7 +14083,7 @@ class RoleRepository:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS system_roles (
                     role_name TEXT PRIMARY KEY,
-                    agent_id TEXT,                              -- Nullable to allow agent swapping
+                    agent_id TEXT,                               -- Nullable to allow agent swapping
                     is_mandatory INTEGER NOT NULL DEFAULT 0,    -- Harness requirement flag
                     is_system_core INTEGER NOT NULL DEFAULT 0,   -- Core vs custom role flag
                     description TEXT DEFAULT '',
@@ -13993,7 +14116,6 @@ class RoleRepository:
     def swap_agent_role(self, role_name: str, new_agent_id: Optional[str]) -> bool:
         """
         Safely assigns or clears an agent for a given system role.
-        Note: SQLite triggers ('prevent_inactive_agent_role_assignment') raise ABORT on inactive agent assignment.
         """
         query = """
             UPDATE system_roles 
@@ -14011,23 +14133,41 @@ class RoleRepository:
 
         return updated
 
-    def get_agent_id_for_role(
-        self, norm: str, agent_id_variant: str, system_role_variant: str
-    ) -> Optional[str]:
-        """Resolves a canonical agent_id by checking both registries and mappings."""
+    def get_agent_id_for_role(self, role_input: str) -> Optional[str]:
+        """
+        Queries SQLite to resolve an active agent_id from:
+        1. agent_registry (matching agent_id or display_name)
+        2. system_roles (matching role_name -> mapped agent_id)
+
+        Enforces active status (`is_active = 1`).
+        """
+        if not role_input or not str(role_input).strip():
+            return None
+
+        target = str(role_input).strip()
+
+        query = """
+            SELECT a.agent_id
+            FROM agent_registry a
+            WHERE (a.agent_id = ? OR LOWER(a.agent_id) = LOWER(?) OR LOWER(a.display_name) = LOWER(?))
+              AND a.is_active = 1
+
+            UNION ALL
+
+            SELECT r.agent_id
+            FROM system_roles r
+            JOIN agent_registry a ON r.agent_id = a.agent_id
+            WHERE (r.role_name = ? OR LOWER(r.role_name) = LOWER(?))
+              AND a.is_active = 1
+
+            LIMIT 1;
+        """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
-                """
-                SELECT agent_id FROM agent_registry WHERE agent_id = ? OR agent_id = ?
-                UNION ALL
-                SELECT agent_id FROM system_roles WHERE (role_name = ? OR role_name = ?) AND agent_id IS NOT NULL
-                LIMIT 1;
-                """,
-                (norm, agent_id_variant, norm, system_role_variant),
-            )
+            cursor = conn.execute(query, (target, target, target, target, target))
             row = cursor.fetchone()
             if row and row["agent_id"]:
                 return str(row["agent_id"])
+
         return None
 
     def get_default_agent_id(self) -> Optional[str]:
@@ -14065,7 +14205,7 @@ class RoleRepository:
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
             try:
                 cursor = conn.execute(
-                    "SELECT module_path, class_name FROM agent_registry WHERE agent_id = ?;",
+                    "SELECT module_path, class_name FROM agent_registry WHERE agent_id = ? AND is_active = 1;",
                     (agent_id,),
                 )
                 row = cursor.fetchone()
@@ -14074,7 +14214,9 @@ class RoleRepository:
             except Exception:
                 pass
 
-            cursor = conn.execute("SELECT agent_id FROM agent_registry WHERE agent_id = ?;", (agent_id,))
+            cursor = conn.execute(
+                "SELECT agent_id FROM agent_registry WHERE agent_id = ? AND is_active = 1;", (agent_id,)
+            )
             if cursor.fetchone():
                 return {}
 
@@ -14122,15 +14264,17 @@ class RoleRepository:
 ```python
 """
 charon/db/repositories/route.py
-System Version: v0.6.0 | File Revision: 6.1.1
+System Version: v0.7.0 | File Revision: 7.0.0
 
-Module: Data Access Layer repository for route mappings, system fallback definitions,
-action trigger resolution, and dynamic shortcut override rules.
+Module: Data Access Layer repository for route mappings, action trigger resolution,
+and dynamic shortcut override rules.
+Enforces strict zero-fallback deterministic routing: unmapped or unequipped action
+triggers return None rather than defaulting to catch-all roles.
 """
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 import uuid
 
 from charon.config.paths import STATE_DB_PATH
@@ -14147,10 +14291,7 @@ class RouteRepository:
 
     def ensure_schema(self) -> None:
         """
-        Initializes the route_registry and dynamic_routing_rules database tables.
-
-        Note: Table creation is provided here for bootstrap initialization. Once the database schema
-        stabilizes, DDL logic should be executed strictly through a dedicated system migration runner.
+        Initializes the system_roles, route_registry, and dynamic_routing_rules database tables.
         """
         with get_connection(self.db_path) as conn:
             conn.executescript("""
@@ -14164,7 +14305,6 @@ class RouteRepository:
                     route_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action_trigger TEXT UNIQUE NOT NULL,
                     target_role TEXT NOT NULL,
-                    fallback_role TEXT DEFAULT 'system_fallback',
                     route_type TEXT CHECK(route_type IN('SYSTEM', 'USER_OVERRIDE', 'DYNAMIC_AUTO', 'EPHEMERAL')) NOT NULL DEFAULT 'DYNAMIC_AUTO',
                     is_active INTEGER NOT NULL DEFAULT 1,
                     description TEXT,
@@ -14172,8 +14312,7 @@ class RouteRepository:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     execution_count INTEGER DEFAULT 0,
                     last_executed_at TEXT,
-                    FOREIGN KEY(target_role) REFERENCES system_roles(role_name) ON DELETE RESTRICT,
-                    FOREIGN KEY(fallback_role) REFERENCES system_roles(role_name) ON DELETE SET NULL
+                    FOREIGN KEY(target_role) REFERENCES system_roles(role_name) ON DELETE RESTRICT
                 );
 
                 CREATE TABLE IF NOT EXISTS dynamic_routing_rules (
@@ -14190,26 +14329,15 @@ class RouteRepository:
                 CREATE INDEX IF NOT EXISTS idx_dynamic_rule_trigger ON dynamic_routing_rules(trigger);
             """)
 
-            # Ensure system_fallback default role is registered in system_roles
-            conn.execute(
-                "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES ('system_fallback', 'Default system fallback role');"
-            )
-
-    def get_system_fallback(self) -> str:
-        """Returns the fallback role mapped in the system."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
-                "SELECT target_role FROM route_registry WHERE target_role = 'system_fallback' LIMIT 1;"
-            )
-            row = cursor.fetchone()
-            return str(row["target_role"]) if row else "system_fallback"
-
-    def resolve_and_track_route(self, action_trigger: str) -> Optional[Tuple[str, str]]:
-        """Fetches highest priority active route and increments execution telemetry."""
+    def resolve_and_track_route(self, action_trigger: str) -> Optional[str]:
+        """
+        Fetches target_role for highest priority active route and increments execution telemetry.
+        Returns None if no active route exists for the action trigger.
+        """
         with get_connection(self.db_path, row_factory=True) as conn:
             cursor = conn.execute(
                 """
-                SELECT target_role, fallback_role 
+                SELECT target_role 
                 FROM route_registry 
                 WHERE action_trigger = ? AND is_active = 1
                 ORDER BY CASE route_type
@@ -14233,7 +14361,7 @@ class RouteRepository:
                     """,
                     (action_trigger,),
                 )
-                return str(row["target_role"]), str(row["fallback_role"])
+                return str(row["target_role"])
             return None
 
     def get_route_type(self, action_trigger: str) -> Optional[str]:
@@ -14259,14 +14387,13 @@ class RouteRepository:
         self,
         action_trigger: str,
         target_role: str,
-        fallback_role: Optional[str],
-        route_type: str,
-        description: str,
-        created_by: str,
+        route_type: str = "DYNAMIC_AUTO",
+        description: str = "",
+        created_by: str = "system",
         force: bool = False,
     ) -> None:
         """
-        Upserts a route. Throws PermissionError if attempting to mutate
+        Upserts a route target. Throws PermissionError if attempting to mutate
         a SYSTEM route without force=True.
         """
         existing_type = self.get_route_type(action_trigger)
@@ -14276,22 +14403,18 @@ class RouteRepository:
             )
 
         with get_connection(self.db_path) as conn:
-            # Seed referenced roles if they don't exist yet in system_roles
-            roles_to_ensure = [r for r in (target_role, fallback_role) if r]
-            for role in roles_to_ensure:
-                conn.execute(
-                    "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES (?, ?);",
-                    (role, f"Role for {role}"),
-                )
+            conn.execute(
+                "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES (?, ?);",
+                (target_role, f"Role for {target_role}"),
+            )
 
             conn.execute(
                 """
                 INSERT INTO route_registry 
-                (action_trigger, target_role, fallback_role, route_type, description, created_by, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, 1)
+                (action_trigger, target_role, route_type, description, created_by, is_active)
+                VALUES (?, ?, ?, ?, ?, 1)
                 ON CONFLICT(action_trigger) DO UPDATE SET
                     target_role = excluded.target_role,
-                    fallback_role = excluded.fallback_role,
                     route_type = excluded.route_type,
                     description = excluded.description,
                     created_by = excluded.created_by,
@@ -14300,7 +14423,6 @@ class RouteRepository:
                 (
                     action_trigger,
                     target_role,
-                    fallback_role,
                     route_type,
                     description,
                     created_by,
@@ -14310,23 +14432,23 @@ class RouteRepository:
     def sync_dynamic_routes(self) -> bool:
         """
         Synchronizes active skills from skill_registry and agent_skill_map into route_registry.
-        Automatically updates or creates DYNAMIC_AUTO route entries for registered actions.
+        Only maps skills with explicit non-wildcard agent assignments. Unmapped skills are omitted.
         """
         query = """
             INSERT INTO route_registry (
-                action_trigger, target_role, fallback_role, route_type, description, created_by, is_active
+                action_trigger, target_role, route_type, description, created_by, is_active
             )
             SELECT 
                 sr.action_name AS action_trigger,
-                COALESCE(asm.agent_id, 'system_fallback') AS target_role,
-                'system_fallback' AS fallback_role,
+                MIN(asm.agent_id) AS target_role,
                 'DYNAMIC_AUTO' AS route_type,
                 sr.description,
                 'indexer' AS created_by,
                 1 AS is_active
             FROM skill_registry sr
-            LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
-            WHERE sr.status = 'ACTIVE'
+            JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
+            WHERE sr.status = 'ACTIVE' AND asm.agent_id IS NOT NULL AND asm.agent_id != '*'
+            GROUP BY sr.skill_id, sr.action_name, sr.description
             ON CONFLICT(action_trigger) DO UPDATE SET
                 target_role = EXCLUDED.target_role,
                 description = EXCLUDED.description,
@@ -14335,12 +14457,7 @@ class RouteRepository:
         """
         try:
             with get_connection(self.db_path) as conn:
-                # 1. Ensure fallback role exists in system_roles
-                conn.execute(
-                    "INSERT OR IGNORE INTO system_roles (role_name, description) VALUES ('system_fallback', 'Default system fallback role');"
-                )
-
-                # 2. Pre-seed system_roles with all agent_ids currently in agent_skill_map
+                # 1. Pre-seed system_roles with all non-wildcard agent_ids
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO system_roles (role_name, description)
@@ -14350,7 +14467,7 @@ class RouteRepository:
                     """
                 )
 
-                # 3. Synchronize routes into route_registry
+                # 2. Synchronize unique action triggers into route_registry
                 conn.execute(query)
 
             logger.info("[RouteRepository] Successfully synchronized dynamic routes from skill registry.")
@@ -14360,7 +14477,7 @@ class RouteRepository:
             return False
 
     # =========================================================================
-    # Dynamic Shortcut Override Rules (Pass 1 Router Support)
+    # Dynamic Shortcut Override Rules
     # =========================================================================
 
     def get_override_rules(self) -> List[Dict[str, Any]]:
@@ -14369,14 +14486,10 @@ class RouteRepository:
             cursor = conn.execute(
                 "SELECT rule_id, trigger, target_agent, description, created_at FROM dynamic_routing_rules;"
             )
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            return [dict(row) for row in cursor.fetchall()]
 
     def add_override_rule(self, trigger: str, target_agent: str, description: str = "") -> str:
-        """
-        Creates or updates a hard trigger shortcut rule (e.g. '#archivist' -> forced dispatch).
-        Returns the rule_id assigned to the shortcut.
-        """
+        """Creates or updates a hard trigger shortcut rule."""
         rule_id = f"rule_{uuid.uuid4().hex[:8]}"
         with get_connection(self.db_path) as conn:
             conn.execute(
@@ -14411,7 +14524,7 @@ class RouteRepository:
 ```python
 """
 charon/db/repositories/skill.py
-System Version: v0.6.0 | File Revision: 6.3.4
+System Version: v0.6.0 | File Revision: 6.3.6
 
 Module: Data Access Layer repository for skill dynamic indexing, quarantine lifecycle management,
 agent-capability authorization bindings, and CBAC skill permission assignments.
@@ -14480,6 +14593,14 @@ class SkillRepository:
                     FOREIGN KEY (skill_id) REFERENCES skill_registry(skill_id) ON DELETE CASCADE
                 );
 
+                -- Persistent backup table to preserve mappings across connection/indexing sweeps
+                CREATE TABLE IF NOT EXISTS _bkp_agent_skill_map (
+                    agent_id TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (agent_id, skill_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_skill_registry_status ON skill_registry(status);
                 CREATE INDEX IF NOT EXISTS idx_skill_permissions_skill ON skill_permissions(skill_id);
                 CREATE INDEX IF NOT EXISTS idx_agent_skill_map_agent ON agent_skill_map(agent_id);
@@ -14490,24 +14611,69 @@ class SkillRepository:
     # 1. REGISTRY CLEANUP & DESERIALIZATION UTILITIES
     # =========================================================================
 
-    def clear_registry(self) -> None:
-        """Clears all indexed skills, permission bindings, and agent mappings prior to full re-indexing."""
-        with get_connection(self.db_path) as conn:
-            conn.execute("DELETE FROM agent_skill_map;")
-            conn.execute("DELETE FROM skill_permissions;")
-            conn.execute("DELETE FROM skill_registry;")
+    def clear_registry(self, clear_agent_mappings: bool = False) -> None:
+        """
+        Clears indexed skills and permission bindings prior to re-indexing.
 
-    def clear_all_skills(self) -> None:
+        Args:
+            clear_agent_mappings: If True, clears agent-skill authorization mappings in addition
+                                 to skill registry metadata. Defaults to False to preserve existing
+                                 agent capability grants during routine indexing re-sweeps.
+        """
+        with get_connection(self.db_path) as conn:
+            if clear_agent_mappings:
+                conn.execute("DELETE FROM agent_skill_map;")
+                conn.execute("DELETE FROM _bkp_agent_skill_map;")
+                conn.execute("DELETE FROM skill_permissions;")
+                conn.execute("DELETE FROM skill_registry;")
+            else:
+                # Preserve existing agent mappings in a persistent backup table across connection lifecycles
+                conn.execute("DELETE FROM _bkp_agent_skill_map;")
+                conn.execute("INSERT INTO _bkp_agent_skill_map SELECT * FROM agent_skill_map;")
+                conn.execute("DELETE FROM skill_permissions;")
+                conn.execute("DELETE FROM skill_registry;")
+
+    def clear_all_skills(self, clear_agent_mappings: bool = False) -> None:
         """Alias for clear_registry to support clean full re-indexing sweeps."""
-        self.clear_registry()
+        self.clear_registry(clear_agent_mappings=clear_agent_mappings)
 
-    def clear_all_agent_skill_mappings(self) -> None:
-        """Clears all agent-skill capability mappings prior to re-indexing."""
+    def clear_all_agent_skill_mappings(self, agent_id: Optional[str] = None) -> None:
+        """
+        Clears agent-skill capability mappings.
+
+        Args:
+            agent_id: Optional target agent ID. If provided, only clears mappings for that agent.
+                      If None, clears all mappings across all agents.
+        """
         with get_connection(self.db_path) as conn:
-            conn.execute("DELETE FROM agent_skill_map;")
+            if agent_id:
+                conn.execute("DELETE FROM agent_skill_map WHERE agent_id = ?;", (agent_id,))
+                conn.execute("DELETE FROM _bkp_agent_skill_map WHERE agent_id = ?;", (agent_id,))
+            else:
+                conn.execute("DELETE FROM agent_skill_map;")
+                conn.execute("DELETE FROM _bkp_agent_skill_map;")
+
+    def _get_permissions_map_for_skills(
+        self, conn: Any, skill_ids: List[str]
+    ) -> Dict[str, List[str]]:
+        """Batch fetches permissions for multiple skills to eliminate N+1 query patterns."""
+        if not skill_ids:
+            return {}
+        placeholders = ",".join(["?"] * len(skill_ids))
+        cursor = conn.execute(
+            f"SELECT skill_id, perm_id FROM skill_permissions WHERE skill_id IN ({placeholders});",
+            skill_ids,
+        )
+        perm_map: Dict[str, List[str]] = {sid: [] for sid in skill_ids}
+        for r in cursor.fetchall():
+            perm_map[r["skill_id"]].append(str(r["perm_id"]))
+        return perm_map
 
     def _parse_skill_row(
-        self, row: Any, conn: Optional[Any] = None
+        self,
+        row: Any,
+        conn: Optional[Any] = None,
+        permissions_map: Optional[Dict[str, List[str]]] = None,
     ) -> Dict[str, Any]:
         """Helper to convert a SQLite Row object to a dictionary and deserialize embedded JSON strings."""
         data = dict(row)
@@ -14526,10 +14692,12 @@ class SkillRepository:
             elif raw_val is None:
                 data[json_field] = {} if json_field == "parameters" else []
 
-        # Populate required primitive CBAC permissions if database connection is available
+        # Populate required primitive CBAC permissions
         skill_id = data.get("skill_id")
         if skill_id:
-            if conn:
+            if permissions_map is not None:
+                data["required_permissions"] = permissions_map.get(skill_id, [])
+            elif conn:
                 cursor = conn.execute(
                     "SELECT perm_id FROM skill_permissions WHERE skill_id = ?;",
                     (skill_id,),
@@ -14539,9 +14707,7 @@ class SkillRepository:
                     for r in cursor.fetchall()
                 ]
             else:
-                data["required_permissions"] = self.get_skill_permissions(
-                    skill_id
-                )
+                data["required_permissions"] = self.get_skill_permissions(skill_id)
         else:
             data["required_permissions"] = []
 
@@ -14562,7 +14728,7 @@ class SkillRepository:
         """
         Inserts or updates a skill record and binds required primitive permissions.
         Defaults status to 'QUARANTINED' unless explicitly supplied as 'ACTIVE'.
-        Migrates existing agent mappings if the skill_id changed.
+        Migrates existing agent mappings safely if the skill_id changed.
         """
         rec = dict(record) if record else {}
         rec.update(kwargs)
@@ -14629,19 +14795,45 @@ class SkillRepository:
             if old_row:
                 old_skill_id = old_row[0] if isinstance(old_row, (tuple, list)) else old_row["skill_id"]
 
-                # Migrate existing mappings to the new skill_id prior to deletion
+                # Remove potential duplicate mappings that would block UPDATE
                 conn.execute(
-                    "UPDATE OR IGNORE agent_skill_map SET skill_id = ? WHERE skill_id = ?;",
+                    "DELETE FROM agent_skill_map WHERE skill_id = ? AND agent_id IN ("
+                    "  SELECT agent_id FROM agent_skill_map WHERE skill_id = ?"
+                    ");",
+                    (old_skill_id, rec["skill_id"]),
+                )
+                conn.execute(
+                    "UPDATE agent_skill_map SET skill_id = ? WHERE skill_id = ?;",
                     (rec["skill_id"], old_skill_id),
                 )
                 conn.execute(
-                    "UPDATE OR IGNORE skill_permissions SET skill_id = ? WHERE skill_id = ?;",
+                    "DELETE FROM skill_permissions WHERE skill_id = ? AND perm_id IN ("
+                    "  SELECT perm_id FROM skill_permissions WHERE skill_id = ?"
+                    ");",
+                    (old_skill_id, rec["skill_id"]),
+                )
+                conn.execute(
+                    "UPDATE skill_permissions SET skill_id = ? WHERE skill_id = ?;",
                     (rec["skill_id"], old_skill_id),
                 )
                 # Safely delete old parent record now that children are re-linked
                 conn.execute("DELETE FROM skill_registry WHERE skill_id = ?;", (old_skill_id,))
 
             conn.execute(query, rec)
+
+            # Restore mapped permissions from persistent backup table if re-indexing cleared registry
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO agent_skill_map (agent_id, skill_id, created_at)
+                    SELECT agent_id, skill_id, created_at FROM _bkp_agent_skill_map
+                    WHERE skill_id = ?
+                    ON CONFLICT(agent_id, skill_id) DO NOTHING;
+                    """,
+                    (rec["skill_id"],),
+                )
+            except Exception as e:
+                logger.debug("Skip agent_skill_map backup restore: %s", e)
 
             # Bind CBAC permissions if provided
             if req_perms:
@@ -14699,7 +14891,10 @@ class SkillRepository:
             cursor = conn.execute(
                 "SELECT * FROM skill_registry WHERE status = 'ACTIVE';"
             )
-            return [self._parse_skill_row(row, conn) for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            skill_ids = [r["skill_id"] for r in rows]
+            perm_map = self._get_permissions_map_for_skills(conn, skill_ids)
+            return [self._parse_skill_row(row, conn, perm_map) for row in rows]
 
     def get_all_skills(self) -> List[Dict[str, Any]]:
         """Alias for get_all_active_skills."""
@@ -14731,7 +14926,10 @@ class SkillRepository:
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
             cursor = conn.execute(query, (action_name, action_name))
             row = cursor.fetchone()
-            return self._parse_skill_row(row, conn) if row else None
+            if not row:
+                return None
+            perm_map = self._get_permissions_map_for_skills(conn, [row["skill_id"]])
+            return self._parse_skill_row(row, conn, perm_map)
 
     def get_skill_by_id(self, skill_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves skill metadata directly by unique skill_id regardless of status."""
@@ -14741,7 +14939,10 @@ class SkillRepository:
                 (skill_id,),
             )
             row = cursor.fetchone()
-            return self._parse_skill_row(row, conn) if row else None
+            if not row:
+                return None
+            perm_map = self._get_permissions_map_for_skills(conn, [skill_id])
+            return self._parse_skill_row(row, conn, perm_map)
 
     def get_skill_permissions(self, skill_id: str) -> List[str]:
         """Fetches all primitive permission IDs bound to a given skill."""
@@ -14840,80 +15041,84 @@ class SkillRepository:
     def get_actions_for_agent(
         self, agent_id: str, alt_agent_id: Optional[str] = None
     ) -> List[str]:
-        """Fetches distinct ACTIVE action capability keys granted to an agent (or marked global)."""
-        alt_id = alt_agent_id or agent_id
+        """Fetches distinct ACTIVE action capability keys strictly granted to an agent (or marked global)."""
+        target_id = agent_id  # Do not union-bleed skills from alt_agent_id
         query = """
             SELECT DISTINCT sr.action_name
             FROM skill_registry sr
             LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
             WHERE sr.status = 'ACTIVE'
-              AND (sr.is_global = 1 OR asm.agent_id IN (?, ?, '*'))
+              AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             ORDER BY sr.action_name ASC;
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (agent_id, alt_id))
+            cursor = conn.execute(query, (target_id,))
             return [str(row["action_name"]) for row in cursor.fetchall()]
-
-    def list_available_actions(
-        self, agent_id: str, alt_agent_id: Optional[str] = None
-    ) -> List[str]:
-        """Alias for get_actions_for_agent."""
-        return self.get_actions_for_agent(agent_id, alt_agent_id)
 
     def get_skills_for_agent(
         self, agent_id: str, alt_agent_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Fetches full skill dictionary records for ACTIVE actions accessible to an agent."""
-        alt_id = alt_agent_id or agent_id
+        target_id = agent_id
         query = """
             SELECT DISTINCT sr.*
             FROM skill_registry sr
             LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
             WHERE sr.status = 'ACTIVE'
-              AND (sr.is_global = 1 OR asm.agent_id IN (?, ?, '*'))
+              AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             ORDER BY sr.skill_id ASC;
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (agent_id, alt_id))
-            return [self._parse_skill_row(row, conn) for row in cursor.fetchall()]
+            cursor = conn.execute(query, (target_id,))
+            rows = cursor.fetchall()
+            skill_ids = [r["skill_id"] for r in rows]
+            perm_map = self._get_permissions_map_for_skills(conn, skill_ids)
+            return [self._parse_skill_row(row, conn, perm_map) for row in rows]
 
     def is_skill_available(
         self, action_name: str, agent_id: str, alt_agent_id: Optional[str] = None
     ) -> bool:
         """Verifies if an action contract is ACTIVE and accessible by an agent."""
-        alt_id = alt_agent_id or agent_id
+        target_id = agent_id
         query = """
             SELECT 1
             FROM skill_registry sr
             LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
             WHERE sr.action_name = ?
               AND sr.status = 'ACTIVE'
-              AND (sr.is_global = 1 OR asm.agent_id IN (?, ?, '*'))
+              AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             LIMIT 1;
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (action_name, agent_id, alt_id))
+            cursor = conn.execute(query, (action_name, target_id))
             return cursor.fetchone() is not None
 
     def get_agents_for_action(self, action_name: str) -> List[str]:
-        """Fetches a list of agent_ids authorized to execute a specific action capability."""
+        """Fetches a list of agent_ids authorized to execute an ACTIVE action capability."""
         query = """
-            SELECT asm.agent_id
-            FROM agent_skill_map asm
-            JOIN skill_registry sr ON asm.skill_id = sr.skill_id
-            WHERE sr.action_name = ?;
+            SELECT DISTINCT 
+                CASE 
+                    WHEN sr.is_global = 1 THEN '*'
+                    ELSE asm.agent_id 
+                END AS agent_id
+            FROM skill_registry sr
+            LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
+            WHERE sr.action_name = ?
+              AND sr.status = 'ACTIVE'
+              AND (sr.is_global = 1 OR asm.agent_id IS NOT NULL);
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
             cursor = conn.execute(query, (action_name,))
-            return [str(row["agent_id"]) for row in cursor.fetchall()]
+            return [str(row["agent_id"]) for row in cursor.fetchall() if row["agent_id"]]
 
     def get_equipped_skills_for_agent(self, agent_id: str) -> List[str]:
-        """Fetches distinct ACTIVE skill_ids equipped to an agent via agent_skill_map."""
+        """Fetches distinct ACTIVE skill_ids equipped to an agent via agent_skill_map or global flag."""
         query = """
             SELECT DISTINCT sr.skill_id
-            FROM agent_skill_map asm
-            JOIN skill_registry sr ON asm.skill_id = sr.skill_id
-            WHERE asm.agent_id IN (?, '*') AND sr.status = 'ACTIVE';
+            FROM skill_registry sr
+            LEFT JOIN agent_skill_map asm ON sr.skill_id = asm.skill_id
+            WHERE sr.status = 'ACTIVE'
+              AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'));
         """
         with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
             cursor = conn.execute(query, (agent_id,))
@@ -16767,12 +16972,12 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 ```python
 """
 Plugin entrypoint module for code_self_healing_solver.
+Standardized for direct async execution without asyncio.run event loop hijacks.
 """
 
-import asyncio
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 import ollama
 
 from charon.config.paths import PROJECTS_DIR, resolve_project_path
@@ -16784,100 +16989,81 @@ logger = logging.getLogger("CHAROND.Skills.SelfHealingSolver")
 async def handle_solve_edge_case(params: Dict[str, Any]) -> Dict[str, Any]:
     problem = params.get("problem") or params.get("prompt") or params.get("task")
     if not problem or not str(problem).strip():
-        return {
-            "status": "error",
-            "message": "A 'problem' or 'prompt' parameter is required.",
-        }
+        raise ValueError("[SELF_HEALING_SOLVER] Parameter 'problem' or 'prompt' is required.")
 
-    max_attempts = int(params.get("max_attempts", 3))
-    timeout = float(params.get("timeout", 30.0))
+    # Strict bounds when invoked via runtime engine
+    max_attempts = min(int(params.get("max_attempts", 1)), 2)  # Cap at max 2 attempts
+    timeout = float(params.get("timeout", 15.0))              # 15s execution timeout
+
     target_dir_raw = params.get("target_dir") or params.get("base_path")
     target_dir = (
         str(resolve_project_path(target_dir_raw))
         if target_dir_raw
         else str(PROJECTS_DIR)
     )
-    model_name = params.get("model_name", "qwen2.5-coder:14b")
+    model_name = params.get("model_name", "qwen2.5-coder:latest")
     python_cmd = params.get("python_cmd", "python3")
 
     client = ollama.AsyncClient()
     system_prompt = (
         "You are an expert Python Software Engineer specializing in dynamic script resolution.\n"
         "RULES:\n"
-        "1. Output ONLY runnable, completely self-contained Python code wrapped in a ```python ``` markdown code block.\n"
-        "2. ALWAYS include all necessary import statements (e.g., import os, sys, datetime, math) at the top of the code.\n"
-        "3. Do NOT include introductory conversational prose, explanation, or text outside the code block.\n"
-        "4. Handle exceptions gracefully inside the script and print explicit diagnostic output to stdout.\n"
-        "5. NEVER use interactive functions like input().\n"
+        "1. Output ONLY runnable Python code wrapped in a ```python ``` markdown code block.\n"
+        "2. Handle exceptions gracefully and print explicit diagnostic output to stdout.\n"
+        "3. NEVER use interactive functions like input().\n"
     )
 
     feedback = ""
     last_code = ""
 
     for attempt in range(1, max_attempts + 1):
-        if attempt == 1:
-            prompt_text = f"Task: {problem}\nTarget Workspace: {target_dir}"
-        else:
-            prompt_text = (
-                f"Task: {problem}\nTarget Workspace: {target_dir}\n\n"
-                f"CRITICAL: Previous attempt failed with output:\n```\n{feedback}\n```\n\n"
-                f"Previous Code:\n```python\n{last_code}\n```\n\n"
-                f"Fix the bug and return the complete corrected Python script including all necessary imports."
-            )
+        prompt_text = (
+            f"Task: {problem}\nTarget Workspace: {target_dir}"
+            if attempt == 1
+            else f"Task: {problem}\nFeedback from attempt {attempt-1}:\n{feedback}\nFix and return corrected code."
+        )
 
-        try:
-            response = await client.generate(
-                model=model_name, system=system_prompt, prompt=prompt_text
-            )
-            raw_response = response.get("response", "").strip()
-            code_match = re.search(
-                r"```(?:python)?\s*(.*?)\s*```", raw_response, re.DOTALL
-            )
-            code = (
-                code_match.group(1).strip()
-                if code_match
-                else raw_response.strip()
-            )
+        response = await client.generate(
+            model=model_name, system=system_prompt, prompt=prompt_text
+        )
+        raw_response = response.get("response", "").strip()
+        code_match = re.search(r"```(?:python)?\s*(.*?)\s*```", raw_response, re.DOTALL)
+        code = code_match.group(1).strip() if code_match else raw_response.strip()
 
-            if not code:
-                feedback = "Inference engine returned empty script block."
+        if not code:
+            feedback = "Inference engine returned empty script block."
+            continue
+
+        last_code = code
+        output, is_success = await run_script_in_subprocess(
+            code, cwd=target_dir, python_cmd=python_cmd, timeout=timeout
+        )
+
+        if is_success:
+            audit_ok, audit_msg = audit_written_artifacts(code, cwd=target_dir)
+            if not audit_ok:
+                feedback = f"{output}\n\n{audit_msg}"
                 continue
 
-            last_code = code
-            output, is_success = await run_script_in_subprocess(
-                code, cwd=target_dir, python_cmd=python_cmd, timeout=timeout
-            )
+            return {
+                "status": "success",
+                "attempts": attempt,
+                "output": output,
+                "verification": audit_msg,
+                "final_code": code,
+            }
 
-            if is_success:
-                audit_ok, audit_msg = audit_written_artifacts(
-                    code, cwd=target_dir
-                )
-                if not audit_ok:
-                    feedback = f"{output}\n\n{audit_msg}"
-                    continue
+        feedback = output
 
-                return {
-                    "status": "success",
-                    "attempts": attempt,
-                    "output": output,
-                    "verification": audit_msg,
-                    "final_code": code,
-                }
-            else:
-                feedback = output
-
-        except Exception as e:
-            feedback = f"Execution error during attempt {attempt}: {str(e)}"
-
-    # Raise explicit RuntimeError on terminal failure so Dispatcher catches it
+    # HARD FAIL: Raise exception so Dispatcher/Router halts instead of retrying silently
     raise RuntimeError(
-        f"Self-healing solver failed after {max_attempts} attempt(s).\n"
-        f"Last Execution Output/Error:\n{feedback}\n\n"
-        f"Last Attempted Code:\n{last_code}"
+        f"[SOLVER FAULT] Self-healing code execution failed after {max_attempts} attempts. "
+        f"Last error output:\n{feedback}"
     )
 
 
-async def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+# Native Async Entrypoint (Replaces synchronous execute_action wrapper)
+async def execute_action_async(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
     if action_name == "solve_edge_case":
         return await handle_solve_edge_case(params)
     raise ValueError(
@@ -17250,41 +17436,76 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Union, Coroutine
 import ollama
-
-from charon.agents.generalist.handlers import handle_answer_query
 
 logger = logging.getLogger("CHAROND.Skills.GeneralistQueryHandler")
 
 
 async def handle_answer_query_async(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Asynchronous action handler for answer_query."""
+    """Asynchronous action handler for answer_query using Ollama."""
     client = ollama.AsyncClient()
     model_name = params.get("model_name", "llama3.1")
-    raw_prompt = params.get("prompt", params.get("raw_prompt", ""))
 
-    result = await handle_answer_query(
-        client=client,
-        model_name=model_name,
-        params=params,
-        raw_prompt=raw_prompt,
+    # Safeguard prompt extraction across common key variants
+    raw_prompt = (
+        params.get("prompt")
+        or params.get("raw_prompt")
+        or params.get("query")
+        or ""
     )
-    return {"status": "success", "result": result}
+
+    if not raw_prompt:
+        logger.warning("[GeneralistQueryHandler] 'answer_query' called with empty prompt parameters.")
+        return {
+            "status": "error",
+            "message": "Missing required 'prompt', 'raw_prompt', or 'query' parameter.",
+        }
+
+    try:
+        logger.info(f"[GeneralistQueryHandler] Dispatching query to Ollama (model: '{model_name}')...")
+        response = await client.generate(model=model_name, prompt=raw_prompt)
+        result_text = response.get("response", "")
+
+        return {
+            "status": "success",
+            "result": result_text,
+        }
+    except Exception as e:
+        logger.error(f"[GeneralistQueryHandler] Generation failed via Ollama: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Ollama execution fault: {str(e)}",
+        }
+
+
+def handle_answer_query(params: Dict[str, Any]) -> Union[Dict[str, Any], Coroutine]:
+    """
+    Entrypoint matching DB handler_name column.
+    Safely bridges sync and async contexts.
+    """
+    try:
+        # Check if we are already inside a running event loop (e.g., Charon Daemon)
+        loop = asyncio.get_running_loop()
+        # Return the unawaited coroutine for the SkillExecutorMixin to await
+        return handle_answer_query_async(params)
+    except RuntimeError:
+        # No running event loop (e.g., standalone CLI testing), safe to use asyncio.run
+        return asyncio.run(handle_answer_query_async(params))
 
 
 def handle_acknowledge(params: Dict[str, Any]) -> Dict[str, Any]:
     """Synchronous acknowledgement action handler."""
     return {
         "status": "success",
-        "result": "Your directive has been noted. I shall see to the arrangements."
+        "result": "Your directive has been noted. I shall see to the arrangements.",
     }
 
 
-def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def execute_action(action_name: str, params: Dict[str, Any]) -> Union[Dict[str, Any], Coroutine]:
     """Main dispatch router invoked by Charon system agents."""
     if action_name == "answer_query":
-        return asyncio.run(handle_answer_query_async(params))
+        return handle_answer_query(params)
     elif action_name == "acknowledge":
         return handle_acknowledge(params)
 
@@ -17708,40 +17929,18 @@ def export_bom(
 ```python
 """
 Skill: Plan Task Decomposer
-Description: Handles DAG task decomposition and multi-step engineering build sequencing.
+Description: Handles DAG task decomposition and multi-step engineering build sequencing dynamically bound to SkillLibrarian SSOT.
 """
 
+import asyncio
 import json
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Union
 
 import ollama
 
 logger = logging.getLogger("charon.skills.plan_task_decomposer")
-
-DAG_SYSTEM_PROMPT = (
-    "You are The Planner, the chief orchestrator for Charon.\n"
-    "Decompose the user's request into a sequential JSON plan of agent executions.\n\n"
-    "AVAILABLE AGENTS & ACTIONS:\n"
-    "- The_Archivist: 'search_ledger' (params: query), 'search_datasheets' (params: query), 'store_record' (params: fact, category)\n"
-    "- The_Cleaner: 'list_projects', 'initialize_project_workspace', 'commit_workspace', 'sweep_cad_iterations' (params: base_path, project_name)\n"
-    "- The_Planner: 'execute_sandbox_code', 'analyze_error_logs', 'draft_build_sequence' (params: prompt, log_content, objective)\n"
-    "- The_Engineer: 'solve_coding_task', 'generate_script' (params: problem, prompt)\n"
-    "- The_Generalist: 'answer_query', 'synthesize', 'execute_system_command' (params: prompt, context, command)\n"
-    "- The_Overseer: 'get_system_health', 'optimize_databases', 'prune_logs_and_cache'\n"
-    "- The_Steward: 'control_appliance', 'read_sensor_net' (params: target_device, command)\n"
-    "- The_Quartermaster: 'fetch_datasheet', 'check_inventory' (params: query)\n"
-    "- The_Scout: 'web_search' (params: query)\n"
-    "- The_Machinist: 'convert_cad', 'generate_gcode' (params: file_path)\n"
-    "- The_Spark: 'flash_firmware', 'compile_microcontroller' (params: project_path)\n\n"
-    "OUTPUT FORMAT: Strictly return a JSON list of objects matching this schema:\n"
-    "[\n"
-    '  {"step": 1, "agent": "The_Archivist", "action": "search_ledger", "parameters": {"query": "..."}},\n'
-    '  {"step": 2, "agent": "The_Cleaner", "action": "list_projects", "parameters": {"base_path": "$STEP_1_OUTPUT"}}\n'
-    "]\n"
-    "Do not include commentary or markdown wrapping outside the JSON."
-)
 
 BUILD_SEQUENCE_SYSTEM_PROMPT = (
     "You are The Planner, a Metacognitive Supervisor and Chief Mechatronics Architect.\n"
@@ -17788,28 +17987,110 @@ def resolve_objective(
     return raw_prompt.strip() if raw_prompt else ""
 
 
+def _get_active_agent_capabilities(librarian: Optional[Any] = None) -> str:
+    """Queries SkillLibrarian SSOT to format available agents and their high-level role descriptions."""
+    try:
+        if librarian is None:
+            from charon.core.skills.librarian import SkillLibrarian
+            librarian = SkillLibrarian.get_instance()
+
+        # 1. Prefer rich agent manifest from librarian if available
+        if hasattr(librarian, "get_active_agent_manifest"):
+            manifest = librarian.get_active_agent_manifest()
+            lines = []
+            for entry in manifest:
+                lines.append(
+                    f"- AGENT ID: '{entry['agent_id']}'\n"
+                    f"  ROLE/PURPOSE: {entry.get('description', 'General task execution agent.')}"
+                )
+            if lines:
+                return "\n\n".join(lines)
+
+        # 2. Fall back to aggregating active agent roles
+        elif hasattr(librarian, "get_all_active_skills"):
+            skills = librarian.get_all_active_skills()
+            agent_map = {}
+            for s in skills:
+                agent = s.get("primary_role_id") or s.get("agent_id") or "system_generalist"
+                desc = s.get("description", "")
+                if agent not in agent_map:
+                    agent_map[agent] = set()
+                if desc:
+                    agent_map[agent].add(desc)
+
+            lines = []
+            for agent_id, descs in agent_map.items():
+                desc_str = " | ".join(descs) or "General task execution agent."
+                lines.append(
+                    f"- AGENT ID: '{agent_id}'\n"
+                    f"  ROLE/PURPOSE: {desc_str}"
+                )
+            if lines:
+                return "\n\n".join(lines)
+
+    except Exception as e:
+        logger.warning(f"[TaskDecomposer] Dynamic agent lookup failed, using fallback: {e}")
+
+    # Fallback to known system roles without hardcoding specific action methods
+    return (
+        "- AGENT ID: 'system_generalist'\n"
+        "  ROLE/PURPOSE: General query processing, task synthesis, and fallback execution.\n\n"
+        "- AGENT ID: 'system_planner'\n"
+        "  ROLE/PURPOSE: DAG sequence decomposition and workflow planning."
+    )
+
+
+def _build_dag_system_prompt(librarian: Optional[Any] = None) -> str:
+    """Constructs the DAG System Prompt enforcing high-level agent routing rather than skill micromanagement."""
+    capabilities_block = _get_active_agent_capabilities(librarian)
+
+    return (
+        "You are the Chief System Planner in a multi-agent architecture.\n"
+        "Your role is STRICTLY HIGH-LEVEL ORCHESTRATION. You draft Directed Acyclic Graphs (DAGs) "
+        "that assign clear objectives to specialized agents in your swarm.\n\n"
+        "REQUIRED AGENT SELECTION PROCESS:\n"
+        "1. IDENTIFY WORK REQUIREMENTS: Determine what general capability or domain expertise is needed for a step.\n"
+        "2. CROSS-REFERENCE MANIFEST: Compare the requirement against the ROLE/PURPOSE descriptions in the manifest below.\n"
+        "3. MAP TO EXACT AGENT ID: Assign the step to the verbatim AGENT ID bound to that purpose.\n"
+        "4. STRICT NON-HALLUCINATION: Do NOT invent role or agent names (e.g., 'coder', 'system_coder', 'developer'). "
+        "You MUST strictly assign one of the AGENT IDs explicitly listed in the manifest below.\n\n"
+        "AVAILABLE AGENTS & ROLES:\n"
+        f"{capabilities_block}\n\n"
+        "RULES & CONSTRAINTS:\n"
+        "1. AGENT SELECTION: The 'agent' string in each step MUST match an active AGENT ID verbatim.\n"
+        "2. INVERSION OF CONTROL: Do NOT specify action or skill function names. Define high-level goals in the 'objective' field. The assigned agent will dynamically select its own database tools to fulfill the objective.\n"
+        "3. OUTPUT FORMAT: Return ONLY a valid JSON object containing a single root key called 'steps' (an array of objects).\n"
+        "4. SCHEMA: Each object requires: 'step' (int), 'agent' (string ID), 'objective' (string), 'parameters' (dict), and 'depends_on' (array of ints).\n"
+        "5. STATE TRANSFER: Use '$STEP_X_OUTPUT' in 'parameters' to pass context or data from step X to downstream steps.\n"
+        "6. VARIABLE BOUNDARIES: The '$STEP_X_OUTPUT' syntax is ONLY allowed inside the 'parameters' dictionary. "
+        "The 'agent' field MUST be a static string literal from the manifest and CANNOT contain '$STEP_' references."
+    )
+
+
 async def decompose_task(
     client: ollama.AsyncClient,
     model_name: str,
     params: Dict[str, Any],
     raw_prompt: str = "",
     payload: Optional[Union[Dict[str, Any], Any]] = None,
-) -> Dict[str, Any]:
-    """Decomposes a task into a structured agent DAG execution sequence."""
+    librarian: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Decomposes a task into a structured agent DAG execution sequence dynamically."""
     objective = resolve_objective(params, raw_prompt=raw_prompt, payload=payload)
     if not objective:
-        return {"status": "error", "error": "No objective provided for task decomposition.", "result": []}
+        return []
 
+    system_prompt = _build_dag_system_prompt(librarian)
     logger.info(f"[TaskDecomposer] Decomposing objective into DAG: {objective}")
 
     try:
         response = await client.generate(
             model=model_name,
-            system=DAG_SYSTEM_PROMPT,
+            system=system_prompt,
             prompt=f"Objective: {objective}",
             format="json",
         )
-        raw_response = response.get("response", "[]").strip()
+        raw_response = response.get("response", "{}").strip()
 
         if "```" in raw_response:
             match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw_response, re.DOTALL)
@@ -17817,12 +18098,70 @@ async def decompose_task(
                 raw_response = match.group(1).strip()
 
         plan = json.loads(raw_response)
-        parsed_plan = plan if isinstance(plan, list) else []
-        return {"status": "success", "result": parsed_plan}
+
+        # Safely extract the list whether the LLM returns an object or a direct array
+        if isinstance(plan, dict):
+            parsed_plan = plan.get("steps", plan.get("dag", plan.get("plan", [])))
+            if not parsed_plan:
+                for val in plan.values():
+                    if isinstance(val, list):
+                        parsed_plan = val
+                        break
+        elif isinstance(plan, list):
+            parsed_plan = plan
+        else:
+            parsed_plan = []
+
+        # --- PRE-EXECUTION AGENT SANITIZATION GUARDRAIL ---
+        valid_agents = set()
+        try:
+            lib = librarian
+            if lib is None:
+                from charon.core.skills.librarian import SkillLibrarian
+                lib = SkillLibrarian.get_instance()
+
+            if hasattr(lib, "get_active_capabilities_map"):
+                valid_agents = set(lib.get_active_capabilities_map().keys())
+            elif hasattr(lib, "get_all_active_skills"):
+                skills = lib.get_all_active_skills()
+                valid_agents = {
+                    s.get("primary_role_id") or s.get("agent_id") or "system_generalist"
+                    for s in skills
+                }
+        except Exception as e:
+            logger.warning(f"[TaskDecomposer] Could not retrieve active agents for plan validation: {e}")
+
+        if not valid_agents:
+            valid_agents = {"system_generalist", "system_planner"}
+
+        default_fallback_agent = "system_generalist" if "system_generalist" in valid_agents else next(iter(valid_agents))
+        last_valid_agent = default_fallback_agent
+
+        sanitized_plan = []
+        for step in parsed_plan:
+            if not isinstance(step, dict):
+                continue
+
+            agent_ref = str(step.get("agent", "")).strip()
+
+            # Fix variable placeholders ($STEP_X_OUTPUT) or non-existent agents in the structural 'agent' key
+            if "$STEP_" in agent_ref or agent_ref not in valid_agents:
+                logger.warning(
+                    f"[TaskDecomposer] Invalid or variable agent reference '{agent_ref}' in step {step.get('step')}. "
+                    f"Sanitizing step agent to fallback '{last_valid_agent}'."
+                )
+                step["agent"] = last_valid_agent
+            else:
+                last_valid_agent = agent_ref
+
+            sanitized_plan.append(step)
+
+        logger.info(f"[TaskDecomposer] Successfully parsed and sanitized {len(sanitized_plan)} execution steps.")
+        return sanitized_plan
 
     except Exception as e:
         logger.error(f"[TaskDecomposer] Parsing failure during DAG generation: {e}")
-        return {"status": "error", "error": str(e), "result": []}
+        return []
 
 
 async def draft_build_sequence(
@@ -17867,6 +18206,70 @@ async def draft_build_sequence(
     except Exception as e:
         logger.error(f"[BuildSequencer] Inference failure during sequencing: {e}")
         return {"status": "error", "error": f"Unable to draft build sequence: {str(e)}"}
+
+
+# =====================================================================
+# --- CHARON SYSTEM EXECUTION BRIDGES ---
+# =====================================================================
+
+async def handle_decompose_task_async(params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Asynchronous wrapper for decompose_task execution."""
+    client = ollama.AsyncClient()
+    model_name = params.get("model_name", "llama3.1")
+    raw_prompt = params.get("prompt") or params.get("raw_prompt") or params.get("query") or ""
+
+    return await decompose_task(
+        client=client,
+        model_name=model_name,
+        params=params,
+        raw_prompt=raw_prompt,
+        payload=params.get("payload")
+    )
+
+
+def handle_decompose_task(params: Dict[str, Any]) -> Union[List[Dict[str, Any]], Coroutine]:
+    """Entrypoint matching DB handler_name column for 'decompose_task'."""
+    try:
+        loop = asyncio.get_running_loop()
+        return handle_decompose_task_async(params)
+    except RuntimeError:
+        return asyncio.run(handle_decompose_task_async(params))
+
+
+async def handle_draft_build_sequence_async(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Asynchronous wrapper for draft_build_sequence execution."""
+    client = ollama.AsyncClient()
+    model_name = params.get("model_name", "llama3.1")
+    raw_prompt = params.get("prompt") or params.get("raw_prompt") or params.get("query") or ""
+
+    return await draft_build_sequence(
+        client=client,
+        model_name=model_name,
+        params=params,
+        raw_prompt=raw_prompt,
+        payload=params.get("payload")
+    )
+
+
+def handle_draft_build_sequence(params: Dict[str, Any]) -> Union[Dict[str, Any], Coroutine]:
+    """Entrypoint matching DB handler_name column for 'draft_build_sequence'."""
+    try:
+        loop = asyncio.get_running_loop()
+        return handle_draft_build_sequence_async(params)
+    except RuntimeError:
+        return asyncio.run(handle_draft_build_sequence_async(params))
+
+
+def execute_action(action_name: str, params: Dict[str, Any]) -> Union[Dict[str, Any], List[Dict[str, Any]], Coroutine]:
+    """Main dispatch router invoked by Charon system agents."""
+    if action_name == "decompose_task":
+        return handle_decompose_task(params)
+    elif action_name == "draft_build_sequence":
+        return handle_draft_build_sequence(params)
+
+    raise ValueError(
+        f"Action '{action_name}' is not supported by skill 'plan_task_decomposer'."
+    )
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -19140,6 +19543,67 @@ def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 ────────────────────────────────────────────────────────────────────────────────
 
+## Target File: `charon/skills_registry/staged/planner_synthesize/plugin.py`
+
+```python
+"""
+Plugin entrypoint module for synthesize.
+"""
+
+import logging
+from typing import Any, Dict
+
+logger = logging.getLogger("Charon.Skills.Synthesize")
+
+
+def _truncate_context(text: str, max_chars: int = 6000) -> str:
+    """Truncates oversized tool outputs from the middle to preserve context window limits."""
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    truncated_count = len(text) - max_chars
+    return (
+        f"{text[:half]}\n\n"
+        f"[... Charon Skill Guard: Truncated {truncated_count} raw characters ...]\n\n"
+        f"{text[-half:]}"
+    )
+
+
+def handle_synthesize(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Action handler for synthesizing specialist execution outputs."""
+    user_query = params.get("user_query", "")
+    raw_output = params.get("raw_output") or params.get("context") or ""
+    executing_agent = params.get("executing_agent", "Specialist")
+
+    raw_str = str(raw_output).strip()
+    if not raw_str:
+        return {
+            "status": "success",
+            "result": "Task executed successfully with no output returned.",
+        }
+
+    sanitized_data = _truncate_context(raw_str, max_chars=6000)
+
+    logger.info(f"[synthesize] Processing output for query context: '{user_query[:40]}...'")
+
+    return {
+        "status": "success",
+        "result": sanitized_data,
+        "agent": executing_agent,
+        "raw_character_count": len(raw_str),
+    }
+
+
+def execute_action(action_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Main dispatch router invoked by Charon system agents."""
+    if action_name == "synthesize":
+        return handle_synthesize(params)
+
+    raise ValueError(f"Action '{action_name}' is not supported by skill 'synthesize'.")
+```
+
+────────────────────────────────────────────────────────────────────────────────
+
 ## Target File: `charon/skills_registry/templates/plugin.py`
 
 ```python
@@ -19386,5193 +19850,6 @@ def test_workspace(request: pytest.FixtureRequest, artifact_manager: ArtifactVer
 ## Target File: `tests/pytest/__init__.py`
 
 ```python
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/__init__.py`
-
-```python
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/cleaner/__init__.py`
-
-```python
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/cleaner/test_cad.py`
-
-```python
-"""Tests for The Cleaner CAD iteration sweeping and archiving handlers."""
-
-import shutil
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
-
-from charon.agents.cleaner.cad import CADManager
-from charon.intent import CleanerPayload
-
-
-class TestCADManager:
-    """Test suite covering CAD iteration detection, grouping, and archiving."""
-
-    def test_init_default_and_custom_projects_dir(self, tmp_path: Path):
-        """Tests CADManager initialization with default and custom projects directories."""
-        manager_custom = CADManager(projects_dir=tmp_path)
-        assert manager_custom.projects_dir == tmp_path.resolve()
-
-        manager_default = CADManager()
-        assert isinstance(manager_default.projects_dir, Path)
-
-    def test_sweep_cad_iterations_missing_parameters(self):
-        """Tests that missing project_name and base_path returns an error message."""
-        manager = CADManager()
-        result = manager.sweep_cad_iterations(payload=None, params={})
-        assert "Error: A 'project_name' or 'base_path' parameter is required" in result
-
-    def test_sweep_cad_iterations_base_path_with_project_subdir(self, tmp_path: Path):
-        """Tests resolution when base_path is provided and project_name exists as a subdirectory."""
-        base_dir = tmp_path / "workspaces"
-        proj_dir = base_dir / "drone_mount"
-        cad_dir = proj_dir / "cad"
-        cad_dir.mkdir(parents=True, exist_ok=True)
-
-        manager = CADManager()
-        result = manager.sweep_cad_iterations(
-            params={"base_path": str(base_dir), "project_name": "drone_mount"}
-        )
-        assert f"No versioned CAD iterations (e.g. *_v1.step) found in {cad_dir}" in result
-
-    def test_sweep_cad_iterations_project_name_only(self, tmp_path: Path):
-        """Tests resolution using project_name relative to projects_dir."""
-        proj_dir = tmp_path / "robot_arm"
-        proj_dir.mkdir(parents=True, exist_ok=True)
-
-        manager = CADManager(projects_dir=tmp_path)
-        payload = CleanerPayload(action="sweep_cad_iterations", project_name="robot_arm")
-        result = manager.sweep_cad_iterations(payload=payload)
-        assert f"No versioned CAD iterations (e.g. *_v1.step) found in {proj_dir}" in result
-
-    def test_sweep_cad_iterations_nonexistent_directory(self, tmp_path: Path):
-        """Tests error returned when target CAD directory does not exist."""
-        manager = CADManager(projects_dir=tmp_path)
-        result = manager.sweep_cad_iterations(params={"project_name": "missing_proj"})
-        assert "CAD directory not found at" in result
-
-    def test_sweep_cad_iterations_no_matching_files(self, tmp_path: Path):
-        """Tests handling when directory contains files that do not match the versioning regex."""
-        cad_dir = tmp_path / "cad"
-        cad_dir.mkdir()
-        (cad_dir / "readme.txt").write_text("info")
-        (cad_dir / "bracket.step").write_text("cad data")
-        (cad_dir / "subfolder").mkdir()  # Non-file item check
-
-        manager = CADManager()
-        result = manager.sweep_cad_iterations(params={"base_path": str(tmp_path)})
-        assert f"No versioned CAD iterations (e.g. *_v1.step) found in {tmp_path}" in result
-
-    def test_sweep_cad_iterations_single_version_no_archiving(self, tmp_path: Path):
-        """Tests that single-version CAD files are kept intact and not moved to archive."""
-        cad_dir = tmp_path / "cad"
-        cad_dir.mkdir()
-        (cad_dir / "mount_v1.step").write_text("v1 content")
-
-        manager = CADManager()
-        result = manager.sweep_cad_iterations(params={"base_path": str(tmp_path)})
-        assert "All CAD files in" in result
-        assert "are up to date. No deprecated iterations swept." in result
-        assert not (cad_dir / "archive").exists()
-
-    def test_sweep_cad_iterations_multiple_versions_success(self, tmp_path: Path):
-        """Tests sweeping older CAD versions into the archive directory."""
-        cad_dir = tmp_path / "cad"
-        cad_dir.mkdir()
-
-        # Group 1: mount
-        v1 = cad_dir / "mount_v1.step"
-        v2 = cad_dir / "mount_v2.step"
-        v3 = cad_dir / "mount_v3.step"
-        v1.write_text("v1")
-        v2.write_text("v2")
-        v3.write_text("v3")
-
-        # Group 2: case
-        c1 = cad_dir / "case-v1.stl"
-        c2 = cad_dir / "case-v2.stl"
-        c1.write_text("c1")
-        c2.write_text("c2")
-
-        manager = CADManager()
-        # Updated target_path to base_path
-        payload = CleanerPayload(action="sweep_cad_iterations", base_path=str(tmp_path))
-        result = manager.sweep_cad_iterations(payload=payload)
-
-        assert "[SYSTEM EXECUTION REPORT]" in result
-        assert "Action : CAD Iteration Sweep" in result
-        assert "mount_v1.step -> archive/mount_v1.step" in result
-        assert "mount_v2.step -> archive/mount_v2.step" in result
-        assert "case-v1.stl -> archive/case-v1.stl" in result
-
-        archive_dir = cad_dir / "archive"
-        assert (archive_dir / "mount_v1.step").exists()
-        assert (archive_dir / "mount_v2.step").exists()
-        assert (archive_dir / "case-v1.stl").exists()
-
-        # Latest versions must remain in main CAD directory
-        assert v3.exists()
-        assert c2.exists()
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/cleaner/test_cleaner.py`
-
-```python
-"""tests/agents/test_cleaner.py — Unit tests for TheCleaner agent package."""
-
-import time
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
-
-from charon.agents import TheCleaner, get_agent_class
-from charon.agents.cleaner.agent import ACTION_MAP
-from charon.agents.cleaner.cad import CADManager
-from charon.agents.cleaner.logs import LogManager
-from charon.agents.cleaner.workspaces import WorkspaceManager
-
-
-# =============================================================================
-# FIXTURES
-# =============================================================================
-
-@pytest.fixture
-def mock_projects_dir(tmp_path: Path) -> Path:
-    """Provides a temporary directory acting as the PROJECTS_DIR."""
-    projects_dir = tmp_path / "projects"
-    projects_dir.mkdir(parents=True, exist_ok=True)
-    return projects_dir
-
-
-@pytest.fixture
-def mock_logs_dir(tmp_path: Path) -> Path:
-    """Provides a temporary directory acting as the LOGS_DIR."""
-    logs_dir = tmp_path / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    return logs_dir
-
-
-@pytest.fixture
-def cleaner_agent(mock_projects_dir: Path) -> TheCleaner:
-    """Instantiates TheCleaner configured with the temporary projects directory."""
-    return TheCleaner(default_projects_dir=mock_projects_dir)
-
-
-# =============================================================================
-# LAZY IMPORT & REGISTRY TESTS
-# =============================================================================
-
-def test_lazy_loading_registry():
-    """Verifies that TheCleaner can be lazy-loaded from charon.agents."""
-    cls = get_agent_class("cleaner")
-    assert cls is TheCleaner
-
-    cls_by_name = get_agent_class("TheCleaner")
-    assert cls_by_name is TheCleaner
-
-
-# =============================================================================
-# WORKSPACE MANAGEMENT TESTS
-# =============================================================================
-
-def test_initialize_workspace(cleaner_agent: TheCleaner, mock_projects_dir: Path):
-    """Tests project workspace scaffolding with default subdirectories."""
-    project_name = "test_rover"
-
-    with patch("charon.agents.cleaner.workspaces.git_init") as mock_git_init:
-        mock_git_init.return_value = (True, "Initialized successfully")
-
-        response = cleaner_agent.execute(
-            action="init",
-            parameters={"project_name": project_name},
-        )
-
-        assert "Workspace Initialization Completed" in response
-        project_path = mock_projects_dir / project_name
-        assert project_path.exists()
-
-        # Check default subdirectories & .gitkeep files
-        for sub in ["cad", "firmware", "docs", "src", "bom"]:
-            subdir_path = project_path / sub
-            assert subdir_path.exists()
-            assert (subdir_path / ".gitkeep").exists()
-
-        mock_git_init.assert_called_once_with(project_path)
-
-
-def test_list_workspaces(cleaner_agent: TheCleaner, mock_projects_dir: Path):
-    """Tests workspace listing and exclusion filters."""
-    # Create valid projects
-    (mock_projects_dir / "alpha_drone").mkdir()
-    (mock_projects_dir / "beta_arm").mkdir()
-
-    # Create excluded directories
-    (mock_projects_dir / ".git").mkdir()
-    (mock_projects_dir / "node_modules").mkdir()
-    (mock_projects_dir / "archive").mkdir()
-
-    response = cleaner_agent.execute(
-        action="list_workspaces",
-        parameters={},
-    )
-
-    assert "alpha_drone" in response
-    assert "beta_arm" in response
-    assert "node_modules" not in response
-    assert "archive" not in response
-
-
-def test_delete_workspace_authorization_flow(cleaner_agent: TheCleaner, mock_projects_dir: Path):
-    """Tests two-step deletion authorization safety logic."""
-    project_path = mock_projects_dir / "doomed_project"
-    project_path.mkdir()
-    (project_path / "dummy.txt").write_text("content")
-
-    # Step 1: Unconfirmed request -> Authorization prompt returned
-    unconfirmed_response = cleaner_agent.execute(
-        action="delete",
-        parameters={"project_name": "doomed_project"},
-        raw_prompt="Delete doomed_project",
-    )
-
-    assert "[AUTHORIZATION REQUIRED]" in unconfirmed_response
-    assert project_path.exists()  # Ensure folder was NOT deleted yet
-
-    # Step 2: Confirmed request via prompt keyword "proceed"
-    confirmed_response = cleaner_agent.execute(
-        action="delete",
-        parameters={"project_name": "doomed_project"},
-        raw_prompt="proceed with deleting doomed_project",
-    )
-
-    assert "Workspace Purge" in confirmed_response
-    assert "SUCCESS" in confirmed_response
-    assert not project_path.exists()  # Ensure folder IS deleted now
-
-
-def test_delete_workspace_safety_bounds(cleaner_agent: TheCleaner, mock_projects_dir: Path):
-    """Verifies that safety protocols prevent out-of-bounds or root directory deletion."""
-    # Attempt deleting root default_projects_dir
-    response = cleaner_agent.execute(
-        action="delete",
-        parameters={"project_name": "..", "confirmed": True},
-    )
-
-    assert "Safety protocol prevents deletion" in response or "Missing" in response
-    assert mock_projects_dir.exists()
-
-
-# =============================================================================
-# CAD SWEEPER TESTS
-# =============================================================================
-
-def test_sweep_cad_iterations(cleaner_agent: TheCleaner, mock_projects_dir: Path):
-    """Tests finding and archiving older CAD iterations."""
-    project_dir = mock_projects_dir / "arm_project"
-    cad_dir = project_dir / "cad"
-    cad_dir.mkdir(parents=True)
-
-    # Create iterative files
-    v1 = cad_dir / "bracket_v1.step"
-    v2 = cad_dir / "bracket_v2.step"
-    v3 = cad_dir / "bracket_v3.step"
-    v1.write_text("v1")
-    v2.write_text("v2")
-    v3.write_text("v3")
-
-    response = cleaner_agent.execute(
-        action="sweep_cad",
-        parameters={"project_name": "arm_project"},
-    )
-
-    assert "CAD Iteration Sweep" in response
-    assert "bracket_v1.step -> archive/bracket_v1.step" in response
-    assert "bracket_v2.step -> archive/bracket_v2.step" in response
-
-    archive_dir = cad_dir / "archive"
-    assert (archive_dir / "bracket_v1.step").exists()
-    assert (archive_dir / "bracket_v2.step").exists()
-    assert v3.exists()  # Latest version remains in main CAD directory
-
-
-# =============================================================================
-# LOG PRUNING TESTS
-# =============================================================================
-
-def test_prune_logs(cleaner_agent: TheCleaner, mock_logs_dir: Path):
-    """Tests log pruning based on file age and protection of active log streams."""
-    active_log = mock_logs_dir / "charond.log"
-    old_rotated_log = mock_logs_dir / "charond_2025-01-01.log"
-    recent_rotated_log = mock_logs_dir / "charond_2026-07-27.log"
-
-    active_log.write_text("active")
-    old_rotated_log.write_text("old")
-    recent_rotated_log.write_text("recent")
-
-    # Set file modification times (old log = 10 days old)
-    now = time.time()
-    ten_days_ago = now - (10 * 86400)
-    import os
-    os.utime(old_rotated_log, (ten_days_ago, ten_days_ago))
-
-    response = cleaner_agent.execute(
-        action="prune_logs",
-        parameters={"logs_dir": str(mock_logs_dir), "max_age_days": 7, "keep_active": True},
-    )
-
-    assert "System Log Pruning" in response
-    assert "charond_2025-01-01.log" in response
-
-    assert not old_rotated_log.exists()  # Pruned
-    assert active_log.exists()          # Retained (active stream)
-    assert recent_rotated_log.exists()  # Retained (within window)
-
-
-# =============================================================================
-# ROUTING & ACTION MAP TESTS
-# =============================================================================
-
-def test_action_aliases(cleaner_agent: TheCleaner):
-    """Verifies that action map aliases resolve correctly."""
-    assert ACTION_MAP["init"] == "initialize_project_workspace"
-    assert ACTION_MAP["scaffold"] == "initialize_project_workspace"
-    assert ACTION_MAP["commit"] == "commit_workspace"
-    assert ACTION_MAP["sweep"] == "sweep_cad_iterations"
-    assert ACTION_MAP["prune"] == "prune_logs"
-    assert ACTION_MAP["purge"] == "delete_project_workspace"
-
-
-def test_invalid_action_raises_exception(cleaner_agent: TheCleaner):
-    """Verifies ValueError when an unmapped/invalid action is executed."""
-    with pytest.raises(ValueError, match="Unknown action 'non_existent_action'"):
-        cleaner_agent.execute(action="non_existent_action", parameters={})
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/cleaner/test_logs.py`
-
-```python
-"""Tests for The Cleaner log pruning and retention maintenance handlers."""
-
-import time
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
-
-from charon.agents.cleaner.logs import LogManager
-from charon.intent import CleanerPayload
-
-
-class TestLogManager:
-    """Test suite covering log pruning, active stream protection, and age filters."""
-
-    def test_init_default_and_custom_logs_dir(self, tmp_path: Path):
-        """Tests LogManager initialization with default and custom paths."""
-        manager_custom = LogManager(logs_dir=tmp_path)
-        assert manager_custom.logs_dir == tmp_path.resolve()
-
-        manager_default = LogManager()
-        assert isinstance(manager_default.logs_dir, Path)
-
-    def test_prune_logs_nonexistent_directory(self, tmp_path: Path):
-        """Tests error response when the target log directory is missing."""
-        missing_dir = tmp_path / "nonexistent_logs"
-        manager = LogManager()
-        result = manager.prune_logs(params={"logs_dir": str(missing_dir)})
-        assert f"Log directory does not exist or is inaccessible: {missing_dir.resolve()}" in result
-
-    def test_prune_logs_invalid_days_fallback(self, tmp_path: Path):
-        """Tests fallback to 7 days retention when max_age_days is non-integer."""
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        manager = LogManager(logs_dir=logs_dir)
-        payload = CleanerPayload(action="prune_logs", days="invalid_number")
-        result = manager.prune_logs(payload=payload)
-
-        assert "[SYSTEM EXECUTION REPORT]" in result
-        assert "System Log Pruning" in result
-
-    def test_prune_logs_keep_active_and_retention_window(self, tmp_path: Path):
-        """Tests that active main log streams and unexpired log files are preserved."""
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        now = time.time()
-        old_time = now - (10 * 86400)  # 10 days old
-
-        # Active log streams
-        active_log = logs_dir / "charond.log"
-        active_log.write_text("active log content")
-        active_err = logs_dir / "charond.error.log"
-        active_err.write_text("active err content")
-
-        # Expired rotated log
-        old_log = logs_dir / "charond.log.1"
-        old_log.write_text("old rotated content")
-
-        # Unexpired rotated log
-        recent_log = logs_dir / "charond.log.recent"
-        recent_log.write_text("recent content")
-
-        # Set mtimes
-        import os
-        os.utime(active_log, (old_time, old_time))
-        os.utime(old_log, (old_time, old_time))
-        os.utime(recent_log, (now, now))
-
-        # Subdirectory to exercise non-file skipping
-        (logs_dir / "sub_folder").mkdir()
-
-        manager = LogManager(logs_dir=logs_dir)
-        result = manager.prune_logs(params={"max_age_days": 7, "keep_active": True})
-
-        assert "Freed Space :" in result
-        assert "charond.log.1" in result
-        assert "charond.log (active stream)" in result
-        assert "charond.log.recent (within retention window)" in result
-
-        assert not old_log.exists()
-        assert active_log.exists()
-        assert recent_log.exists()
-
-    def test_prune_logs_keep_active_disabled(self, tmp_path: Path):
-        """Tests that active log streams are pruned if keep_active is explicitly False."""
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        old_time = time.time() - (10 * 86400)
-        active_log = logs_dir / "charond.log"
-        active_log.write_text("active log content")
-
-        import os
-        os.utime(active_log, (old_time, old_time))
-
-        manager = LogManager(logs_dir=logs_dir)
-        result = manager.prune_logs(params={"keep_active": False, "days": 5})
-
-        assert "charond.log" in result
-        assert not active_log.exists()
-
-    def test_prune_logs_no_qualifying_files(self, tmp_path: Path):
-        """Tests report output when no expired log files exist in the target directory."""
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        manager = LogManager(logs_dir=logs_dir)
-        result = manager.prune_logs()
-
-        assert "• None (no qualifying rotated/expired logs found)" in result
-
-    def test_prune_logs_unexpected_exception(self, tmp_path: Path):
-        """Tests error handling when an unhandled exception occurs during iteration."""
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        manager = LogManager(logs_dir=logs_dir)
-        with patch.object(Path, "iterdir", side_effect=PermissionError("Access denied")):
-            result = manager.prune_logs()
-
-        assert "An unexpected error occurred while pruning logs: Access denied" in result
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/cleaner/test_utils.py`
-
-```python
-"""Tests for Cleaner utility functions."""
-
-from pathlib import Path
-
-import pytest
-
-from charon.agents.cleaner.utils import get_param, resolve_target_workspace
-from charon.intent import CleanerPayload
-
-
-class TestCleanerUtils:
-    """Test suite for cleaner module utilities."""
-
-    def test_get_param_from_payload_attribute(self):
-        """Tests retrieving a parameter directly from a payload object attribute."""
-        payload = CleanerPayload(action="initialize_project_workspace", project_name="my_project")
-        value = get_param(payload, {}, "project_name")
-        assert value == "my_project"
-
-    def test_get_param_payload_none_fallback_to_params(self):
-        """Tests falling back to params dictionary when payload attribute is None or missing."""
-        payload = CleanerPayload(action="initialize_project_workspace", project_name=None)
-        params = {"project_name": "fallback_project"}
-        value = get_param(payload, params, "project_name")
-        assert value == "fallback_project"
-
-    def test_get_param_default_value(self):
-        """Tests returning the default value when parameter is not present in payload or params."""
-        payload = CleanerPayload(action="initialize_project_workspace")
-        value = get_param(payload, {}, "nonexistent_key", default="default_val")
-        assert value == "default_val"
-
-    def test_resolve_target_workspace_base_path_with_project_subfolder(self, tmp_path: Path):
-        """Tests resolving workspace when base_path contains project_name as a subdirectory."""
-        base_dir = tmp_path / "workspaces"
-        proj_dir = base_dir / "my_robot"
-        proj_dir.mkdir(parents=True)
-
-        target, error = resolve_target_workspace(
-            base_path_str=str(base_dir), project_name="my_robot"
-        )
-        assert error is None
-        assert target == proj_dir.resolve()
-
-    def test_resolve_target_workspace_base_path_without_project_subfolder(self, tmp_path: Path):
-        """Tests resolving workspace when base_path directly points to the workspace."""
-        base_dir = tmp_path / "my_robot"
-        base_dir.mkdir(parents=True)
-
-        target, error = resolve_target_workspace(
-            base_path_str=str(base_dir), project_name="my_robot"
-        )
-        assert error is None
-        assert target == base_dir.resolve()
-
-    def test_resolve_target_workspace_project_name_only(self, tmp_path: Path):
-        """Tests resolving workspace using project_name relative to projects_dir."""
-        proj_dir = tmp_path / "drone"
-        proj_dir.mkdir(parents=True)
-
-        target, error = resolve_target_workspace(
-            project_name="drone", default_dir=tmp_path
-        )
-        assert error is None
-        assert target == proj_dir.resolve()
-
-    def test_resolve_target_workspace_no_inputs_defaults_to_cwd(self):
-        """Tests falling back to current working directory when no path parameters are provided."""
-        target, error = resolve_target_workspace()
-        assert error is None
-        assert target == Path.cwd().resolve()
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/cleaner/test_workspaces.py`
-
-```python
-"""Tests for The Cleaner workspace management domain module."""
-
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-from charon.agents.cleaner.workspaces import WorkspaceManager
-from charon.intent import CleanerPayload
-
-
-@pytest.fixture
-def manager(tmp_path: Path) -> WorkspaceManager:
-    """Fixture providing a WorkspaceManager instance with a temporary base directory."""
-    projects_dir = tmp_path / "projects"
-    projects_dir.mkdir(parents=True, exist_ok=True)
-    return WorkspaceManager(default_projects_dir=projects_dir)
-
-
-class TestWorkspaceManagerInit:
-    """Tests for WorkspaceManager initialization."""
-
-    def test_init(self, tmp_path: Path):
-        mgr = WorkspaceManager(default_projects_dir=tmp_path)
-        assert mgr.default_projects_dir == tmp_path
-
-
-class TestListWorkspaces:
-    """Tests for listing active project workspaces."""
-
-    def test_list_workspaces_success_filters_exclusions(self, manager: WorkspaceManager):
-        base_dir = manager.default_projects_dir
-
-        # Valid projects
-        (base_dir / "alpha_bot").mkdir()
-        (base_dir / "beta_drone").mkdir()
-
-        # Exclusions and hidden directories
-        (base_dir / "Tools").mkdir()
-        (base_dir / "Downloads").mkdir()
-        (base_dir / "Desktop").mkdir()
-        (base_dir / "archive").mkdir()
-        (base_dir / "node_modules").mkdir()
-        (base_dir / ".git").mkdir()
-        (base_dir / ".hidden_project").mkdir()
-
-        # Non-directory file
-        (base_dir / "readme.txt").write_text("info")
-
-        result = manager.list_workspaces()
-
-        assert "Current active projects located in" in result
-        assert "• alpha_bot" in result
-        assert "• beta_drone" in result
-        assert "Tools" not in result
-        assert "node_modules" not in result
-        assert ".hidden_project" not in result
-
-    def test_list_workspaces_custom_base_path(self, manager: WorkspaceManager, tmp_path: Path):
-        custom_dir = tmp_path / "custom_workspaces"
-        custom_dir.mkdir()
-        (custom_dir / "rover").mkdir()
-
-        payload = CleanerPayload(action="list_workspaces", base_path=str(custom_dir))
-        result = manager.list_workspaces(payload=payload)
-
-        assert f"Current active projects located in {custom_dir.resolve()}:" in result
-        assert "• rover" in result
-
-    def test_list_workspaces_nonexistent_directory(self, manager: WorkspaceManager, tmp_path: Path):
-        missing_dir = tmp_path / "nonexistent"
-        result = manager.list_workspaces(params={"base_path": str(missing_dir)})
-        assert f"The workspace directory {missing_dir.resolve()} does not exist or is inaccessible." in result
-
-    def test_list_workspaces_no_projects_found(self, manager: WorkspaceManager):
-        result = manager.list_workspaces()
-        assert f"No active projects found in {manager.default_projects_dir}." in result
-
-    def test_list_workspaces_permission_error(self, manager: WorkspaceManager):
-        with patch.object(Path, "iterdir", side_effect=PermissionError("Denied")):
-            result = manager.list_workspaces()
-            assert "Execution aborted: Permission denied reading" in result
-
-    def test_list_workspaces_generic_exception(self, manager: WorkspaceManager):
-        with patch.object(Path, "iterdir", side_effect=RuntimeError("Disk failure")):
-            result = manager.list_workspaces()
-            assert "An unexpected error occurred while scanning for projects: Disk failure" in result
-
-
-class TestInitializeProjectWorkspace:
-    """Tests for project directory scaffolding and Git initialization."""
-
-    def test_initialize_missing_project_name(self, manager: WorkspaceManager):
-        result = manager.initialize_project_workspace(params={})
-        assert "Execution aborted: Missing 'project_name' parameter for initialization." in result
-
-        result_empty_str = manager.initialize_project_workspace(params={"project_name": "   "})
-        assert "Execution aborted: Missing 'project_name' parameter for initialization." in result_empty_str
-
-    def test_initialize_success_default_subdirs_and_git(self, manager: WorkspaceManager):
-        payload = CleanerPayload(action="initialize_project_workspace", project_name="drone_v2")
-
-        with patch("charon.agents.cleaner.workspaces.git_init", return_value=(0, "Initialized empty Git repository")):
-            result = manager.initialize_project_workspace(payload=payload)
-
-        proj_path = manager.default_projects_dir / "drone_v2"
-        assert proj_path.exists()
-        for expected_sub in ["cad", "firmware", "docs", "src", "bom"]:
-            sub_dir = proj_path / expected_sub
-            assert sub_dir.is_dir()
-            assert (sub_dir / ".gitkeep").exists()
-
-        assert "[SYSTEM EXECUTION REPORT]" in result
-        assert "Workspace Initialization Completed" in result
-        assert "Git Repo" in result
-        assert "Initialized empty Git repository" in result
-
-    def test_initialize_subdirs_as_list(self, manager: WorkspaceManager):
-        payload = CleanerPayload(action="initialize_project_workspace", project_name="arm")
-        params = {"subdirectories": ["cad", "pcb"]}
-
-        with patch("charon.agents.cleaner.workspaces.git_init", return_value=(0, "Initialized")):
-            result = manager.initialize_project_workspace(payload=payload, params=params)
-
-        proj_path = manager.default_projects_dir / "arm"
-        assert (proj_path / "cad").is_dir()
-        assert (proj_path / "pcb").is_dir()
-        assert not (proj_path / "firmware").exists()
-        assert "Subdirectories : cad, pcb" in result
-
-    def test_initialize_subdirs_as_comma_string(self, manager: WorkspaceManager):
-        params = {"project_name": "rover", "subdirectories": "cad, docs, telemetry"}
-
-        with patch("charon.agents.cleaner.workspaces.git_init", return_value=(0, "Initialized")):
-            result = manager.initialize_project_workspace(params=params)
-
-        proj_path = manager.default_projects_dir / "rover"
-        assert (proj_path / "telemetry").is_dir()
-        assert "Subdirectories : cad, docs, telemetry" in result
-
-    @pytest.mark.parametrize("git_param", ["true", "1", "yes", True])
-    def test_initialize_git_truthy_values(self, manager: WorkspaceManager, git_param):
-        params = {"project_name": "test_proj", "initialize_git": git_param}
-
-        with patch("charon.agents.cleaner.workspaces.git_init", return_value=(0, "Git Init OK")) as mock_git:
-            result = manager.initialize_project_workspace(params=params)
-
-        assert mock_git.called
-        assert "Git Repo" in result
-        assert "Git Init OK" in result
-
-    @pytest.mark.parametrize("git_param", ["false", "0", "no", False])
-    def test_initialize_git_falsy_values(self, manager: WorkspaceManager, git_param):
-        params = {"project_name": "test_proj", "initialize_git": git_param}
-
-        with patch("charon.agents.cleaner.workspaces.git_init") as mock_git:
-            result = manager.initialize_project_workspace(params=params)
-
-        assert not mock_git.called
-        assert "Git Repo" not in result
-
-    def test_initialize_git_skips_if_git_dir_exists(self, manager: WorkspaceManager):
-        proj_path = manager.default_projects_dir / "existing_repo"
-        git_dir = proj_path / ".git"
-        git_dir.mkdir(parents=True, exist_ok=True)
-
-        params = {"project_name": "existing_repo", "initialize_git": True}
-
-        with patch("charon.agents.cleaner.workspaces.git_init") as mock_git:
-            result = manager.initialize_project_workspace(params=params)
-
-        assert not mock_git.called
-        assert "Git Repo" not in result
-
-    def test_initialize_custom_base_path(self, manager: WorkspaceManager, tmp_path: Path):
-        custom_base = tmp_path / "custom_base"
-        params = {"base_path": str(custom_base), "project_name": "custom_proj"}
-
-        with patch("charon.agents.cleaner.workspaces.git_init", return_value=(0, "Init")):
-            result = manager.initialize_project_workspace(params=params)
-
-        assert (custom_base / "custom_proj").exists()
-        assert "Target Path" in result
-        assert str((custom_base / "custom_proj").resolve()) in result
-
-    def test_initialize_permission_error(self, manager: WorkspaceManager):
-        with patch.object(Path, "mkdir", side_effect=PermissionError("Write denied")):
-            result = manager.initialize_project_workspace(params={"project_name": "test_proj"})
-            assert "Execution aborted: Permission denied writing to" in result
-
-    def test_initialize_generic_exception(self, manager: WorkspaceManager):
-        with patch.object(Path, "mkdir", side_effect=RuntimeError("Disk full")):
-            result = manager.initialize_project_workspace(params={"project_name": "test_proj"})
-            assert "An unexpected error occurred during initialization: Disk full" in result
-
-
-class TestCommitWorkspace:
-    """Tests for Workspace Git commit execution."""
-
-    def test_commit_workspace_no_git_or_exe_status(self, manager: WorkspaceManager):
-        with patch(
-            "charon.agents.cleaner.workspaces.git_commit",
-            return_value=(None, "no_git", "Directory is not a Git repository"),
-        ):
-            result = manager.commit_workspace(params={"project_name": "alpha"})
-            assert result == "Directory is not a Git repository"
-
-    def test_commit_workspace_clean_status(self, manager: WorkspaceManager):
-        with patch(
-            "charon.agents.cleaner.workspaces.git_commit",
-            return_value=(None, "clean", "Working tree clean"),
-        ):
-            result = manager.commit_workspace(params={"project_name": "alpha"})
-            assert "Status : Skipped (Workspace is already clean)" in result
-
-    def test_commit_workspace_committed_status(self, manager: WorkspaceManager):
-        payload = CleanerPayload(
-            action="commit_workspace",
-            project_name="alpha",
-            commit_message="Initial checkpoint",
-        )
-        with patch(
-            "charon.agents.cleaner.workspaces.git_commit",
-            return_value=(None, "committed", "Committed 2 files"),
-        ):
-            result = manager.commit_workspace(payload=payload)
-            assert "Git Commit Completed" in result
-            assert "Message : 'Initial checkpoint'" in result
-
-    def test_commit_workspace_failed_status(self, manager: WorkspaceManager):
-        with patch(
-            "charon.agents.cleaner.workspaces.git_commit",
-            return_value=(None, "error", "Fatal error during commit"),
-        ):
-            result = manager.commit_workspace(params={"project_name": "alpha"})
-            assert "Status : Failed" in result
-            assert "Reason : Fatal error during commit" in result
-
-
-class TestDeleteProjectWorkspace:
-    """Tests for workspace purging, regex matching, safety checks, and authorization."""
-
-    def test_delete_missing_project_name(self, manager: WorkspaceManager):
-        result = manager.delete_project_workspace(params={}, raw_prompt="delete the files")
-        assert "Execution aborted: Missing 'project_name' parameter for deletion." in result
-
-    def test_delete_project_name_extracted_from_prompt_regex(self, manager: WorkspaceManager):
-        prompt = "Please purge project sensor_node from disk"
-        proj_dir = manager.default_projects_dir / "sensor_node"
-        proj_dir.mkdir()
-
-        result = manager.delete_project_workspace(raw_prompt=prompt)
-        assert "[AUTHORIZATION REQUIRED]" in result
-        assert "Project Name" in result
-        assert "sensor_node" in result
-
-    def test_delete_safety_base_path_or_outside_bounds(self, manager: WorkspaceManager, tmp_path: Path):
-        # Attempt to delete the base directory itself
-        params_base = {"project_name": "."}
-        result_base = manager.delete_project_workspace(params=params_base)
-        assert "Execution aborted: Safety protocol prevents deletion of" in result_base
-
-        # Attempt path traversal out of base_path
-        params_out = {"project_name": "../other_dir"}
-        result_out = manager.delete_project_workspace(params=params_out)
-        assert "Execution aborted: Safety protocol prevents deletion of" in result_out
-
-    def test_delete_nonexistent_directory(self, manager: WorkspaceManager):
-        params = {"project_name": "nonexistent_proj"}
-        result = manager.delete_project_workspace(params=params)
-        assert "Deletion skipped: Workspace directory" in result
-        assert "does not exist." in result
-
-    def test_delete_unconfirmed_shows_authorization_warning(self, manager: WorkspaceManager):
-        proj_dir = manager.default_projects_dir / "drone"
-        proj_dir.mkdir()
-        (proj_dir / "file1.txt").write_text("data")
-        (proj_dir / "subfolder").mkdir()
-        (proj_dir / "subfolder" / "file2.txt").write_text("data2")
-
-        result = manager.delete_project_workspace(params={"project_name": "drone"})
-
-        assert "[AUTHORIZATION REQUIRED]" in result
-        assert "Action Requested : Permanent Workspace Deletion" in result
-        assert "Target Contents" in result
-        assert "2 file(s), 1 folder(s)" in result
-        assert "To proceed with execution, re-submit your instruction including the word 'proceed'." in result
-        assert proj_dir.exists()
-
-    @pytest.mark.parametrize(
-        "payload_attr,param_key,prompt_word",
-        [
-            ("confirmed", None, None),
-            ("authorized", None, None),
-            ("gatekeeper_authorized", None, None),
-            (None, "confirmed", None),
-            (None, "authorized", None),
-            (None, "gatekeeper_authorized", None),
-            (None, None, "proceed"),
-            (None, None, "confirm"),
-        ],
-    )
-    def test_delete_confirmed_variations_success(
-        self, manager: WorkspaceManager, payload_attr, param_key, prompt_word
-    ):
-        proj_dir = manager.default_projects_dir / "target_proj"
-        proj_dir.mkdir()
-        (proj_dir / "file.txt").write_text("content")
-
-        payload = CleanerPayload(action="delete_project_workspace")
-        if payload_attr:
-            object.__setattr__(payload, payload_attr, True)
-
-        params = {"project_name": "target_proj"}
-        if param_key:
-            params[param_key] = True
-
-        raw_prompt = f"Please {prompt_word} deletion" if prompt_word else ""
-
-        result = manager.delete_project_workspace(payload=payload, params=params, raw_prompt=raw_prompt)
-
-        assert "[SYSTEM EXECUTION REPORT]" in result
-        assert "Workspace Purge" in result
-        assert "SUCCESS" in result
-        assert not proj_dir.exists()
-
-    def test_delete_permission_error(self, manager: WorkspaceManager):
-        proj_dir = manager.default_projects_dir / "protected_proj"
-        proj_dir.mkdir()
-
-        params = {"project_name": "protected_proj", "confirmed": True}
-
-        with patch("shutil.rmtree", side_effect=PermissionError("Access denied")):
-            result = manager.delete_project_workspace(params=params)
-
-        assert "[SYSTEM EXECUTION REPORT]" in result
-        assert "Status: FAILED" in result
-        assert "Reason: Permission denied deleting" in result
-
-    def test_delete_generic_exception(self, manager: WorkspaceManager):
-        proj_dir = manager.default_projects_dir / "locked_proj"
-        proj_dir.mkdir()
-
-        params = {"project_name": "locked_proj", "confirmed": True}
-
-        with patch("shutil.rmtree", side_effect=RuntimeError("IO Error")):
-            result = manager.delete_project_workspace(params=params)
-
-        assert "[SYSTEM EXECUTION REPORT]" in result
-        assert "Status: FAILED" in result
-        assert "Reason: IO Error" in result
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/conftest.py`
-
-```python
-"""
-Shared pytest fixtures for Charon agent unit and integration tests.
-"""
-
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-import pytest
-
-from charon.agents.archivist import TheArchivist
-from charon.agents.cleaner import TheCleaner
-
-
-# =============================================================================
-# FILESYSTEM & ENVIRONMENT ISOLATION
-# =============================================================================
-
-@pytest.fixture
-def mock_env_paths(tmp_path):
-    """Provides isolated temporary directories for all Charon system paths.
-
-    Yields a dictionary containing pre-created Path objects for:
-    - workspace root
-    - projects directory
-    - logs directory
-    - chroma database directory
-    """
-    base_dir = tmp_path / "charon_workspace"
-    projects_dir = base_dir / "projects"
-    logs_dir = base_dir / "logs"
-    chroma_dir = base_dir / "chroma_db"
-
-    for d in (base_dir, projects_dir, logs_dir, chroma_dir):
-        d.mkdir(parents=True, exist_ok=True)
-
-    yield {
-        "root": base_dir,
-        "projects": projects_dir,
-        "logs": logs_dir,
-        "chroma": chroma_dir,
-    }
-
-
-@pytest.fixture
-def mock_projects_dir(mock_env_paths, monkeypatch):
-    """Provides and monkeypatches the projects directory across cleaner submodules."""
-    projects_dir = mock_env_paths["projects"]
-    monkeypatch.setattr("charon.config.paths.PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr("charon.agents.cleaner.agent.PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr("charon.agents.cleaner.workspaces.PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr("charon.agents.cleaner.cad.PROJECTS_DIR", projects_dir)
-    return projects_dir
-
-
-@pytest.fixture
-def mock_logs_dir(mock_env_paths, monkeypatch):
-    """Provides and monkeypatches the logs directory across cleaner submodules."""
-    logs_dir = mock_env_paths["logs"]
-    monkeypatch.setattr("charon.config.paths.LOGS_DIR", logs_dir)
-    monkeypatch.setattr("charon.agents.cleaner.logs.LOGS_DIR", logs_dir)
-    return logs_dir
-
-
-@pytest.fixture(autouse=True)
-def patch_ecosystem_directories():
-    """Globally mocks `ensure_ecosystem_directories` across all agent modules
-
-    to prevent tests from creating or touching actual system folders (~/.charon).
-    Automatically runs for every test in this directory.
-    """
-    with patch("charon.config.paths.ensure_ecosystem_directories"), patch(
-        "charon.agents.cleaner.ensure_ecosystem_directories"
-    ), patch("charon.agents.archivist.ensure_ecosystem_directories"):
-        yield
-
-
-# =============================================================================
-# AGENT INSTANCE FIXTURES
-# =============================================================================
-
-@pytest.fixture
-def cleaner_agent(mock_projects_dir):
-    """Provides a fresh instance of TheCleaner tied to the mock projects path."""
-    return TheCleaner(default_projects_dir=mock_projects_dir)
-
-
-@pytest.fixture
-def archivist_agent(mock_env_paths):
-    """Provides a fresh instance of TheArchivist tied to the mock ChromaDB path."""
-    return TheArchivist(db_path=mock_env_paths["chroma"])
-
-
-# =============================================================================
-# HELPER & MOCK FIXTURES
-# =============================================================================
-
-@pytest.fixture
-def mock_git_repo(mock_projects_dir):
-    """Creates a mock git project folder inside the mock projects directory."""
-    project_dir = mock_projects_dir / "sample_git_project"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    git_dir = project_dir / ".git"
-    git_dir.mkdir(exist_ok=True)
-
-    # Create dummy files
-    (project_dir / "main.py").write_text("# sample main script")
-    (project_dir / "README.md").write_text("# Sample Project")
-
-    return project_dir
-
-
-@pytest.fixture
-def mock_subprocess_git():
-    """Patches subprocess.run to simulate successful Git commands by default."""
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout=b"", stderr=b"")
-        yield mock_run
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/quartermaster/__init__.py`
-
-```python
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/quartermaster/test_agent.py`
-
-```python
-"""Tests for TheQuartermaster agent orchestrator."""
-
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-from charon.agents.quartermaster.agent import TheQuartermaster
-
-
-@pytest.fixture
-def mock_paths(tmp_path: Path):
-    db_path = tmp_path / "quartermaster.db"
-    datasheet_dir = tmp_path / "datasheets"
-    db_path.touch()
-    datasheet_dir.mkdir(parents=True, exist_ok=True)
-    return db_path, datasheet_dir
-
-
-class TestTheQuartermasterInit:
-    """Tests for initializing TheQuartermaster instance and dependencies."""
-
-    def test_init_custom_paths(self, mock_paths):
-        db_path, datasheet_dir = mock_paths
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir)
-        assert qm.db_path == db_path
-        assert qm.datasheet_dir == datasheet_dir
-
-    def test_lazy_load_scout_success(self, mock_paths):
-        db_path, datasheet_dir = mock_paths
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir)
-
-        mock_scout_instance = MagicMock()
-        with patch("charon.agents.scout.TheScout", return_value=mock_scout_instance):
-            scout = qm._get_scout()
-            assert scout == mock_scout_instance
-
-    def test_lazy_load_scout_failure_handled(self, mock_paths):
-        db_path, datasheet_dir = mock_paths
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir)
-
-        with patch("charon.agents.scout.TheScout", side_effect=ImportError("Scout unavailable")):
-            scout = qm._get_scout()
-            assert scout is None
-
-
-class TestTheQuartermasterExecute:
-    """Tests for routing and dispatching actions in TheQuartermaster."""
-
-    def test_execute_invalid_action_raises_value_error(self, mock_paths):
-        db_path, datasheet_dir = mock_paths
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir)
-
-        with pytest.raises(ValueError, match="Unknown action 'invalid_action'"):
-            qm.execute("invalid_action", {})
-
-    @pytest.mark.parametrize(
-        "action_input,expected_func_path",
-        [
-            ("check_inventory", "charon.agents.quartermaster.agent.check_inventory"),
-            ("inventory", "charon.agents.quartermaster.agent.check_inventory"),
-            ("check_stock", "charon.agents.quartermaster.agent.check_inventory"),
-            ("fetch_datasheet", "charon.agents.quartermaster.agent.fetch_datasheet"),
-            ("get_datasheet", "charon.agents.quartermaster.agent.fetch_datasheet"),
-            ("log_inventory", "charon.agents.quartermaster.agent.log_inventory"),
-            ("add_inventory", "charon.agents.quartermaster.agent.log_inventory"),
-            ("generate_bom", "charon.agents.quartermaster.agent.generate_bom"),
-            ("audit_bom", "charon.agents.quartermaster.agent.generate_bom"),
-        ],
-    )
-    def test_action_alias_routing(self, mock_paths, action_input, expected_func_path):
-        db_path, datasheet_dir = mock_paths
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir)
-
-        with patch(expected_func_path, return_value="Success") as mock_handler:
-            result = qm.execute(action_input, {"mpn": "NE555"})
-            assert result == "Success"
-            assert mock_handler.called
-
-    def test_execute_fallback_payload_on_validation_failure(self, mock_paths):
-        db_path, datasheet_dir = mock_paths
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir)
-
-        with patch(
-            "charon.intent.QuartermasterPayload.model_validate",
-            side_effect=ValueError("Validation error"),
-        ), patch(
-            "charon.agents.quartermaster.agent.check_inventory",
-            return_value="Fallback Executed",
-        ) as mock_handler:
-            result = qm.execute(
-                action="check_inventory",
-                parameters={"part_number": "LM7805"},
-                raw_prompt="Check stock for LM7805",
-            )
-            assert result == "Fallback Executed"
-            payload_arg = mock_handler.call_args[0][2]
-            assert payload_arg.part_number == "LM7805"
-
-    def test_execute_raw_prompt_populates_query(self, mock_paths):
-        db_path, datasheet_dir = mock_paths
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir)
-
-        with patch(
-            "charon.agents.quartermaster.agent.check_inventory",
-            return_value="Check Success",
-        ) as mock_check:
-            qm.execute(
-                action="check_inventory",
-                parameters={},
-                raw_prompt="What is the stock of STM32?",
-            )
-            payload_arg = mock_check.call_args[0][2]
-            assert payload_arg.query == "What is the stock of STM32?"
-
-    def test_get_scout_returns_cached_instance(self, mock_paths):
-        db_path, datasheet_dir = mock_paths
-        mock_existing_scout = MagicMock()
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir, scout_agent=mock_existing_scout)
-
-        # Calling _get_scout should return the existing scout without re-importing
-        assert qm._get_scout() == mock_existing_scout
-
-    def test_execute_unreachable_action_fallback(self, mock_paths):
-        db_path, datasheet_dir = mock_paths
-        qm = TheQuartermaster(db_path=db_path, datasheet_dir=datasheet_dir)
-
-        # Force QuartermasterPayload validation to return a payload with an unexpected action
-        mock_payload = MagicMock()
-        mock_payload.action = "corrupted_action"
-
-        with patch("charon.intent.QuartermasterPayload.model_validate", return_value=mock_payload):
-            with pytest.raises(ValueError, match="Unknown action 'check_inventory' for The_Quartermaster"):
-                qm.execute("check_inventory", {"part_number": "LM7805"})
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/quartermaster/test_bom.py`
-
-```python
-import sqlite3
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
-
-from charon.agents.quartermaster.bom import generate_bom
-from charon.intent import QuartermasterPayload
-from charon.db.connection import get_connection
-
-
-@pytest.fixture
-def mock_db(tmp_path: Path) -> Path:
-    """Creates a temporary SQLite database with Quartermaster schema and test parts."""
-    db_path = tmp_path / "quartermaster.db"
-    conn = get_connection(db_path)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE parts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mpn TEXT UNIQUE,
-            manufacturer TEXT,
-            category TEXT,
-            description TEXT
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            part_id INTEGER,
-            quantity INTEGER,
-            storage_bin TEXT
-        )
-        """
-    )
-    cursor.execute(
-        "INSERT INTO parts (id, mpn) VALUES (1, 'NE555'), (2, 'LM317')"
-    )
-    cursor.execute(
-        "INSERT INTO inventory (part_id, quantity, storage_bin) VALUES (1, 10, 'Bin-1'), (2, 2, 'Bin-2')"
-    )
-    conn.commit()
-    conn.close()
-    return db_path
-
-
-class TestGenerateBom:
-    """Tests for project BOM inventory audits."""
-
-    def test_generate_bom_missing_project_directory(self, mock_db: Path):
-        payload = QuartermasterPayload(action="generate_bom")
-        result = generate_bom(db_path=mock_db, payload=payload, raw_prompt="")
-        assert "Error: A 'project_directory' path is required" in result
-
-    def test_generate_bom_file_not_found(self, mock_db: Path, tmp_path: Path):
-        project_dir = tmp_path / "my_project"
-        project_dir.mkdir(parents=True, exist_ok=True)
-
-        payload = QuartermasterPayload(
-            action="generate_bom",
-            project_directory=str(project_dir),
-        )
-
-        with patch(
-            "charon.agents.quartermaster.bom.resolve_project_path",
-            return_value=project_dir,
-        ):
-            result = generate_bom(db_path=mock_db, payload=payload)
-
-        assert "No BOM CSV found at" in result
-
-    def test_generate_bom_all_in_stock(self, mock_db: Path, tmp_path: Path):
-        project_dir = tmp_path / "my_project"
-        bom_dir = project_dir / "bom"
-        bom_dir.mkdir(parents=True, exist_ok=True)
-
-        bom_csv = bom_dir / "assembly_bom.csv"
-        bom_csv.write_text(
-            "Part Number,Quantity\n"
-            "NE555,5\n"
-            "LM317,2\n"
-        )
-
-        payload = QuartermasterPayload(
-            action="generate_bom",
-            project_directory=str(project_dir),
-        )
-
-        with patch(
-            "charon.agents.quartermaster.bom.resolve_project_path",
-            return_value=project_dir,
-        ):
-            result = generate_bom(db_path=mock_db, payload=payload)
-
-        assert f"=== BOM Audit for {project_dir.name} ===" in result
-        assert "• NE555: Required = 5 | Owned = 10 | Status: ✅ AVAILABLE" in result
-        assert "• LM317: Required = 2 | Owned = 2 | Status: ✅ AVAILABLE" in result
-        assert "Audit complete: All required components are available in stock!" in result
-
-    def test_generate_bom_shortages_detected(self, mock_db: Path, tmp_path: Path):
-        project_dir = tmp_path / "my_project"
-        bom_dir = project_dir / "bom"
-        bom_dir.mkdir(parents=True, exist_ok=True)
-
-        bom_csv = bom_dir / "assembly_bom.csv"
-        bom_csv.write_text(
-            "Part Number,Quantity\n"
-            "NE555,15\n"  # Owned: 10, Need: 5
-            "LM317,5\n"   # Owned: 2, Need: 3
-        )
-
-        payload = QuartermasterPayload(
-            action="generate_bom",
-            project_directory=str(project_dir),
-        )
-
-        with patch(
-            "charon.agents.quartermaster.bom.resolve_project_path",
-            return_value=project_dir,
-        ):
-            result = generate_bom(db_path=mock_db, payload=payload)
-
-        assert "• NE555: Required = 15 | Owned = 10 | Status: ❌ SHORTAGE (Need 5 more)" in result
-        assert "• LM317: Required = 5 | Owned = 2 | Status: ❌ SHORTAGE (Need 3 more)" in result
-        assert "Audit complete: 2 component shortage(s) detected." in result
-
-    def test_generate_bom_alternate_csv_headers_and_bad_qty(
-        self, mock_db: Path, tmp_path: Path
-    ):
-        project_dir = tmp_path / "my_project"
-        bom_dir = project_dir / "bom"
-        bom_dir.mkdir(parents=True, exist_ok=True)
-
-        bom_csv = bom_dir / "assembly_bom.csv"
-        bom_csv.write_text(
-            "MPN,Qty\n"
-            "NE555,invalid_number\n"  # Fallback qty = 1
-            ",5\n"                    # Empty MPN row (skipped)
-            "LM317,\n"                 # Missing qty (Fallback qty = 1)
-        )
-
-        payload = QuartermasterPayload(
-            action="generate_bom",
-            project_directory=str(project_dir),
-        )
-
-        with patch(
-            "charon.agents.quartermaster.bom.resolve_project_path",
-            return_value=project_dir,
-        ):
-            result = generate_bom(db_path=mock_db, payload=payload)
-
-        assert "• NE555: Required = 1 | Owned = 10 | Status: ✅ AVAILABLE" in result
-        assert "• LM317: Required = 1 | Owned = 2 | Status: ✅ AVAILABLE" in result
-
-    def test_generate_bom_exception_handled(self, mock_db: Path, tmp_path: Path):
-        payload = QuartermasterPayload(
-            action="generate_bom",
-            project_directory="my_project",
-        )
-
-        with patch(
-            "charon.agents.quartermaster.bom.resolve_project_path",
-            side_effect=RuntimeError("Path resolution failed"),
-        ):
-            result = generate_bom(db_path=mock_db, payload=payload)
-
-        assert "Failed to execute BOM inventory audit: Path resolution failed" in result
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/quartermaster/test_datasheets.py`
-
-```python
-"""Tests for Quartermaster datasheet download, mirror discovery, and indexing handlers."""
-
-import sqlite3
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-from charon.agents.quartermaster.datasheets import fetch_datasheet, search_pdf_mirrors
-from charon.intent import QuartermasterPayload
-from charon.db.connection import get_connection
-
-
-@pytest.fixture
-def mock_db(tmp_path: Path) -> Path:
-    """Creates a temporary SQLite database with the Quartermaster schema."""
-    db_path = tmp_path / "quartermaster.db"
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE parts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mpn TEXT UNIQUE,
-            category TEXT,
-            description TEXT
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE datasheets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            part_id INTEGER,
-            file_path TEXT UNIQUE,
-            source_url TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-    return db_path
-
-
-@pytest.fixture
-def datasheet_dir(tmp_path: Path) -> Path:
-    """Creates a temporary directory for storing downloaded datasheet PDFs."""
-    path = tmp_path / "datasheets"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-class TestSearchPdfMirrors:
-    """Tests for mirror candidate discovery via TheScout and DDG fallbacks."""
-
-    def test_search_pdf_mirrors_scout_success(self):
-        """Tests Scout search including empty links, duplicates, and candidate filtering."""
-        mock_scout = MagicMock()
-        mock_scout.search_links.return_value = [
-            {"link": ""},  # Empty link branch
-            {"link": "https://example.com/NE555.pdf"},  # Valid candidate
-            {"link": "https://example.com/NE555.pdf"},  # Duplicate filtering branch
-            {"link": "https://youtube.com/watch?v=123"},  # Invalid candidate filtering branch
-        ]
-
-        results = search_pdf_mirrors(mock_scout, "NE555")
-
-        assert results == ["https://example.com/NE555.pdf"]
-        mock_scout.search_links.assert_called_once_with(
-            "NE555 datasheet filetype:pdf", max_results=8
-        )
-
-    def test_search_pdf_mirrors_scout_exception_falls_back_to_ddg(self):
-        """Tests fallback to DDG scraping when Scout raises an exception, exercising duplicate and invalid candidate branches."""
-        mock_scout = MagicMock()
-        mock_scout.search_links.side_effect = RuntimeError("Scout offline")
-
-        # HTML includes valid link, duplicate link, and invalid youtube link
-        html_response = (
-            b'a href="uddg=https%3A%2F%2Fmirror.com%2FNE555.pdf&amp;" '
-            b'a href="uddg=https%3A%2F%2Fmirror.com%2FNE555.pdf&amp;" '
-            b'a href="uddg=https%3A%2F%2Fyoutube.com%2Fwatch%3Fv%3DNE555&amp;"'
-        )
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = html_response
-        mock_resp.__enter__.return_value = mock_resp
-
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            results = search_pdf_mirrors(mock_scout, "NE555")
-
-        assert results == ["https://mirror.com/NE555.pdf"]
-
-    def test_search_pdf_mirrors_ddg_exception(self):
-        """Tests graceful handling when direct DDG discovery fails."""
-        with patch(
-            "urllib.request.urlopen", side_effect=Exception("Network error")
-        ):
-            results = search_pdf_mirrors(None, "NE555")
-
-        assert results == []
-
-
-class TestFetchDatasheet:
-    """Tests for the full datasheet retrieval, storage, and indexing pipeline."""
-
-    def test_fetch_datasheet_missing_part_and_url(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        payload = QuartermasterPayload(action="fetch_datasheet")
-        result = fetch_datasheet(
-            db_path=mock_db,
-            datasheet_dir=datasheet_dir,
-            scout_agent=None,
-            payload=payload,
-            raw_prompt="",
-        )
-        assert "Error: A 'part_number' or 'url' is required" in result
-
-    def test_fetch_datasheet_url_only_derives_part_name(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            url="https://example.com/files/LM317.pdf?v=2",
-        )
-
-        with patch(
-            "charon.agents.quartermaster.datasheets.download_pdf_bytes",
-            return_value=b"%PDF-1.4 dummy content",
-        ), patch(
-            "charon.agents.TheArchivist"
-        ) as mock_archivist_cls:
-            mock_archivist_cls.return_value.index_pdf_datasheet.return_value = 5
-
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=None,
-                payload=payload,
-            )
-
-        assert "✅ Datasheet pipeline complete for LM317" in result
-        assert (datasheet_dir / "General" / "LM317.pdf").exists()
-
-    def test_fetch_datasheet_already_exists_on_disk(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        """Covers pre-existing local file path branch (skips download loop)."""
-        pdf_file = datasheet_dir / "General" / "NE555.pdf"
-        pdf_file.parent.mkdir(parents=True, exist_ok=True)
-        pdf_file.write_bytes(b"%PDF existing file")
-
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            part_number="NE555",
-            url="https://example.com/NE555.pdf",
-        )
-
-        with patch("charon.agents.TheArchivist") as mock_archivist_cls:
-            mock_archivist_cls.return_value.index_pdf_datasheet.return_value = 2
-
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=None,
-                payload=payload,
-            )
-
-        assert "✅ Datasheet pipeline complete for NE555" in result
-
-    def test_fetch_datasheet_primary_url_invalid_candidate(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        """Covers branch 95->104 where primary URL fails is_valid_mirror_candidate validation."""
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            part_number="NE555",
-            url="https://youtube.com/watch?v=invalid_candidate",
-        )
-
-        with patch(
-            "charon.agents.quartermaster.datasheets.search_pdf_mirrors",
-            return_value=["https://mirror.com/NE555.pdf"],
-        ), patch(
-            "charon.agents.quartermaster.datasheets.download_pdf_bytes",
-            return_value=b"%PDF mirror content",
-        ), patch(
-            "charon.agents.TheArchivist"
-        ) as mock_archivist_cls:
-            mock_archivist_cls.return_value.index_pdf_datasheet.return_value = 1
-
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=None,
-                payload=payload,
-            )
-
-        assert "✅ Datasheet pipeline complete for NE555" in result
-        assert "Source URL: https://mirror.com/NE555.pdf" in result
-
-    def test_fetch_datasheet_primary_fails_mirror_succeeds(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        """Exercises scout_agent presence and matching primary URL skip branches."""
-        mock_scout = MagicMock()
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            part_number="NE555",
-            url="https://primary.com/NE555.pdf",
-            category="ICs",
-        )
-
-        def mock_download(url, timeout=8):
-            if "primary.com" in url:
-                raise RuntimeError("404 Not Found")
-            return b"%PDF mirror bytes"
-
-        with patch(
-            "charon.agents.quartermaster.datasheets.download_pdf_bytes",
-            side_effect=mock_download,
-        ), patch(
-            "charon.agents.quartermaster.datasheets.search_pdf_mirrors",
-            return_value=[
-                "https://primary.com/NE555.pdf",  # Must be skipped (matches primary URL)
-                "https://mirror.com/NE555.pdf",
-            ],
-        ), patch(
-            "charon.agents.TheArchivist"
-        ) as mock_archivist_cls:
-            mock_archivist_cls.return_value.index_pdf_datasheet.return_value = 4
-
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=mock_scout,
-                payload=payload,
-            )
-
-        assert "✅ Datasheet pipeline complete for NE555" in result
-        assert "Source URL: https://mirror.com/NE555.pdf" in result
-
-    def test_fetch_datasheet_mirror_download_exception_handled(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        """Exercises scout_agent=None and mirror download exception branches."""
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            part_number="NE555",
-        )
-
-        def mock_download(url, timeout=8):
-            if "broken.com" in url:
-                raise RuntimeError("Connection reset")
-            return b"%PDF mirror bytes"
-
-        with patch(
-            "charon.agents.quartermaster.datasheets.download_pdf_bytes",
-            side_effect=mock_download,
-        ), patch(
-            "charon.agents.quartermaster.datasheets.search_pdf_mirrors",
-            return_value=[
-                "https://broken.com/NE555.pdf",
-                "https://working.com/NE555.pdf",
-            ],
-        ), patch(
-            "charon.agents.TheArchivist"
-        ) as mock_archivist_cls:
-            mock_archivist_cls.return_value.index_pdf_datasheet.return_value = 1
-
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=None,
-                payload=payload,
-            )
-
-        assert "✅ Datasheet pipeline complete for NE555" in result
-
-    def test_fetch_datasheet_all_downloads_fail(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        mock_scout = MagicMock()
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            part_number="NE555",
-            url="https://primary.com/NE555.pdf",
-        )
-
-        with patch(
-            "charon.agents.quartermaster.datasheets.download_pdf_bytes",
-            side_effect=RuntimeError("Download blocked"),
-        ), patch(
-            "charon.agents.quartermaster.datasheets.search_pdf_mirrors",
-            return_value=["https://mirror1.com/NE555.pdf"],
-        ):
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=mock_scout,
-                payload=payload,
-            )
-
-        assert "Failed to retrieve datasheet for NE555" in result
-
-    def test_fetch_datasheet_existing_part_id_in_db(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        """Exercises SQL existing part lookup branch."""
-        conn = get_connection(mock_db)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO parts (mpn, category, description) VALUES (?, ?, ?)",
-            ("NE555", "ICs", "Timer IC"),
-        )
-        conn.commit()
-        conn.close()
-
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            part_number="NE555",
-            url="https://example.com/NE555.pdf",
-        )
-
-        with patch(
-            "charon.agents.quartermaster.datasheets.download_pdf_bytes",
-            return_value=b"%PDF content",
-        ), patch(
-            "charon.agents.TheArchivist"
-        ) as mock_archivist_cls:
-            mock_archivist_cls.return_value.index_pdf_datasheet.return_value = 1
-
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=None,
-                payload=payload,
-            )
-
-        assert "✅ Datasheet pipeline complete for NE555" in result
-
-    def test_fetch_datasheet_sqlite_error_handled(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            part_number="NE555",
-            url="https://example.com/NE555.pdf",
-        )
-
-        with patch(
-            "charon.agents.quartermaster.datasheets.download_pdf_bytes",
-            return_value=b"%PDF content",
-        ), patch(
-            "charon.agents.quartermaster.datasheets.get_db_connection",
-            side_effect=sqlite3.OperationalError("Database locked"),
-        ):
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=None,
-                payload=payload,
-            )
-
-        assert "PDF downloaded to disk, but failed to record in quartermaster.db" in result
-
-    def test_fetch_datasheet_archivist_indexing_error_handled(
-        self, mock_db: Path, datasheet_dir: Path
-    ):
-        payload = QuartermasterPayload(
-            action="fetch_datasheet",
-            part_number="NE555",
-            url="https://example.com/NE555.pdf",
-        )
-
-        with patch(
-            "charon.agents.quartermaster.datasheets.download_pdf_bytes",
-            return_value=b"%PDF content",
-        ), patch(
-            "charon.agents.TheArchivist",
-            side_effect=ImportError("ChromaDB unavailable"),
-        ):
-            result = fetch_datasheet(
-                db_path=mock_db,
-                datasheet_dir=datasheet_dir,
-                scout_agent=None,
-                payload=payload,
-            )
-
-        assert "Saved to disk/SQLite, but vector indexing skipped" in result
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/quartermaster/test_inventory.py`
-
-```python
-import sqlite3
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
-
-from charon.agents.quartermaster.inventory import check_inventory, log_inventory
-from charon.intent import QuartermasterPayload
-from charon.db.connection import get_connection
-
-
-@pytest.fixture
-def mock_db(tmp_path: Path) -> Path:
-    """Creates a temporary SQLite database with Quartermaster schema and row factory."""
-    db_path = tmp_path / "quartermaster.db"
-    conn = get_connection(db_path)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE parts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mpn TEXT UNIQUE,
-            manufacturer TEXT,
-            category TEXT,
-            description TEXT,
-            package_footprint TEXT
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            part_id INTEGER,
-            quantity INTEGER,
-            storage_bin TEXT,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(part_id, storage_bin)
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE datasheets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            part_id INTEGER,
-            file_path TEXT UNIQUE,
-            source_url TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-    return db_path
-
-
-class TestCheckInventory:
-    """Tests for searching parts and inventory levels."""
-
-    def test_check_inventory_missing_raw_part(self, mock_db: Path, tmp_path: Path):
-        payload = QuartermasterPayload(action="check_inventory")
-        result = check_inventory(
-            db_path=mock_db,
-            datasheet_dir=tmp_path,
-            payload=payload,
-            raw_prompt="",
-        )
-        assert "Error: A 'part_number' or 'query' parameter is required" in result
-
-    def test_check_inventory_no_matches(self, mock_db: Path, tmp_path: Path):
-        payload = QuartermasterPayload(action="check_inventory", query="NONEXISTENT")
-        result = check_inventory(
-            db_path=mock_db,
-            datasheet_dir=tmp_path,
-            payload=payload,
-        )
-        assert "No parts matching 'NONEXISTENT' were found" in result
-
-    def test_check_inventory_found_part_full_details_relative_datasheet(
-        self, mock_db: Path, tmp_path: Path
-    ):
-        conn = get_connection(mock_db)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO parts (id, mpn, manufacturer, category, description, package_footprint)
-            VALUES (1, 'NE555', 'Texas Instruments', 'ICs', 'Precision Timer', 'SOIC-8')
-            """
-        )
-        cursor.execute(
-            "INSERT INTO inventory (part_id, quantity, storage_bin) VALUES (1, 10, 'Bin-A1')"
-        )
-        cursor.execute(
-            "INSERT INTO inventory (part_id, quantity, storage_bin) VALUES (1, 5, 'Bin-B2')"
-        )
-        cursor.execute(
-            "INSERT INTO datasheets (part_id, file_path, source_url) VALUES (1, 'ICs/NE555.pdf', 'http://example.com')"
-        )
-        conn.commit()
-        conn.close()
-
-        payload = QuartermasterPayload(action="check_inventory", mpn="NE555")
-        result = check_inventory(
-            db_path=mock_db,
-            datasheet_dir=tmp_path,
-            payload=payload,
-        )
-
-        assert "Found 1 matching component(s):" in result
-        assert "MPN: NE555 (Texas Instruments)" in result
-        assert "Category: ICs | Footprint: SOIC-8" in result
-        assert "Total Stock: 15 unit(s)" in result
-        assert "Storage Location(s): Bin-A1 (10); Bin-B2 (5)" in result
-        assert str((tmp_path / "ICs/NE555.pdf").resolve()) in result
-        assert "Description: Precision Timer" in result
-
-    def test_check_inventory_found_part_absolute_datasheet(
-        self, mock_db: Path, tmp_path: Path
-    ):
-        abs_ds_path = (tmp_path / "absolute_datasheet.pdf").resolve()
-
-        conn = get_connection(mock_db)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO parts (id, mpn, manufacturer, category, description, package_footprint)
-            VALUES (1, 'LM317', 'ON Semi', 'Regulators', 'Linear Regulator', 'TO-220')
-            """
-        )
-        cursor.execute(
-            "INSERT INTO datasheets (part_id, file_path, source_url) VALUES (1, ?, 'http://example.com')",
-            (str(abs_ds_path),),
-        )
-        conn.commit()
-        conn.close()
-
-        payload = QuartermasterPayload(action="check_inventory", part_number="LM317")
-        result = check_inventory(
-            db_path=mock_db,
-            datasheet_dir=tmp_path,
-            payload=payload,
-        )
-
-        assert str(abs_ds_path) in result
-
-    def test_check_inventory_found_part_missing_optional_fields(
-        self, mock_db: Path, tmp_path: Path
-    ):
-        conn = get_connection(mock_db)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO parts (id, mpn, category) VALUES (1, 'RES_10K', 'Resistors')"
-        )
-        conn.commit()
-        conn.close()
-
-        payload = QuartermasterPayload(action="check_inventory", query="RES_10K")
-        result = check_inventory(
-            db_path=mock_db,
-            datasheet_dir=tmp_path,
-            payload=payload,
-        )
-
-        assert "MPN: RES_10K (Unknown Manufacturer)" in result
-        assert "Footprint: N/A" in result
-        assert "Total Stock: 0 unit(s)" in result
-        assert "Storage Location(s): No assigned bin" in result
-        assert "Datasheet: None on file" in result
-        assert "Description: N/A" in result
-
-    def test_check_inventory_db_exception(self, mock_db: Path, tmp_path: Path):
-        payload = QuartermasterPayload(action="check_inventory", mpn="NE555")
-
-        with patch(
-            "charon.agents.quartermaster.inventory.get_db_connection",
-            side_effect=sqlite3.OperationalError("Database corrupt"),
-        ):
-            result = check_inventory(
-                db_path=mock_db,
-                datasheet_dir=tmp_path,
-                payload=payload,
-            )
-
-        assert "Error accessing inventory ledger: Database corrupt" in result
-
-
-class TestLogInventory:
-    """Tests for logging and upserting component inventory."""
-
-    def test_log_inventory_missing_mpn(self, mock_db: Path):
-        payload = QuartermasterPayload(action="log_inventory")
-        result = log_inventory(db_path=mock_db, payload=payload, raw_prompt="")
-        assert "Error: A 'part_number' (MPN) is required to log inventory." in result
-
-    def test_log_inventory_new_part(self, mock_db: Path):
-        payload = QuartermasterPayload(
-            action="log_inventory",
-            mpn="STM32F103C8T6",
-            quantity=25,
-            storage_bin="Bin-MCU-1",
-            category="Microcontrollers",
-            manufacturer="STMicroelectronics",
-            description="ARM Cortex-M3 MCU",
-            package_footprint="LQFP-48",
-        )
-
-        result = log_inventory(db_path=mock_db, payload=payload)
-        assert "Logged 25 unit(s) of STM32F103C8T6 into location 'Bin-MCU-1'." in result
-
-        conn = get_connection(mock_db)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM parts WHERE mpn = 'STM32F103C8T6'")
-        part = cursor.fetchone()
-        assert part["manufacturer"] == "STMicroelectronics"
-
-        cursor.execute("SELECT * FROM inventory WHERE part_id = ?", (part["id"],))
-        inv = cursor.fetchone()
-        assert inv["quantity"] == 25
-        assert inv["storage_bin"] == "Bin-MCU-1"
-        conn.close()
-
-    def test_log_inventory_existing_part_upsert_and_default_bin(self, mock_db: Path):
-        # Insert initial part record
-        log_inventory(
-            db_path=mock_db,
-            payload=QuartermasterPayload(
-                action="log_inventory",
-                mpn="NE555",
-                quantity=10,
-                storage_bin="Bin-1",
-            ),
-        )
-
-        # Log additional stock to the same location, updating metadata
-        result = log_inventory(
-            db_path=mock_db,
-            payload=QuartermasterPayload(
-                action="log_inventory",
-                part_number="NE555",
-                quantity=5,
-                storage_bin="Bin-1",
-                manufacturer="TI",
-            ),
-        )
-
-        assert "Logged 5 unit(s) of NE555 into location 'Bin-1'." in result
-
-        conn = get_connection(mock_db)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT quantity FROM inventory WHERE storage_bin = 'Bin-1'"
-        )
-        inv = cursor.fetchone()
-        assert inv["quantity"] == 15
-        conn.close()
-
-    def test_log_inventory_select_part_fails(self, mock_db: Path):
-        from unittest.mock import MagicMock
-
-        payload = QuartermasterPayload(action="log_inventory", mpn="NE555", quantity=1)
-
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.fetchone.return_value = None
-
-        with patch("charon.agents.quartermaster.inventory.get_db_connection") as mock_db_conn:
-            mock_db_conn.return_value.__enter__.return_value = mock_conn
-            result = log_inventory(db_path=mock_db, payload=payload)
-
-        assert "Error: Failed to register part 'NE555' in database." in result
-
-    def test_log_inventory_db_exception(self, mock_db: Path):
-        payload = QuartermasterPayload(action="log_inventory", mpn="NE555", quantity=1)
-
-        with patch(
-            "charon.agents.quartermaster.inventory.get_db_connection",
-            side_effect=sqlite3.OperationalError("Disk full"),
-        ):
-            result = log_inventory(db_path=mock_db, payload=payload)
-
-        assert "Database error logging NE555: Disk full" in result
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/quartermaster/test_quartermaster.py`
-
-```python
-"""test_quartermaster.py — Unit tests for TheQuartermaster agent and modules."""
-
-import csv
-import sqlite3
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-from charon.agents.quartermaster import TheQuartermaster
-from charon.agents.quartermaster.utils import (
-from charon.db.connection import get_connection
-    clean_mpn,
-    get_db_connection,
-    is_valid_mirror_candidate,
-)
-
-
-# ============================================================================
-# Fixtures
-# ============================================================================
-
-@pytest.fixture
-def mock_db(tmp_path: Path) -> Path:
-    """Creates a temporary SQLite database with the full Quartermaster schema."""
-    db_path = tmp_path / "quartermaster.db"
-    conn = get_connection(str(db_path))
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE parts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mpn TEXT UNIQUE NOT NULL,
-            manufacturer TEXT,
-            category TEXT,
-            description TEXT,
-            package_footprint TEXT
-        );
-    """)
-
-    cursor.execute("""
-        CREATE TABLE inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            part_id INTEGER NOT NULL,
-            quantity INTEGER DEFAULT 0,
-            storage_bin TEXT DEFAULT 'Unsorted',
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(part_id) REFERENCES parts(id),
-            UNIQUE(part_id, storage_bin)
-        );
-    """)
-
-    cursor.execute("""
-        CREATE TABLE datasheets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            part_id INTEGER NOT NULL,
-            file_path TEXT UNIQUE NOT NULL,
-            source_url TEXT,
-            FOREIGN KEY(part_id) REFERENCES parts(id)
-        );
-    """)
-
-    conn.commit()
-    conn.close()
-    return db_path
-
-
-@pytest.fixture
-def quartermaster(mock_db: Path, tmp_path: Path) -> TheQuartermaster:
-    """Instantiates TheQuartermaster configured with temporary paths."""
-    datasheet_dir = tmp_path / "datasheets"
-    datasheet_dir.mkdir(parents=True, exist_ok=True)
-    return TheQuartermaster(db_path=mock_db, datasheet_dir=datasheet_dir)
-
-
-# ============================================================================
-# 1. Utility Function Tests
-# ============================================================================
-
-class TestQuartermasterUtils:
-    """Tests for sanitization, candidate validation, and DB helpers."""
-
-    def test_clean_mpn_removes_query_noise(self):
-        raw_query = "download datasheet for NE555P please"
-        cleaned = clean_mpn(raw_query)
-        assert cleaned == "NE555P"
-
-    def test_clean_mpn_fallback_for_empty(self):
-        assert clean_mpn("") == "UNKNOWN_PART"
-
-    def test_is_valid_mirror_candidate_blocked_domains(self):
-        url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-        assert not is_valid_mirror_candidate(url, "NE555P")
-
-    def test_is_valid_mirror_candidate_pdf_matching(self):
-        valid_pdf = "https://example.com/datasheets/NE555P.pdf"
-        mismatched_pdf = "https://example.com/datasheets/LM358.pdf"
-
-        assert is_valid_mirror_candidate(valid_pdf, "NE555P") is True
-        assert is_valid_mirror_candidate(mismatched_pdf, "NE555P") is False
-
-    def test_get_db_connection_wal_mode(self, mock_db: Path):
-        conn = get_db_connection(mock_db)
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA journal_mode;")
-        row = cursor.fetchone()
-        conn.close()
-        assert row[0].lower() == "wal"
-
-
-# ============================================================================
-# 2. Inventory Operation Tests
-# ============================================================================
-
-class TestInventoryOperations:
-    """Tests stock logging and inventory queries."""
-
-    def test_log_inventory_new_part(self, quartermaster: TheQuartermaster, mock_db: Path):
-        result = quartermaster.execute(
-            action="log_inventory",
-            parameters={
-                "part_number": "STM32F401RE",
-                "quantity": 15,
-                "storage_bin": "Bin-A1",
-                "category": "Microcontrollers",
-                "manufacturer": "STMicroelectronics",
-            },
-        )
-
-        assert "Logged 15 unit(s) of STM32F401RE" in result
-
-        conn = get_connection(str(mock_db))
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT p.mpn, i.quantity, i.storage_bin FROM parts p JOIN inventory i ON p.id = i.part_id WHERE p.mpn = 'STM32F401RE'"
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        assert row is not None
-        assert row[0] == "STM32F401RE"
-        assert row[1] == 15
-        assert row[2] == "Bin-A1"
-
-    def test_check_inventory_found(self, quartermaster: TheQuartermaster):
-        quartermaster.execute(
-            action="log_inventory",
-            parameters={"part_number": "LM7805", "quantity": 5, "storage_bin": "Bin-B2"},
-        )
-
-        query_res = quartermaster.execute(
-            action="check_inventory",
-            parameters={"part_number": "LM7805"},
-        )
-
-        assert "Found 1 matching component(s)" in query_res
-        assert "LM7805" in query_res
-        assert "5 unit(s)" in query_res
-        assert "Bin-B2" in query_res
-
-    def test_check_inventory_not_found(self, quartermaster: TheQuartermaster):
-        query_res = quartermaster.execute(
-            action="check_inventory",
-            parameters={"part_number": "NONEXISTENT_PART_999"},
-        )
-
-        assert "No parts matching 'NONEXISTENT_PART_999' were found" in query_res
-
-
-# ============================================================================
-# 3. BOM Audit Tests
-# ============================================================================
-
-class TestBOMOperations:
-    """Tests parsing and auditing project assembly BOM CSV files."""
-
-    def test_generate_bom_shortage_and_available(
-        self, quartermaster: TheQuartermaster, tmp_path: Path
-    ):
-        # 1. Seed stock for one component, leave another missing
-        quartermaster.execute(
-            action="log_inventory",
-            parameters={"part_number": "RES-10K", "quantity": 100, "storage_bin": "Bin-R1"},
-        )
-
-        # 2. Setup project folder structure with assembly_bom.csv
-        project_dir = tmp_path / "TestProject"
-        bom_dir = project_dir / "bom"
-        bom_dir.mkdir(parents=True, exist_ok=True)
-        bom_csv = bom_dir / "assembly_bom.csv"
-
-        with bom_csv.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Part Number", "Quantity"])
-            writer.writerow(["RES-10K", "10"])
-            writer.writerow(["CAP-100NF", "5"])
-
-        # 3. Execute BOM audit
-        report = quartermaster.execute(
-            action="generate_bom",
-            parameters={"project_directory": str(project_dir)},
-        )
-
-        assert "AVAILABLE" in report
-        assert "SHORTAGE" in report
-        assert "Need 5 more" in report
-        assert "1 component shortage(s) detected" in report
-
-
-# ============================================================================
-# 4. Datasheet Fetch & Indexing Tests
-# ============================================================================
-
-class TestDatasheetOperations:
-    """Tests downloading, local disk storage, SQLite registration, and vector indexing."""
-
-    @patch("charon.agents.quartermaster.datasheets.download_pdf_bytes")
-    def test_fetch_datasheet_success(
-        self,
-        mock_download: MagicMock,
-        quartermaster: TheQuartermaster,
-        mock_db: Path,
-        tmp_path: Path,
-    ):
-        # Mock valid PDF bytes return
-        mock_download.return_value = b"%PDF-1.4 fake pdf content for testing"
-
-        # Mock TheArchivist dynamically imported inside fetch_datasheet
-        mock_archivist_cls = MagicMock()
-        mock_archivist_instance = MagicMock()
-        mock_archivist_instance.index_pdf_datasheet.return_value = 4
-        mock_archivist_cls.return_value = mock_archivist_instance
-
-        with patch.dict("sys.modules", {"charon.agents": MagicMock(TheArchivist=mock_archivist_cls)}):
-            result = quartermaster.execute(
-                action="fetch_datasheet",
-                parameters={
-                    "part_number": "ATMEGA328P",
-                    "url": "https://example.com/ATMEGA328P.pdf",
-                    "category": "Microcontrollers",
-                },
-            )
-
-        assert "Datasheet pipeline complete for ATMEGA328P" in result
-        assert "Indexed 4 chunks into ChromaDB vector memory" in result
-
-        # Verify SQLite registration
-        conn = get_connection(str(mock_db))
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT d.file_path, d.source_url FROM datasheets d JOIN parts p ON d.part_id = p.id WHERE p.mpn = 'ATMEGA328P'"
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        assert row is not None
-        assert row[0] == "Microcontrollers/ATMEGA328P.pdf"
-        assert row[1] == "https://example.com/ATMEGA328P.pdf"
-
-
-# ============================================================================
-# 5. Router & Invalid Actions Test
-# ============================================================================
-
-def test_quartermaster_unknown_action(quartermaster: TheQuartermaster):
-    with pytest.raises(ValueError, match="Unknown action 'invalid_action'"):
-        quartermaster.execute(action="invalid_action", parameters={})
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/quartermaster/test_utils.py`
-
-```python
-"""Tests for Quartermaster helper utility functions."""
-
-import sqlite3
-from pathlib import Path
-
-import pytest
-
-from charon.agents.quartermaster.utils import (
-    clean_mpn,
-    get_db_connection,
-    is_valid_mirror_candidate,
-)
-
-
-class TestGetDbConnection:
-    """Tests for SQLite database connection initialization."""
-
-    def test_get_db_connection_missing_file_raises(self, tmp_path: Path):
-        db_path = tmp_path / "nonexistent" / "quartermaster.db"
-        with pytest.raises(FileNotFoundError, match="Quartermaster database not found"):
-            get_db_connection(db_path)
-        # Verify parent directory was created as side effect
-        assert db_path.parent.exists()
-
-    def test_get_db_connection_success(self, tmp_path: Path):
-        db_path = tmp_path / "quartermaster.db"
-        db_path.touch()
-
-        conn = get_db_connection(db_path)
-        assert isinstance(conn, sqlite3.Connection)
-        assert conn.row_factory == sqlite3.Row
-
-        # Verify foreign keys & pragmas executed
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA foreign_keys;")
-        fk_status = cursor.fetchone()[0]
-        assert fk_status == 1
-        conn.close()
-
-    def test_get_db_connection_accepts_string_path(self, tmp_path: Path):
-        db_path = tmp_path / "quartermaster.db"
-        db_path.touch()
-
-        conn = get_db_connection(str(db_path))
-        assert isinstance(conn, sqlite3.Connection)
-        conn.close()
-
-
-class TestCleanMpn:
-    """Tests for MPN sanitization logic."""
-
-    @pytest.mark.parametrize(
-        "raw_input,expected",
-        [
-            ("Download datasheet for NE555 please", "NE555"),
-            ("get pinout for STM32F103C8T6", "STM32F103C8T6"),
-            ("lookup part LM7805", "LM7805"),
-            ("ATMEGA328P", "ATMEGA328P"),
-            ("  esp32-wroom-32d  ", "ESP32-WROOM-32D"),
-            ("", "UNKNOWN_PART"),
-            (None, "UNKNOWN_PART"),
-            (12345, "UNKNOWN_PART"),
-            ("???", "UNKNOWN_PART"),
-        ],
-    )
-    def test_clean_mpn_variations(self, raw_input, expected):
-        assert clean_mpn(raw_input) == expected
-
-
-class TestIsValidMirrorCandidate:
-    """Tests for datasheet candidate URL filtering."""
-
-    @pytest.mark.parametrize(
-        "url,mpn,expected",
-        [
-            (
-                "https://www.ti.com/lit/ds/symlink/ne555.pdf",
-                "NE555",
-                True,
-            ),
-            (
-                "https://component-docs.com/files/NE555-datasheet.pdf",
-                "NE555",
-                True,
-            ),
-            (
-                "https://component-docs.com/files/LM7805.pdf",
-                "NE555",
-                False,  # MPN mismatch in PDF name
-            ),
-            (
-                "https://www.youtube.com/watch?v=ne555_tutorial",
-                "NE555",
-                False,  # Blocked domain
-            ),
-            (
-                "https://google.com/search?q=ne555+pdf",
-                "NE555",
-                False,  # Blocked domain
-            ),
-            (
-                "https://distributor.com/parts/ne555-details.html",
-                "NE555",
-                True,  # HTML page allowed
-            ),
-            (
-                "",
-                "NE555",
-                False,  # Invalid URL
-            ),
-            (
-                "https://example.com/sheet.pdf",
-                "",
-                False,  # Invalid MPN
-            ),
-        ],
-    )
-    def test_is_valid_mirror_candidate(self, url, mpn, expected):
-        assert is_valid_mirror_candidate(url, mpn) == expected
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/scout/__init__.py`
-
-```python
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/scout/test_scout.py`
-
-```python
-"""test_scout.py — Unit tests for The Scout agent and web tools."""
-
-from unittest.mock import MagicMock, patch
-
-import httpx
-import pytest
-
-from charon.agents import TheScout, get_agent_class
-from charon.agents.scout.agent import VALID_SCOUT_ACTIONS
-from charon.tools.web import (
-    clean_search_query,
-    execute_web_search,
-    fetch_url_raw_content,
-)
-
-
-# =============================================================================
-# 1. TOOL TESTS: charon/tools/web.py
-# =============================================================================
-
-class TestWebTools:
-    """Tests for stateless web search and scraping tools."""
-
-    def test_clean_search_query(self):
-        """Validates query sanitization logic."""
-        assert clean_search_query("   'python tutorials'   ") == "python tutorials"
-        assert clean_search_query('"`machine learning`"') == "machine learning"
-        assert clean_search_query(">>> clean query <<<") == "clean query <<<"
-
-    @patch("charon.tools.web.DDGS_AVAILABLE", True)
-    @patch("charon.tools.web.DDGS")
-    def test_execute_web_search_ddg_success(self, mock_ddgs_cls):
-        """Tests successful web search using DuckDuckGo with domain filtering."""
-        mock_ddgs = MagicMock()
-        mock_ddgs_cls.return_value.__enter__.return_value = mock_ddgs
-        mock_ddgs.text.return_value = [
-            {"title": "Python Docs", "href": "https://docs.python.org", "body": "Official docs."},
-            {"title": "Wiki Page", "href": "https://wikipedia.org/wiki/Python", "body": "Wiki info."},
-            {"title": "PyPI", "href": "https://pypi.org", "body": "Package index."},
-        ]
-
-        results = execute_web_search("python", max_results=2, ignored_domains=["wikipedia.org"])
-
-        assert len(results) == 2
-        assert results[0]["title"] == "Python Docs"
-        assert results[1]["title"] == "PyPI"
-        # Wikipedia should be filtered out
-        assert not any("wikipedia.org" in r["link"] for r in results)
-
-    @patch("charon.tools.web.DDGS_AVAILABLE", True)
-    @patch("charon.tools.web.DDGS")
-    @patch("charon.tools.web.GOOGLE_AVAILABLE", True)
-    @patch("charon.tools.web.google_search")
-    def test_execute_web_search_google_fallback(self, mock_google, mock_ddgs_cls):
-        """Tests fallback to Google search when DuckDuckGo fails."""
-        mock_ddgs = MagicMock()
-        mock_ddgs_cls.return_value.__enter__.return_value = mock_ddgs
-        mock_ddgs.text.side_effect = Exception("DDGS rate limit exceeded")
-
-        mock_item = MagicMock()
-        mock_item.title = "Google Result"
-        mock_item.url = "https://example.com"
-        mock_item.description = "Example snippet"
-        mock_google.return_value = [mock_item]
-
-        results = execute_web_search("test query", max_results=1)
-
-        assert len(results) == 1
-        assert results[0]["title"] == "Google Result"
-        assert results[0]["link"] == "https://example.com"
-
-    @patch("charon.tools.web.httpx.Client")
-    def test_fetch_url_raw_content_html_cleaning(self, mock_client_cls):
-        """Tests HTML parsing, stripping of unwanted tags (script/nav), and title extraction."""
-        html_content = """
-        <html>
-            <head><title>Test Page</title></head>
-            <body>
-                <nav>Navigation bar</nav>
-                <script>var x = 10;</script>
-                <h1>Main Content Header</h1>
-                <p>This is useful paragraph text.</p>
-                <footer>Footer content</footer>
-            </body>
-        </html>
-        """
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "text/html; charset=utf-8"}
-        mock_response.text = html_content
-        mock_response.raise_for_status.return_value = None
-
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__.return_value = mock_client
-        mock_client.get.return_value = mock_response
-
-        result = fetch_url_raw_content("example.com")
-
-        assert result["success"] is True
-        assert result["title"] == "Test Page"
-        assert "Main Content Header" in result["content"]
-        assert "This is useful paragraph text." in result["content"]
-        assert "Navigation bar" not in result["content"]
-        assert "var x = 10;" not in result["content"]
-
-    @patch("charon.tools.web.httpx.Client")
-    def test_fetch_url_raw_content_truncation(self, mock_client_cls):
-        """Tests content truncation when text exceeds max_chars."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "text/plain"}
-        mock_response.text = "A" * 100
-        mock_response.raise_for_status.return_value = None
-
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__.return_value = mock_client
-        mock_client.get.return_value = mock_response
-
-        result = fetch_url_raw_content("https://example.com", max_chars=50)
-
-        assert result["success"] is True
-        assert len(result["content"]) == 50
-        assert result["truncated"] is True
-
-    @patch("charon.tools.web.httpx.Client")
-    def test_fetch_url_raw_content_http_error(self, mock_client_cls):
-        """Tests handling of HTTP 404/500 errors."""
-        mock_response = MagicMock()
-        mock_response.status_code = 404
-
-        mock_client = MagicMock()
-        mock_client_cls.return_value.__enter__.return_value = mock_client
-        mock_client.get.side_effect = httpx.HTTPStatusError(
-            "404 Not Found", request=MagicMock(), response=mock_response
-        )
-
-        result = fetch_url_raw_content("https://example.com/notfound")
-
-        assert result["success"] is False
-        assert "HTTP Status 404" in result["error"]
-
-
-# =============================================================================
-# 2. AGENT TESTS: charon/agents/scout/
-# =============================================================================
-
-class TestTheScoutAgent:
-    """Tests for TheScout agent routing, parameters, and outputs."""
-
-    def test_scout_initialization(self):
-        """Tests initialization with default and custom HTTP headers."""
-        scout_default = TheScout()
-        assert "User-Agent" in scout_default.headers
-
-        scout_custom = TheScout(headers={"User-Agent": "CustomBot/1.0"})
-        assert scout_custom.headers["User-Agent"] == "CustomBot/1.0"
-
-    @patch("charon.agents.scout.agent.perform_web_search")
-    def test_execute_web_search_action_routing(self, mock_perform_search):
-        """Tests routing and normalization of web_search action and aliases."""
-        mock_perform_search.return_value = "### Reconnaissance Results..."
-        scout = TheScout()
-
-        # Direct action name
-        res1 = scout.execute("web_search", {"query": "CAD tools"})
-        assert "Reconnaissance Results" in res1
-
-        # Alias action name
-        res2 = scout.execute("search", {"query": "CAD tools"})
-        assert "Reconnaissance Results" in res2
-
-        assert mock_perform_search.call_count == 2
-
-    @patch("charon.agents.scout.agent.scrape_url_content")
-    def test_execute_scrape_page_content_routing(self, mock_scrape_url):
-        """Tests routing and normalization of scrape action and aliases."""
-        mock_scrape_url.return_value = "### Content from [Example](https://example.com)"
-        scout = TheScout()
-
-        # Alias action 'fetch_url'
-        res = scout.execute("fetch_url", {"url": "https://example.com", "max_chars": 2000})
-
-        assert "Content from" in res
-        mock_scrape_url.assert_called_once_with(
-            "https://example.com", max_chars=2000, headers=scout.headers
-        )
-
-    def test_execute_scrape_missing_url(self):
-        """Ensures scraping without a URL returns a clear error message."""
-        scout = TheScout()
-        res = scout.execute("scrape_page_content", {})
-        assert "Error: A target 'url' parameter is required for scraping." in res
-
-    def test_execute_unknown_action_raises_value_error(self):
-        """Ensures an invalid action raises ValueError."""
-        scout = TheScout()
-        with pytest.raises(ValueError, match="Unknown action"):
-            scout.execute("invalid_scout_action", {"query": "something"})
-
-    @patch("charon.agents.scout.agent.search_links")
-    def test_search_links_method(self, mock_search_links):
-        """Tests the direct search_links helper method."""
-        mock_search_links.return_value = [{"title": "Item 1", "link": "https://item1.com", "snippet": "S1"}]
-        scout = TheScout()
-
-        hits = scout.search_links("microcontroller", max_results=3)
-
-        assert len(hits) == 1
-        assert hits[0]["title"] == "Item 1"
-        mock_search_links.assert_called_once_with(
-            "microcontroller", max_results=3, ignored_domains=scout.IGNORED_DOMAINS
-        )
-
-    def test_execute_payload_validation_fallback(self):
-        """Verify fallback payload construction when ScoutPayload.model_validate fails."""
-        scout = TheScout()
-        with patch("charon.intent.ScoutPayload.model_validate", side_effect=ValueError("Validation failed")):
-            with patch.object(scout, "_search_web", return_value="Fallback search ok") as mock_search:
-                result = scout.execute("search_web", {"query": "test query"})
-                assert result == "Fallback search ok"
-                mock_search.assert_called_once_with("test query", max_results=5)
-
-    def test_execute_invalid_numeric_params_fallback(self):
-        """Verify fallback to defaults when max_results or max_chars are invalid types."""
-        scout = TheScout()
-
-        # Invalid max_results -> defaults to 5
-        with patch.object(scout, "_search_web", return_value="ok") as mock_search:
-            scout.execute("search_web", {"query": "test", "max_results": "invalid_int"})
-            mock_search.assert_called_once_with("test", max_results=5)
-
-        # Invalid max_chars -> defaults to 4000
-        with patch.object(scout, "_scrape_url", return_value="ok") as mock_scrape:
-            scout.execute("scrape_page_content", {"url": "https://example.com", "max_chars": "invalid_int"})
-            mock_scrape.assert_called_once_with("https://example.com", max_chars=4000)
-
-    def test_execute_unhandled_payload_action_raises_value_error(self):
-        """Verify error when payload action bypasses validation but is unhandled in execution branches."""
-        scout = TheScout()
-        mock_payload = MagicMock()
-        mock_payload.action = "unsupported_action"
-
-        with patch("charon.intent.ScoutPayload.model_validate", return_value=mock_payload):
-            with patch("charon.agents.scout.agent.VALID_SCOUT_ACTIONS", ("unsupported_action",)):
-                with pytest.raises(ValueError, match="Unknown action 'unsupported_action'"):
-                    scout.execute("unsupported_action", {})
-
-
-# =============================================================================
-# 3. LAZY LOADING INTEGRATION TEST
-# =============================================================================
-
-def test_lazy_loading_scout():
-    """Verifies that TheScout can be dynamically loaded via agents gateway."""
-    agent_cls = get_agent_class("scout")
-    assert agent_cls is TheScout
-
-    scout_instance = agent_cls()
-    assert isinstance(scout_instance, TheScout)
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/scout/test_scraping.py`
-
-```python
-"""Unit tests for charon.agents.scout.scraping."""
-
-from unittest.mock import patch
-import pytest
-
-from charon.agents.scout.scraping import scrape_url_content
-
-
-@patch("charon.agents.scout.scraping.fetch_url_raw_content")
-def test_scrape_url_content_success(mock_fetch):
-    """Verify successful scraping returns correctly formatted Markdown."""
-    mock_fetch.return_value = {
-        "success": True,
-        "title": "Example Domain",
-        "url": "https://example.com",
-        "content": "This is example page text content.",
-        "truncated": False,
-    }
-
-    result = scrape_url_content("https://example.com")
-
-    mock_fetch.assert_called_once_with(
-        "https://example.com", headers=None, max_chars=4000
-    )
-    assert "### Content from [Example Domain](https://example.com):" in result
-    assert "This is example page text content." in result
-    assert "[Content Truncated]" not in result
-
-
-@patch("charon.agents.scout.scraping.fetch_url_raw_content")
-def test_scrape_url_content_truncated(mock_fetch):
-    """Verify truncation notice is appended when content exceeds length limit."""
-    mock_fetch.return_value = {
-        "success": True,
-        "title": "Large Page",
-        "url": "https://example.com/large",
-        "content": "A long document excerpt",
-        "truncated": True,
-    }
-
-    result = scrape_url_content("https://example.com/large", max_chars=100)
-
-    assert "...\n[Content Truncated]" in result
-
-
-@patch("charon.agents.scout.scraping.fetch_url_raw_content")
-def test_scrape_url_content_message_override(mock_fetch):
-    """Verify custom response message override is returned directly."""
-    mock_fetch.return_value = {
-        "success": True,
-        "message": "Cached content already processed.",
-    }
-
-    result = scrape_url_content("https://example.com")
-    assert result == "Cached content already processed."
-
-
-@patch("charon.agents.scout.scraping.fetch_url_raw_content")
-def test_scrape_url_content_failure_with_error(mock_fetch):
-    """Verify proper error formatting when retrieval fails with an explicit error message."""
-    mock_fetch.return_value = {
-        "success": False,
-        "error": "HTTP 404 Not Found",
-    }
-
-    result = scrape_url_content("https://example.com/404")
-    assert result == "Failed to retrieve content from 'https://example.com/404': HTTP 404 Not Found"
-
-
-@patch("charon.agents.scout.scraping.fetch_url_raw_content")
-def test_scrape_url_content_failure_default_error(mock_fetch):
-    """Verify default error string when failure response contains no error key."""
-    mock_fetch.return_value = {"success": False}
-
-    result = scrape_url_content("https://example.com/fail")
-    assert result == "Failed to retrieve content from 'https://example.com/fail': Unknown error"
-
-
-@patch("charon.agents.scout.scraping.fetch_url_raw_content")
-def test_scrape_url_content_with_custom_headers(mock_fetch):
-    """Verify custom HTTP headers are propagated through to the fetch tool."""
-    mock_fetch.return_value = {"success": True, "content": "Header test"}
-    custom_headers = {"User-Agent": "CustomScout/1.0"}
-
-    scrape_url_content("https://example.com", headers=custom_headers)
-
-    mock_fetch.assert_called_once_with(
-        "https://example.com", headers=custom_headers, max_chars=4000
-    )
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/scout/test_search.py`
-
-```python
-"""Unit tests for charon.agents.scout.search."""
-
-from unittest.mock import patch
-import pytest
-
-from charon.agents.scout.search import (
-    DEFAULT_IGNORED_DOMAINS,
-    perform_web_search,
-    search_links,
-)
-
-
-@patch("charon.agents.scout.search.execute_web_search")
-def test_search_links_defaults(mock_execute):
-    """Verify search_links passes default ignored domains when none are supplied."""
-    mock_execute.return_value = [{"title": "Test", "link": "https://test.com", "snippet": "Text"}]
-
-    results = search_links("python docs", max_results=3)
-
-    mock_execute.assert_called_once_with(
-        "python docs", max_results=3, ignored_domains=DEFAULT_IGNORED_DOMAINS
-    )
-    assert len(results) == 1
-
-
-@patch("charon.agents.scout.search.execute_web_search")
-def test_search_links_custom_ignored_domains(mock_execute):
-    """Verify search_links respects user-supplied ignored domain lists."""
-    custom_ignored = ["spam.com"]
-    search_links("microcontrollers", max_results=5, ignored_domains=custom_ignored)
-
-    mock_execute.assert_called_once_with(
-        "microcontrollers", max_results=5, ignored_domains=custom_ignored
-    )
-
-
-@patch("charon.agents.scout.search.clean_search_query")
-def test_perform_web_search_empty_cleaned_query(mock_clean):
-    """Verify error message is returned when query cleaning results in an empty string."""
-    mock_clean.return_value = ""
-
-    result = perform_web_search("   ")
-    assert result == "Error: No search query provided."
-
-
-@patch("charon.agents.scout.search.search_links")
-@patch("charon.agents.scout.search.clean_search_query")
-def test_perform_web_search_no_results(mock_clean, mock_links):
-    """Verify message when search execution returns no link results."""
-    mock_clean.return_value = "obscure search topic"
-    mock_links.return_value = []
-
-    result = perform_web_search("obscure search topic")
-    assert result == "No search results returned for query: 'obscure search topic'"
-
-
-@patch("charon.agents.scout.search.search_links")
-@patch("charon.agents.scout.search.clean_search_query")
-def test_perform_web_search_formatting(mock_clean, mock_links):
-    """Verify successful web search results are correctly formatted into Markdown."""
-    mock_clean.return_value = "raspberry pi pico datasheet"
-    mock_links.return_value = [
-        {
-            "title": "Raspberry Pi Pico RP2040",
-            "link": "https://raspberrypi.com/pico",
-            "snippet": "Microcontroller board datasheet.",
-        },
-        {
-            "title": "",  # Test fallback title
-            "link": "",   # Test fallback link
-            "snippet": None,  # Test fallback snippet
-        },
-    ]
-
-    result = perform_web_search("raspberry pi pico datasheet", max_results=2)
-
-    assert "### Reconnaissance Results for 'raspberry pi pico datasheet':" in result
-    assert "**1. [Raspberry Pi Pico RP2040](https://raspberrypi.com/pico)**" in result
-    assert "Microcontroller board datasheet." in result
-    assert "**2. [Untitled](#)**" in result
-    assert "No summary available." in result
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/spark/__init__.py`
-
-```python
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/spark/test_spark.py`
-
-```python
-"""test_spark.py — Unit test suite for TheSpark agent and related tools."""
-
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-import pytest
-
-from charon.agents.spark import ACTION_MAP, VALID_SPARK_ACTIONS, TheSpark
-
-
-@pytest.fixture
-def spark_agent():
-    """Provides a default instance of TheSpark agent."""
-    return TheSpark(pio_cmd="pio", kicad_cli="kicad-cli")
-
-
-@pytest.fixture
-def mock_project_env(tmp_path):
-    """Creates a temporary project workspace with PlatformIO and KiCad files."""
-    project_dir = tmp_path / "sample_hardware_project"
-    project_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create root firmware config
-    (project_dir / "platformio.ini").touch()
-
-    # Create CAD subfolder and PCB/Schematic files
-    cad_dir = project_dir / "cad"
-    cad_dir.mkdir(parents=True, exist_ok=True)
-    pcb_file = cad_dir / "mainboard.kicad_pcb"
-    sch_file = cad_dir / "mainboard.kicad_sch"
-    pcb_file.touch()
-    sch_file.touch()
-
-    return {
-        "project_dir": project_dir,
-        "pcb_file": pcb_file,
-        "sch_file": sch_file,
-    }
-
-
-# =============================================================================
-# INITIALIZATION & ACTION ROUTING TESTS
-# =============================================================================
-
-
-def test_spark_initialization():
-    """Verifies agent initialization and custom CLI executable settings."""
-    spark = TheSpark(pio_cmd="/usr/local/bin/pio", kicad_cli="/usr/local/bin/kicad-cli")
-    assert spark.pio_cmd == "/usr/local/bin/pio"
-    assert spark.kicad_cli == "/usr/local/bin/kicad-cli"
-
-
-@pytest.mark.parametrize(
-    "alias, canonical",
-    [
-        ("compile", "compile_firmware"),
-        ("build", "compile_firmware"),
-        ("build_firmware", "compile_firmware"),
-        ("flash", "flash_hardware"),
-        ("upload", "flash_hardware"),
-        ("upload_firmware", "flash_hardware"),
-        ("gerbers", "export_gerbers"),
-        ("export_pcb", "export_gerbers"),
-        ("plot_gerbers", "export_gerbers"),
-        ("generate_bom", "export_bom"),
-        ("bom", "export_bom"),
-    ],
-)
-def test_action_map_aliases(alias, canonical):
-    """Ensures action aliases map to valid canonical actions."""
-    assert ACTION_MAP[alias] == canonical
-    assert canonical in VALID_SPARK_ACTIONS
-
-
-def test_invalid_action_raises_value_error(spark_agent):
-    """Verifies that an unknown action raises a ValueError."""
-    with pytest.raises(ValueError, match="Unknown action 'invalid_spark_action'"):
-        spark_agent.execute(action="invalid_spark_action", params={})
-
-
-# =============================================================================
-# FIRMWARE COMPILATION TESTS
-# =============================================================================
-
-
-def test_compile_firmware_missing_directory(spark_agent):
-    """Returns an error message when no project directory is supplied or found."""
-    result = spark_agent.execute(action="compile_firmware", params={})
-    assert "Error: A 'project_directory' or 'project_name' parameter is required" in result
-
-
-def test_compile_firmware_dry_run(spark_agent, mock_project_env):
-    """Tests firmware compilation in dry-run mode."""
-    project_dir = mock_project_env["project_dir"]
-
-    with patch(
-        "charon.agents.spark.utils.resolve_project_path", return_value=project_dir
-    ):
-        result = spark_agent.execute(
-            action="compile_firmware",
-            parameters={
-                "project_directory": str(project_dir),
-                "environment": "esp32dev",
-                "dry_run": True,
-            },
-        )
-        assert "Firmware compilation simulated successfully" in result
-        assert "esp32dev" in result
-
-
-@patch("shutil.which", return_value="/usr/bin/pio")
-@patch("subprocess.run")
-def test_compile_firmware_execution_success(
-    mock_subproc, mock_which, spark_agent, mock_project_env
-):
-    """Verifies successful subprocess execution of PlatformIO build."""
-    project_dir = mock_project_env["project_dir"]
-    mock_subproc.return_value = MagicMock(
-        returncode=0, stdout="[SUCCESS] Took 3.12 seconds"
-    )
-
-    with patch(
-        "charon.agents.spark.utils.resolve_project_path", return_value=project_dir
-    ):
-        result = spark_agent.execute(
-            action="build",
-            parameters={
-                "project_directory": str(project_dir),
-                "environment": "uno",
-            },
-        )
-        assert "Firmware compiled successfully" in result
-        assert "[SUCCESS] Took 3.12 seconds" in result
-
-        mock_subproc.assert_called_once()
-        cmd_args = mock_subproc.call_args[0][0]
-        assert cmd_args == ["pio", "run", "-e", "uno"]
-
-
-def test_compile_firmware_nested_firmware_dir(spark_agent, tmp_path):
-    """Tests auto-detection of a nested 'firmware' directory containing platformio.ini."""
-    root_dir = tmp_path / "nested_project"
-    firmware_dir = root_dir / "firmware"
-    firmware_dir.mkdir(parents=True, exist_ok=True)
-    (firmware_dir / "platformio.ini").touch()
-
-    with patch("charon.agents.spark.utils.resolve_project_path", return_value=root_dir):
-        result = spark_agent.execute(
-            action="compile_firmware",
-            parameters={"project_directory": str(root_dir), "dry_run": True},
-        )
-        assert "Firmware compilation simulated successfully" in result
-        assert str(firmware_dir) in result
-
-
-# =============================================================================
-# HARDWARE FLASHING TESTS
-# =============================================================================
-
-
-def test_flash_hardware_dry_run(spark_agent, mock_project_env):
-    """Tests hardware flashing simulation in dry-run mode."""
-    project_dir = mock_project_env["project_dir"]
-
-    with patch(
-        "charon.agents.spark.utils.resolve_project_path", return_value=project_dir
-    ):
-        result = spark_agent.execute(
-            action="flash",
-            parameters={
-                "project_directory": str(project_dir),
-                "port": "/dev/ttyUSB0",
-                "dry_run": True,
-            },
-        )
-        assert "Firmware upload sequence simulated successfully" in result
-        assert "/dev/ttyUSB0" in result
-
-
-@patch("shutil.which", return_value="/usr/bin/pio")
-@patch("subprocess.run")
-def test_flash_hardware_execution_success(
-    mock_subproc, mock_which, spark_agent, mock_project_env
-):
-    """Verifies successful subprocess execution of PlatformIO upload."""
-    project_dir = mock_project_env["project_dir"]
-    mock_subproc.return_value = MagicMock(
-        returncode=0, stdout="[SUCCESS] Flashed target MCU"
-    )
-
-    with patch(
-        "charon.agents.spark.utils.resolve_project_path", return_value=project_dir
-    ):
-        result = spark_agent.execute(
-            action="upload_firmware",
-            parameters={
-                "project_directory": str(project_dir),
-                "port": "/dev/ttyACM0",
-                "environment": "stm32",
-            },
-        )
-        assert "Firmware successfully flashed to target hardware" in result
-
-        cmd_args = mock_subproc.call_args[0][0]
-        assert cmd_args == [
-            "pio",
-            "run",
-            "--target",
-            "upload",
-            "-e",
-            "stm32",
-            "--upload-port",
-            "/dev/ttyACM0",
-        ]
-
-
-# =============================================================================
-# GERBER & EDA EXPORT TESTS
-# =============================================================================
-
-
-def test_export_gerbers_missing_pcb(spark_agent):
-    """Returns an error when no PCB file can be located."""
-    result = spark_agent.execute(action="export_gerbers", params={})
-    assert "Error: A valid 'pcb_file' or project containing a .kicad_pcb file" in result
-
-
-def test_export_gerbers_dry_run(spark_agent, mock_project_env):
-    """Simulates KiCad Gerber export using dry_run=True."""
-    pcb_file = mock_project_env["pcb_file"]
-
-    result = spark_agent.execute(
-        action="export_gerbers",
-        parameters={"pcb_file": str(pcb_file), "dry_run": True},
-    )
-    assert "Gerber fabrication files successfully plotted to" in result
-
-
-@patch("shutil.which", return_value="/usr/bin/kicad-cli")
-@patch("subprocess.run")
-def test_export_gerbers_execution_success(mock_subproc, mock_which, spark_agent, mock_project_env):
-    """Verifies invocation of KiCad CLI for Gerber and drill file generation."""
-    pcb_file = mock_project_env["pcb_file"]
-    mock_subproc.return_value = MagicMock(returncode=0, stdout="")
-
-    result = spark_agent.execute(
-        action="export_gerbers",
-        parameters={"pcb_file": str(pcb_file)},
-    )
-    assert "Gerber fabrication & drill files successfully generated" in result
-    assert mock_subproc.call_count == 2  # Gerber plot + Drill plot
-
-
-# =============================================================================
-# BOM EXPORT TESTS
-# =============================================================================
-
-
-def test_export_bom_dry_run(spark_agent, mock_project_env):
-    """Simulates KiCad BOM export using dry_run=True."""
-    pcb_file = mock_project_env["pcb_file"]
-
-    result = spark_agent.execute(
-        action="export_bom",
-        parameters={"pcb_file": str(pcb_file), "dry_run": True},
-    )
-    assert "Bill of Materials (BOM) exported successfully to" in result
-
-
-@patch("shutil.which", return_value="/usr/bin/kicad-cli")
-@patch("subprocess.run")
-def test_export_bom_execution_success(mock_subproc, mock_which, spark_agent, mock_project_env):
-    """Verifies invocation of KiCad CLI for schematic BOM CSV generation."""
-    pcb_file = mock_project_env["pcb_file"]
-    mock_subproc.return_value = MagicMock(returncode=0, stdout="")
-
-    result = spark_agent.execute(
-        action="bom",
-        parameters={"pcb_file": str(pcb_file)},
-    )
-    assert "Bill of Materials (BOM) exported successfully" in result
-    mock_subproc.assert_called_once()
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/spark/test_utils.py`
-
-```python
-#!/usr/bin/env python3
-"""tests/agents/spark/test_utils.py — Unit tests for spark/utils.py."""
-
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
-
-from charon.agents.spark.utils import find_pcb_file, resolve_project_dir
-
-
-# --- Tests: resolve_project_dir ---
-
-def test_resolve_project_dir_returns_none_when_empty():
-    """Returns None when no payload, params, or prompt text are provided."""
-    assert resolve_project_dir(params={}, raw_prompt="") is None
-    assert resolve_project_dir(params={}, raw_prompt="   ") is None
-
-
-def test_resolve_project_dir_payload_precedence():
-    """Tests payload attribute precedence (directory -> name -> path)."""
-    with patch("charon.agents.spark.utils.resolve_project_path") as mock_resolve:
-        mock_resolve.side_effect = lambda x: Path(x)
-
-        # 1. payload.project_directory takes priority
-        payload = SimpleNamespace(
-            project_directory="/path/dir",
-            project_name="/path/name",
-            project_path="/path/path",
-        )
-        assert resolve_project_dir(params={}, payload=payload) == Path("/path/dir")
-
-        # 2. payload.project_name if project_directory is missing
-        payload = SimpleNamespace(
-            project_directory=None,
-            project_name="/path/name",
-            project_path="/path/path",
-        )
-        assert resolve_project_dir(params={}, payload=payload) == Path("/path/name")
-
-        # 3. payload.project_path if directory and name are missing
-        payload = SimpleNamespace(
-            project_directory=None,
-            project_name=None,
-            project_path="/path/path",
-        )
-        assert resolve_project_dir(params={}, payload=payload) == Path("/path/path")
-
-
-def test_resolve_project_dir_params_precedence():
-    """Tests params dict key precedence (directory -> path -> name -> base_path)."""
-    with patch("charon.agents.spark.utils.resolve_project_path") as mock_resolve:
-        mock_resolve.side_effect = lambda x: Path(x)
-
-        # project_directory
-        assert resolve_project_dir(params={"project_directory": "p_dir"}) == Path("p_dir")
-
-        # project_path
-        assert resolve_project_dir(params={"project_path": "p_path"}) == Path("p_path")
-
-        # project_name
-        assert resolve_project_dir(params={"project_name": "p_name"}) == Path("p_name")
-
-        # base_path
-        assert resolve_project_dir(params={"base_path": "p_base"}) == Path("p_base")
-
-
-def test_resolve_project_dir_token_splitting_from_raw_prompt():
-    """Hits lines 31-32: Splitting raw_prompt to extract the last token when params is empty."""
-    with patch("charon.agents.spark.utils.resolve_project_path") as mock_resolve:
-        mock_resolve.side_effect = lambda x: Path(x)
-
-        result = resolve_project_dir(params={}, raw_prompt="open project_alpha")
-        assert result == Path("project_alpha")
-        mock_resolve.assert_called_with("project_alpha")
-
-
-# --- Tests: find_pcb_file ---
-
-def test_find_pcb_file_explicit_file_exists(tmp_path):
-    """Returns resolved path when explicit pcb_file exists."""
-    pcb_file = tmp_path / "board.kicad_pcb"
-    pcb_file.touch()
-
-    # Via payload.pcb_file
-    payload = SimpleNamespace(pcb_file=str(pcb_file))
-    assert find_pcb_file(params={}, payload=payload) == pcb_file.resolve()
-
-    # Via params['pcb_file']
-    assert find_pcb_file(params={"pcb_file": str(pcb_file)}) == pcb_file.resolve()
-
-    # Via params['file']
-    assert find_pcb_file(params={"file": str(pcb_file)}) == pcb_file.resolve()
-
-
-def test_find_pcb_file_explicit_file_missing_falls_through(tmp_path):
-    """Hits branch 50->53: Explicit pcb_file does not exist on disk, falling through to search."""
-    missing_pcb = tmp_path / "nonexistent.kicad_pcb"
-
-    with patch("charon.agents.spark.utils.resolve_project_dir") as mock_resolve:
-        mock_resolve.return_value = None
-        assert find_pcb_file(params={"pcb_file": str(missing_pcb)}) is None
-        mock_resolve.assert_called_once()
-
-
-def test_find_pcb_file_search_directories(tmp_path):
-    """Hits lines 55-64: Searches cad/, hardware/, and root project dirs for .kicad_pcb."""
-    # 1. Subdirectory: target_path/cad
-    cad_dir = tmp_path / "cad"
-    cad_dir.mkdir()
-    cad_pcb = cad_dir / "design.kicad_pcb"
-    cad_pcb.touch()
-
-    with patch("charon.agents.spark.utils.resolve_project_dir", return_value=tmp_path):
-        assert find_pcb_file(params={}) == cad_pcb.resolve()
-
-    cad_pcb.unlink()
-
-    # 2. Subdirectory: target_path/hardware
-    hw_dir = tmp_path / "hardware"
-    hw_dir.mkdir()
-    hw_pcb = hw_dir / "board.kicad_pcb"
-    hw_pcb.touch()
-
-    with patch("charon.agents.spark.utils.resolve_project_dir", return_value=tmp_path):
-        assert find_pcb_file(params={}) == hw_pcb.resolve()
-
-    hw_pcb.unlink()
-
-    # 3. Root directory: target_path
-    root_pcb = tmp_path / "main.kicad_pcb"
-    root_pcb.touch()
-
-    with patch("charon.agents.spark.utils.resolve_project_dir", return_value=tmp_path):
-        assert find_pcb_file(params={}) == root_pcb.resolve()
-
-
-def test_find_pcb_file_non_directory_or_no_matching_files(tmp_path):
-    """Hits non-directory sdir checks and missing .kicad_pcb returns."""
-    # Create 'cad' as a file rather than a directory to test is_dir() returning False
-    cad_file = tmp_path / "cad"
-    cad_file.touch()
-
-    with patch("charon.agents.spark.utils.resolve_project_dir", return_value=tmp_path):
-        assert find_pcb_file(params={}) is None
-
-
-def test_find_pcb_file_target_path_none_or_missing(tmp_path):
-    """Returns None when target directory is None or does not exist."""
-    missing_dir = tmp_path / "nonexistent"
-
-    with patch("charon.agents.spark.utils.resolve_project_dir", return_value=missing_dir):
-        assert find_pcb_file(params={}) is None
-
-    with patch("charon.agents.spark.utils.resolve_project_dir", return_value=None):
-        assert find_pcb_file(params={}) is None
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/test_archivist.py`
-
-```python
-"""Unit tests for TheArchivist specialist agent (ledger management and datasheet RAG store)."""
-
-from pathlib import Path
-from unittest.mock import patch
-import pytest
-from pydantic import ValidationError
-
-from charon.agents.archivist import (
-    TheArchivist,
-    _chunk_text,
-    _get_payload_val,
-    ensure_ecosystem_directories,
-)
-
-
-@pytest.fixture
-def archivist_agent(tmp_path: Path) -> TheArchivist:
-    """Fixture providing an instance of TheArchivist with an isolated ChromaDB directory."""
-    db_dir = tmp_path / "chroma_db"
-    return TheArchivist(db_path=db_dir)
-
-
-@pytest.fixture
-def dummy_pdf_file(tmp_path: Path) -> Path:
-    """Creates a dummy PDF file path for testing datasheet indexing."""
-    pdf_path = tmp_path / "STM32F407.pdf"
-    pdf_path.write_bytes(b"%PDF-1.4 Mock PDF Content for STM32 Microcontroller")
-    return pdf_path
-
-
-# =============================================================================
-# 1. INITIALIZATION & RE-EXPORTS
-# =============================================================================
-
-
-def test_archivist_initialization(tmp_path: Path):
-    """Tests that TheArchivist initializes collections in the specified custom directory."""
-    db_dir = tmp_path / "custom_chroma"
-    agent = TheArchivist(db_path=db_dir)
-
-    assert agent.db_path == db_dir.resolve()
-    assert agent.collection.name == "ledger"
-    assert agent.datasheet_collection.name == "datasheet_knowledge"
-
-
-def test_package_reexports():
-    """Validates top-level package imports from charon.agents.archivist."""
-    assert TheArchivist is not None
-    assert callable(_chunk_text)
-    assert callable(_get_payload_val)
-    assert callable(ensure_ecosystem_directories)
-
-
-# =============================================================================
-# 2. SYSTEM LEDGER OPERATIONS (STORE, SEARCH, DEDUPLICATION)
-# =============================================================================
-
-
-def test_store_record_and_deduplication(archivist_agent: TheArchivist):
-    """Tests storing facts into the ledger and rejecting exact duplicates."""
-    fact = "Always use M3 304 stainless steel screws for outdoor enclosures."
-
-    # First insertion
-    res1 = archivist_agent.execute(
-        action="store_record",
-        parameters={"fact": fact, "category": "hardware_standards"},
-    )
-    assert "securely committed to the ledger" in res1
-    assert "hardware_standards" in res1
-
-    # Duplicate insertion attempt
-    res2 = archivist_agent.execute(
-        action="store_record",
-        parameters={"fact": fact, "category": "hardware_standards"},
-    )
-    assert "already present in the ledger" in res2
-
-
-def test_store_record_missing_fact(archivist_agent: TheArchivist):
-    """Tests storing a record without providing a fact string."""
-    res = archivist_agent.execute(
-        action="store_record",
-        parameters={"category": "hardware_standards"},
-    )
-    assert "No explicit fact or rule provided" in res
-
-
-def test_search_ledger(archivist_agent: TheArchivist):
-    """Tests rule retrieval from the ledger."""
-    # Search empty ledger
-    res_empty = archivist_agent.execute(
-        action="search_ledger", parameters={"query": "stainless screws"}
-    )
-    assert "The ledger is currently empty" in res_empty
-
-    # Store a rule and query for it
-    fact = "Use anodized aluminum 6061-T6 for heat sinks in thermal design."
-    archivist_agent.execute(
-        action="record_rule", parameters={"fact": fact, "category": "thermal"}
-    )
-
-    res_found = archivist_agent.execute(
-        action="search_ledger", parameters={"query": "heat sinks aluminum"}
-    )
-    assert "anodized aluminum 6061-T6" in res_found
-
-
-def test_search_ledger_empty_query(archivist_agent: TheArchivist):
-    """Tests searching the ledger with an empty query."""
-    res = archivist_agent.execute(action="search_ledger", parameters={})
-    assert "No search query provided" in res
-
-
-# =============================================================================
-# 3. EXPUNGING RECORDS
-# =============================================================================
-
-
-def test_expunge_record_substring_match(archivist_agent: TheArchivist):
-    """Tests deleting ledger rules via substring matching and public delete helper."""
-    rule1 = "Obsolete Protocol v1.0 should never be used."
-    rule2 = "Legacy Driver v2.1 requires legacy kernel."
-
-    archivist_agent.execute(action="record_rule", parameters={"fact": rule1})
-    archivist_agent.execute(action="record_rule", parameters={"fact": rule2})
-
-    # Expunge via action
-    res_expunge = archivist_agent.execute(
-        action="expunge_record", parameters={"target_concept": "Obsolete Protocol"}
-    )
-    assert "Struck 1 record(s) matching 'Obsolete Protocol'" in res_expunge
-
-    # Expunge via public helper method
-    res_helper = archivist_agent.delete_ledger_rule("Legacy Driver")
-    assert "Struck 1 record(s) matching 'Legacy Driver'" in res_helper
-
-
-def test_expunge_record_empty_or_missing_target(archivist_agent: TheArchivist):
-    """Tests expunging without specifying a target or on an empty ledger."""
-    res_empty = archivist_agent.execute(
-        action="expunge_record", parameters={"target_concept": "nonexistent"}
-    )
-    assert "ledger is currently empty" in res_empty
-
-    archivist_agent.execute(
-        action="record_rule", parameters={"fact": "Some valid system rule"}
-    )
-    res_no_param = archivist_agent.execute(action="expunge_record", parameters={})
-    assert "Please specify the concept" in res_no_param
-
-
-# =============================================================================
-# 4. SUMMARIZE LEDGER
-# =============================================================================
-
-
-def test_summarize_ledger(archivist_agent: TheArchivist):
-    """Tests categorized ledger summarization."""
-    assert "currently empty" in archivist_agent.execute(
-        action="summarize_ledger", parameters={}
-    )
-
-    archivist_agent.execute(
-        action="store_record",
-        parameters={
-            "fact": "Always wear eye protection in active workspaces.",
-            "category": "safety_rules",
-        },
-    )
-    archivist_agent.execute(
-        action="store_record",
-        parameters={
-            "fact": "Keep emergency exit pathways clear of all obstructions.",
-            "category": "safety_rules",
-        },
-    )
-    archivist_agent.execute(
-        action="store_record",
-        parameters={
-            "fact": "Torque all M6 chassis bolts to 10 Nm.",
-            "category": "mechanical_specs",
-        },
-    )
-
-    summary = archivist_agent.execute(
-        action="summarize_ledger", parameters={}
-    )
-    assert "System Memory" in summary
-    assert "3 records" in summary
-    assert "Safety Rules" in summary
-    assert "Mechanical Specs" in summary
-
-
-# =============================================================================
-# 5. DATASHEET INDEXING & RAG SEARCH
-# =============================================================================
-
-
-@patch("charon.agents.archivist.datasheets.extract_text_from_pdf")
-def test_index_datasheet_and_search(
-    mock_extract_pdf, archivist_agent: TheArchivist, dummy_pdf_file: Path
-):
-    """Tests PDF datasheet chunk indexing and semantic search over datasheets."""
-    mock_extract_pdf.return_value = [
-        (1, "STM32F407 High-performance ARM Cortex-M4 MCU with DSP and FPU."),
-        (2, "Operating voltage: 1.8V to 3.6V. Operating temperature: -40 to 85°C."),
-    ]
-
-    # Index datasheet action
-    res_index = archivist_agent.execute(
-        action="index_datasheet",
-        parameters={
-            "file_path": str(dummy_pdf_file),
-            "mpn": "STM32F407VG",
-            "category": "Microcontrollers",
-        },
-    )
-    assert "Successfully indexed" in res_index
-    assert "STM32F407VG" in res_index
-
-    # Search datasheet action
-    res_search = archivist_agent.execute(
-        action="search_datasheets",
-        parameters={
-            "query": "What is the operating voltage range?",
-            "mpn": "STM32F407VG",
-        },
-    )
-    assert "Retrieved" in res_search
-    assert "1.8V to 3.6V" in res_search
-    assert "MPN: STM32F407VG" in res_search
-
-
-def test_index_datasheet_missing_parameters(archivist_agent: TheArchivist):
-    """Tests error handling when required indexing parameters are missing."""
-    res = archivist_agent.execute(
-        action="index_pdf", parameters={"file_path": "/tmp/test.pdf"}
-    )
-    assert "Both 'file_path' and 'mpn' parameters are required" in res
-
-
-def test_search_datasheets_empty_store(archivist_agent: TheArchivist):
-    """Tests searching an unpopulated datasheet vector store."""
-    res = archivist_agent.execute(
-        action="search_datasheets", parameters={"query": "voltage range"}
-    )
-    assert "datasheet vector store is currently empty" in res
-
-
-# =============================================================================
-# 6. LEDGER TO DATASHEET FALLBACK ROUTING
-# =============================================================================
-
-
-@patch("charon.agents.archivist.datasheets.extract_text_from_pdf")
-def test_search_ledger_fallback_to_datasheet(
-    mock_extract_pdf, archivist_agent: TheArchivist, dummy_pdf_file: Path
-):
-    """Tests fallback from ledger search to datasheet search when ledger has no results."""
-    mock_extract_pdf.return_value = [
-        (1, "TXS0108E 8-bit bidirectional voltage-level translator for open-drain applications.")
-    ]
-
-    # Index a datasheet into datasheet collection, keep system ledger empty
-    archivist_agent.index_pdf_datasheet(
-        pdf_path=dummy_pdf_file, mpn="TXS0108E", metadata={"category": "Logic"}
-    )
-
-    # Search system ledger (empty) -> should automatically bridge to datasheet store
-    res_fallback = archivist_agent.execute(
-        action="search_ledger",
-        parameters={"query": "voltage level translator"},
-    )
-    assert "Retrieved" in res_fallback
-    assert "TXS0108E" in res_fallback
-
-
-# =============================================================================
-# 7. ROUTING & UNKNOWN ACTIONS
-# =============================================================================
-
-
-def test_invalid_action_raises_exception(archivist_agent: TheArchivist):
-    """Tests that an unsupported action raises a ValidationError during payload validation."""
-    with pytest.raises((ValueError, ValidationError)):
-        archivist_agent.execute(
-            action="invalid_action", parameters={"query": "test"}
-        )
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/test_engineer.py`
-
-```python
-"""Unit tests for Charon's Engineer agent and code tools."""
-
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
-# Tools imports
-from charon.tools.code import audit_written_artifacts, run_script_in_subprocess
-
-# Agent and handler imports
-from charon.agents.engineer import (
-    TheEngineer,
-    handle_execute_sandbox_code,
-    handle_generate_script_only,
-    handle_run_existing_script,
-    handle_solve_edge_case,
-)
-from charon.intent import EngineerPayload
-
-
-# ============================================================================
-# 1. Tests for Stateless Tools (`charon/tools/code.py`)
-# ============================================================================
-
-class TestCodeTools:
-    """Tests for AST auditing and subshell execution tools."""
-
-    def test_audit_written_artifacts_no_writes(self, tmp_path):
-        code = "x = 1 + 1\nprint(x)"
-        ok, msg = audit_written_artifacts(code, cwd=str(tmp_path))
-        assert ok is True
-        assert "No disk write calls detected" in msg
-
-    def test_audit_written_artifacts_verified_writes(self, tmp_path):
-        target_file = tmp_path / "output.txt"
-        target_file.write_text("hello")
-
-        code = 'with open("output.txt", "w") as f:\n    f.write("hello")'
-        ok, msg = audit_written_artifacts(code, cwd=str(tmp_path))
-        assert ok is True
-        assert "1 file artifact(s) created" in msg
-
-    def test_audit_written_artifacts_missing_file_warning(self, tmp_path):
-        code = 'with open("non_existent.txt", "w") as f:\n    f.write("hello")'
-        ok, msg = audit_written_artifacts(code, cwd=str(tmp_path))
-        assert ok is False
-        assert "AST Disk Audit Warning" in msg
-        assert "non_existent.txt" in msg
-
-    def test_audit_written_artifacts_ast_syntax_error(self, tmp_path):
-        invalid_code = "def invalid_syntax(:"
-        ok, msg = audit_written_artifacts(invalid_code, cwd=str(tmp_path))
-        assert ok is False
-        assert "AST Parse Error" in msg
-
-    @pytest.mark.asyncio
-    async def test_run_script_in_subprocess_success(self, tmp_path):
-        code = 'print("Hello from subprocess")'
-        output, success = await run_script_in_subprocess(code, cwd=str(tmp_path))
-        assert success is True
-        assert "Hello from subprocess" in output
-
-    @pytest.mark.asyncio
-    async def test_run_script_in_subprocess_failure(self, tmp_path):
-        code = 'raise ValueError("Intentional execution error")'
-        output, success = await run_script_in_subprocess(code, cwd=str(tmp_path))
-        assert success is False
-        assert "ValueError: Intentional execution error" in output
-
-    @pytest.mark.asyncio
-    async def test_run_script_in_subprocess_timeout(self, tmp_path):
-        code = "import time\ntime.sleep(5)"
-        output, success = await run_script_in_subprocess(
-            code, cwd=str(tmp_path), timeout=0.1
-        )
-        assert success is False
-        assert "TimeoutError" in output
-
-
-# ============================================================================
-# 2. Tests for Domain Handlers (`charon/agents/engineer/`)
-# ============================================================================
-
-class TestEngineerHandlers:
-    """Tests for Engineer domain handler functions."""
-
-    @pytest.mark.asyncio
-    async def test_handle_generate_script_only(self):
-        mock_client = AsyncMock()
-        mock_client.generate.return_value = {
-            "response": "```python\nprint('Generated')\n```"
-        }
-
-        result = await handle_generate_script_only(
-            client=mock_client,
-            model_name="llama3.1",
-            raw_prompt="Write a print statement",
-        )
-
-        assert "print('Generated')" in result
-        mock_client.generate.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_handle_execute_sandbox_code_success(self, tmp_path):
-        payload = EngineerPayload(
-            action="execute_sandbox_code",
-            prompt="print('Sandbox test')",
-            target_dir=str(tmp_path),
-        )
-
-        result = await handle_execute_sandbox_code(
-            python_cmd="python",
-            payload=payload,
-            params={"code": "print('Sandbox test')"},
-        )
-
-        assert "[SUCCESS]" in result
-        assert "Sandbox test" in result
-
-    @pytest.mark.asyncio
-    async def test_handle_run_existing_script(self, tmp_path):
-        script_file = tmp_path / "test_script.py"
-        script_file.write_text("print('Existing script executed')")
-
-        payload = EngineerPayload(
-            action="run_existing_script",
-            script_path=str(script_file),
-            target_dir=str(tmp_path),
-        )
-
-        result = await handle_run_existing_script(
-            python_cmd="python",
-            payload=payload,
-        )
-
-        assert "(Success)" in result
-        assert "Existing script executed" in result
-
-    @pytest.mark.asyncio
-    async def test_handle_solve_edge_case_self_healing(self, tmp_path):
-        mock_client = AsyncMock()
-        # Pass 1 returns broken code, Pass 2 returns working code
-        mock_client.generate.side_effect = [
-            {"response": "```python\nraise RuntimeError('Bug on pass 1')\n```"},
-            {"response": "```python\nprint('Pass 2 success')\n```"},
-        ]
-
-        payload = EngineerPayload(
-            action="solve_edge_case",
-            problem="Fix edge case",
-            max_attempts=3,
-            target_dir=str(tmp_path),
-        )
-
-        result = await handle_solve_edge_case(
-            client=mock_client,
-            model_name="llama3.1",
-            python_cmd="python",
-            payload=payload,
-        )
-
-        assert "Edge Case Resolved (Attempt 2/3)" in result
-        assert "Pass 2 success" in result
-        assert mock_client.generate.call_count == 2
-
-
-# ============================================================================
-# 3. Tests for Primary Agent Interface (`TheEngineer`)
-# ============================================================================
-
-class TestTheEngineerAgent:
-    """Tests for main TheEngineer agent class entry point."""
-
-    @pytest.fixture
-    def engineer(self):
-        with patch("charon.agents.engineer.agent.ollama.AsyncClient"):
-            return TheEngineer(model_name="llama3.1")
-
-    @pytest.mark.asyncio
-    async def test_execute_routing_generate_script(self, engineer):
-        engineer.client.generate = AsyncMock(
-            return_value={"response": "```python\n# Draft\n```"}
-        )
-
-        res = await engineer.execute(
-            action="generate_script",
-            parameters={"prompt": "Draft a script"},
-        )
-        assert "# Draft" in res
-
-    @pytest.mark.asyncio
-    async def test_execute_routing_sandbox(self, engineer, tmp_path):
-        res = await engineer.execute(
-            action="execute_sandbox_code",
-            parameters={
-                "code": "print('Agent Sandbox')",
-                "target_dir": str(tmp_path),
-            },
-        )
-        assert "[SUCCESS]" in res
-        assert "Agent Sandbox" in res
-
-    @pytest.mark.asyncio
-    async def test_execute_routing_fallback_action(self, engineer, tmp_path):
-        engineer.client.generate = AsyncMock(
-            return_value={"response": "```python\nprint('Fallback')\n```"}
-        )
-
-        res = await engineer.execute(
-            action="unknown_action",
-            parameters={"problem": "Do something", "target_dir": str(tmp_path)},
-        )
-        assert "Edge Case Resolved" in res or "Failed to Resolve" in res
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/test_generalist.py`
-
-```python
-"""tests/agents/test_generalist.py — Comprehensive Unit Tests for The Generalist Agent."""
-
-from unittest.mock import AsyncMock, MagicMock, patch
-import pytest
-
-from charon.agents import get_agent_class
-from charon.agents.generalist import TheGeneralist
-
-
-@pytest.fixture
-def generalist_agent():
-    """Fixture providing a fresh instance of TheGeneralist with a mocked Ollama client."""
-    with patch("charon.agents.generalist.agent.ollama.AsyncClient"), \
-         patch("charon.agents.generalist.handlers.ollama.AsyncClient"):
-        agent = TheGeneralist(model_name="llama3.1")
-        agent.client = AsyncMock()
-        yield agent
-
-
-# -----------------------------------------------------------------------------
-# 1. Answer Query Tests
-# -----------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_answer_query_success(generalist_agent):
-    """Test standard conversational query processing."""
-    generalist_agent.client.generate = AsyncMock(
-        return_value={"response": "Good evening, sir. How may I be of service?"}
-    )
-
-    result = await generalist_agent.execute(
-        action="answer_query",
-        parameters={"prompt": "Hello Charon"},
-    )
-
-    assert "Good evening, sir." in result
-    generalist_agent.client.generate.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_answer_query_streaming(generalist_agent):
-    """Test query processing with token-by-token streaming callback."""
-    tokens = ["Hello", " ", "there.", ""]
-
-    async def mock_generator(*args, **kwargs):
-        for token in tokens:
-            yield {"response": token}
-
-    generalist_agent.client.generate = AsyncMock(side_effect=mock_generator)
-
-    streamed_output = []
-
-    def callback(token: str):
-        streamed_output.append(token)
-
-    result = await generalist_agent.execute(
-        action="answer_query",
-        parameters={"prompt": "Greet me"},
-        stream_callback=callback,
-    )
-
-    assert result == "Hello there."
-    assert streamed_output == tokens
-
-
-@pytest.mark.asyncio
-async def test_answer_query_missing_prompt(generalist_agent):
-    """Test guard clause when no prompt or query parameters are provided."""
-    result = await generalist_agent.execute(
-        action="answer_query",
-        parameters={},
-    )
-
-    assert "Error: A 'prompt' or 'query' parameter is required." in result
-
-
-# -----------------------------------------------------------------------------
-# 2. RAG Synthesis Tests
-# -----------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_synthesize_rag_success(generalist_agent):
-    """Test RAG context synthesis handler combining context and query via answer_query."""
-    generalist_agent.client.generate = AsyncMock(
-        return_value={
-            "response": "### ESP32 Pinout Specifications\n- Pin 1: VCC (3.3V)"
-        }
-    )
-
-    result = await generalist_agent.execute(
-        action="answer_query",
-        parameters={
-            "prompt": "What is pin 1?",
-            "context": "ESP32 Board Pin 1 is connected to 3.3V VCC supply.",
-        },
-    )
-
-    assert "ESP32 Pinout Specifications" in result
-    generalist_agent.client.generate.assert_called_once()
-
-
-# -----------------------------------------------------------------------------
-# 3. Mathematical Evaluation Tests
-# -----------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_calculate_math_deterministic(generalist_agent):
-    """Test pure arithmetic AST evaluation bypassing LLM inference."""
-    result = await generalist_agent.execute(
-        action="calculate_math",
-        parameters={"expression": "(12 + 8) * 3 / 2"},
-    )
-
-    assert "Calculation Result: 30.0" in result
-    generalist_agent.client.generate.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_calculate_math_llm_fallback(generalist_agent):
-    """Test mathematical reasoning fallback to LLM when AST parsing returns None."""
-    generalist_agent.client.generate = AsyncMock(
-        return_value={"response": "42"}
-    )
-
-    result = await generalist_agent.execute(
-        action="calculate_math",
-        parameters={"expression": "What is the sum of angles in a triangle?"},
-    )
-
-    assert "Calculation Result: 42" in result
-    generalist_agent.client.generate.assert_called_once()
-
-
-# -----------------------------------------------------------------------------
-# 4. System Diagnostic & Shell Execution Tests
-# -----------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_system_info(generalist_agent):
-    """Test gathering OS and system diagnostic metrics via system_task."""
-    result = await generalist_agent.execute(
-        action="system_task",
-        parameters={"task": "system_info"},
-    )
-
-    assert isinstance(result, str)
-    assert len(result) > 0
-
-
-@pytest.mark.asyncio
-async def test_execute_system_command_raw_cli(generalist_agent):
-    """Test executing a raw CLI shell command asynchronously."""
-    mock_process = AsyncMock()
-    mock_process.stdout.readline = AsyncMock(
-        side_effect=[b"file1.py\n", b"file2.py\n", b""]
-    )
-    mock_process.wait = AsyncMock(return_value=None)
-    mock_process.returncode = 0
-
-    with patch("asyncio.create_subprocess_shell", return_value=mock_process):
-        result = await generalist_agent.execute(
-            action="execute_system_command",
-            parameters={"command": "ls -la"},
-        )
-
-    assert "Command Execution Status: Success" in result
-    assert "file1.py" in result
-
-
-@pytest.mark.asyncio
-async def test_execute_system_command_natural_language(generalist_agent):
-    """Test synthesizing a CLI command from natural language prior to execution."""
-    generalist_agent.client.generate = AsyncMock(
-        return_value={"response": "pactl set-sink-volume @DEFAULT_SINK@ +10%"}
-    )
-
-    mock_process = AsyncMock()
-    mock_process.stdout.readline = AsyncMock(
-        side_effect=[b"Volume adjusted\n", b""]
-    )
-    mock_process.wait = AsyncMock(return_value=None)
-    mock_process.returncode = 0
-
-    with patch("asyncio.create_subprocess_shell", return_value=mock_process) as mock_shell:
-        result = await generalist_agent.execute(
-            action="execute_system_command",
-            parameters={"command": "turn up the volume"},
-        )
-
-    generalist_agent.client.generate.assert_called_once()
-    mock_shell.assert_called_once_with(
-        "pactl set-sink-volume @DEFAULT_SINK@ +10%",
-        stdout=-1,
-        stderr=-2,
-    )
-    assert "Command Execution Status: Success" in result
-
-
-@pytest.mark.asyncio
-async def test_deterministic_guard_redirect(generalist_agent):
-    """Test deterministic guard redirecting answer_query to system execution on OS keywords."""
-    generalist_agent.client.generate = AsyncMock(
-        return_value={"response": "amixer set Master mute"}
-    )
-
-    mock_process = AsyncMock()
-    mock_process.stdout.readline = AsyncMock(
-        side_effect=[b"Muted\n", b""]
-    )
-    mock_process.wait = AsyncMock(return_value=None)
-    mock_process.returncode = 0
-
-    with patch("asyncio.create_subprocess_shell", return_value=mock_process):
-        result = await generalist_agent.execute(
-            action="answer_query",
-            parameters={"prompt": "please mute the sound"},
-        )
-
-    assert "Command Execution Status: Success" in result
-
-
-# -----------------------------------------------------------------------------
-# 5. Routing & Integration Gateway Tests
-# -----------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_acknowledge_action(generalist_agent):
-    """Test acknowledge action returning static Concierge response."""
-    result = await generalist_agent.execute(
-        action="acknowledge",
-        parameters={},
-    )
-
-    assert "Your directive has been noted." in result
-
-
-@pytest.mark.asyncio
-async def test_unknown_action_fallback(generalist_agent):
-    """Test unknown action gracefully falling back to standard query processing."""
-    generalist_agent.client.generate = AsyncMock(
-        return_value={"response": "Fallback query response."}
-    )
-
-    result = await generalist_agent.execute(
-        action="unregistered_action",
-        parameters={"prompt": "Who is the concierge?"},
-    )
-
-    assert "Fallback query response." in result
-
-
-def test_lazy_loading_gateway():
-    """Test dynamic agent resolving via get_agent_class gateway."""
-    agent_cls = get_agent_class("generalist")
-    assert agent_cls is TheGeneralist
-
-    agent_cls_alias = get_agent_class("TheGeneralist")
-    assert agent_cls_alias is TheGeneralist
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/test_machinist.py`
-
-```python
-"""tests/agents/test_machinist.py — Unit tests for The Machinist agent and CAD/CAM tools."""
-
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-from charon.agents.machinist import TheMachinist
-from charon.agents.machinist.cad import inspect_cad_files
-from charon.agents.machinist.utils import resolve_file_path
-from charon.tools.cad import run_cad_export, run_slicer, transmit_gcode_http
-
-
-# ============================================================================
-# Fixtures
-# ============================================================================
-
-@pytest.fixture
-def agent():
-    """Provides a default TheMachinist instance with deterministic defaults."""
-    return TheMachinist(
-        slicer_cmd="prusa-slicer",
-        printer_url="http://192.168.1.50:5000",
-    )
-
-
-# ============================================================================
-# 1. Agent Initialization & Routing Tests
-# ============================================================================
-
-def test_machinist_initialization(agent):
-    """Verifies that agent attributes initialize correctly."""
-    assert agent.slicer_cmd == "prusa-slicer"
-    assert agent.printer_url == "http://192.168.1.50:5000"
-
-
-def test_invalid_action_raises_value_error(agent):
-    """Ensures an unrecognized action raises a validation or value error."""
-    with pytest.raises(ValueError):
-        agent.execute(action="invalid_action", parameters={})
-
-
-# ============================================================================
-# 2. CAD Export Domain Tests
-# ============================================================================
-
-def test_export_cad_to_stl_success(agent, tmp_path):
-    """Tests CAD export execution when source CAD file exists."""
-    cad_file = tmp_path / "model.scad"
-    cad_file.write_text("// test scad code")
-
-    params = {
-        "source_file": str(cad_file),
-        "dry_run": True,
-    }
-
-    with patch("charon.agents.machinist.cad.run_cad_export") as mock_export:
-        mock_export.return_value = "Geometric export simulated successfully: model.stl."
-        result = agent.execute("export_cad_to_stl", params)
-
-        assert "Geometric export simulated successfully" in result
-        mock_export.assert_called_once()
-
-
-def test_export_cad_missing_file_returns_error(agent):
-    """Verifies handling when the specified CAD file does not exist."""
-    params = {"source_file": "/nonexistent/path/model.scad"}
-    result = agent.execute("export_cad_to_stl", params)
-
-    assert "Error: The source file" in result
-    assert "cannot be located" in result
-
-
-# ============================================================================
-# 3. CAM Slicing Domain Tests
-# ============================================================================
-
-def test_generate_gcode_action_alias(agent, tmp_path):
-    """Tests G-Code generation using action alias 'slice'."""
-    stl_file = tmp_path / "part.stl"
-    stl_file.write_text("solid part")
-
-    params = {
-        "stl_file": str(stl_file),
-        "dry_run": True,
-        "layer_height": 0.2,
-        "infill": 20,
-    }
-
-    with patch("charon.agents.machinist.slicing.run_slicer") as mock_slicer:
-        mock_slicer.return_value = "Toolpaths generated successfully. Output saved to part.gcode."
-        result = agent.execute("slice", params)
-
-        assert "Toolpaths generated successfully" in result
-        mock_slicer.assert_called_once()
-
-
-def test_generate_gcode_missing_stl(agent):
-    """Ensures error message is returned when no STL parameters are provided."""
-    result = agent.execute("generate_gcode", {})
-    assert "Error: An 'stl_file' or 3D geometry file parameter is required" in result
-
-
-# ============================================================================
-# 4. Printer Transmission Domain Tests
-# ============================================================================
-
-def test_transmit_to_printer_action(agent, tmp_path):
-    """Tests transmitting G-Code to printer endpoint."""
-    gcode_file = tmp_path / "job.gcode"
-    gcode_file.write_text("G28\nG1 Z10")
-
-    params = {
-        "gcode_file": str(gcode_file),
-        "dry_run": True,
-    }
-
-    with patch("charon.agents.machinist.printer.transmit_gcode_http") as mock_transmit:
-        mock_transmit.return_value = "Transmission simulated (Dry Run)."
-        result = agent.execute("transmit", params)
-
-        assert "Transmission simulated" in result
-        mock_transmit.assert_called_once()
-
-
-# ============================================================================
-# 5. Workspace Inspection Tests
-# ============================================================================
-
-def test_inspect_cad_files(tmp_path):
-    """Tests workspace directory scanning for CAD/CAM artifacts."""
-    (tmp_path / "bracket.stl").touch()
-    (tmp_path / "enclosure.step").touch()
-    (tmp_path / "readme.txt").touch()
-
-    with patch("charon.agents.machinist.cad.PROJECTS_DIR", tmp_path), \
-         patch("charon.agents.machinist.cad.resolve_project_path", return_value=tmp_path):
-
-        result = inspect_cad_files(raw_prompt="demo_project")
-
-        assert "bracket.stl" in str(result)
-        assert "enclosure.step" in str(result)
-        assert "readme.txt" not in str(result)
-
-
-# ============================================================================
-# 6. Path Resolution Utilities Tests
-# ============================================================================
-
-def test_resolve_file_path_explicit_file(tmp_path):
-    """Tests resolving explicit existing files."""
-    test_file = tmp_path / "gear.stl"
-    test_file.touch()
-
-    params = {"source_file": str(test_file)}
-    resolved = resolve_file_path(params, keys=["source_file"])
-
-    assert resolved == test_file.resolve()
-
-
-def test_resolve_file_path_fallback_search(tmp_path):
-    """Tests searching project subdirectories when explicit file is missing."""
-    cad_dir = tmp_path / "cad"
-    cad_dir.mkdir()
-    target_stl = cad_dir / "assembly.stl"
-    target_stl.touch()
-
-    params = {"project_name": "robotics"}
-
-    with patch("charon.config.paths.resolve_project_path", return_value=tmp_path), \
-         patch("charon.agents.machinist.utils.resolve_project_path", return_value=tmp_path, create=True):
-        resolved = resolve_file_path(params, keys=["source_file"], expected_extensions=[".stl"])
-        assert resolved == target_stl.resolve()
-
-
-# ============================================================================
-# 7. Low-Level Tools Integration Unit Tests
-# ============================================================================
-
-def test_tool_run_cad_export_dry_run(tmp_path):
-    """Tests low-level CAD export tool under dry-run mode."""
-    source = tmp_path / "box.scad"
-    out = tmp_path / "box.stl"
-
-    res = run_cad_export(source, out, dry_run=True)
-    assert "Geometric export simulated successfully" in res
-    assert out.exists()
-
-
-def test_tool_run_slicer_dry_run(tmp_path):
-    """Tests low-level slicer tool under dry-run mode."""
-    stl = tmp_path / "box.stl"
-    gcode = tmp_path / "box.gcode"
-
-    res = run_slicer("prusa-slicer", stl, gcode, layer_height=0.15, dry_run=True)
-    assert "Toolpaths generated successfully" in res
-    assert gcode.exists()
-
-
-def test_tool_transmit_gcode_http_dry_run(tmp_path):
-    """Tests low-level HTTP G-Code transmitter under dry-run mode."""
-    gcode = tmp_path / "box.gcode"
-    gcode.touch()
-
-    res = transmit_gcode_http("http://127.0.0.1:5000", gcode, dry_run=True)
-    assert "Transmission simulated (Dry Run)" in res
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/test_overseer.py`
-
-```python
-"""test_overseer.py — Unit tests for TheOverseer agent and modular sub-systems."""
-
-import os
-import sqlite3
-import time
-from pathlib import Path
-from typing import Dict, Any
-
-import pytest
-
-from charon.agents import TheOverseer, get_agent_class
-from charon.agents.overseer.constants import (
-from charon.db.connection import get_connection
-    ACTION_MAP,
-    VALID_OVERSEER_ACTIONS,
-)
-
-
-# ============================================================================
-# Fixtures
-# ============================================================================
-
-
-@pytest.fixture
-def overseer_instance(tmp_path: Path) -> TheOverseer:
-    """Provides a fresh instance of TheOverseer initialized with a temp DB path."""
-    db_file = tmp_path / "test_overseer_default.sqlite3"
-    return TheOverseer(db_path=db_file)
-
-
-@pytest.fixture
-def sample_sqlite_db(tmp_path: Path) -> Path:
-    """Creates a temporary valid SQLite database populated with test data."""
-    db_path = tmp_path / "sample_test.sqlite"
-    conn = get_connection(str(db_path))
-    cursor = conn.cursor()
-    cursor.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);")
-    cursor.executemany(
-        "INSERT INTO items (name) VALUES (?);",
-        [(f"Item_{i}",) for i in range(100)],
-    )
-    conn.commit()
-    conn.close()
-    return db_path
-
-
-# ============================================================================
-# Lazy Loading & Constants Tests
-# ============================================================================
-
-
-def test_lazy_loading_import():
-    """Verifies Overseer resolution through agent registry and lazy loader."""
-    cls_by_name = get_agent_class("TheOverseer")
-    cls_by_alias = get_agent_class("overseer")
-    cls_by_prefix = get_agent_class("the_overseer")
-
-    assert cls_by_name is TheOverseer
-    assert cls_by_alias is TheOverseer
-    assert cls_by_prefix is TheOverseer
-
-
-def test_action_mappings():
-    """Ensures action aliases correctly resolve to primary action names."""
-    assert ACTION_MAP["vacuum"] == "optimize_databases"
-    assert ACTION_MAP["health"] == "get_system_health"
-    assert ACTION_MAP["clean_all"] == "run_full_maintenance"
-    assert ACTION_MAP["prune_logs"] == "prune_logs_and_cache"
-    assert ACTION_MAP["prune_assets"] == "prune_orphaned_assets"
-
-    for valid_action in VALID_OVERSEER_ACTIONS:
-        assert valid_action in VALID_OVERSEER_ACTIONS
-
-
-# ============================================================================
-# Database Optimization Tests
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_optimize_sqlite_db_success(
-    overseer_instance: TheOverseer, sample_sqlite_db: Path
-):
-    """Tests SQLite integrity check, PRAGMA, and VACUUM execution on a valid database."""
-    res = await overseer_instance.optimize_sqlite_db(
-        target_db=sample_sqlite_db
-    )
-
-    assert res["status"] == "completed"
-    assert "optimized_databases" in res
-    assert len(res["optimized_databases"]) == 1
-
-    db_res = res["optimized_databases"][0]
-    assert db_res["status"] == "success"
-    assert db_res["integrity"] == "ok"
-    assert db_res["fk_violations_count"] == 0
-    assert db_res["size_before_bytes"] >= db_res["size_after_bytes"]
-
-
-@pytest.mark.asyncio
-async def test_optimize_sqlite_db_nonexistent(
-    overseer_instance: TheOverseer, tmp_path: Path
-):
-    """Tests SQLite optimization gracefully handles missing database targets."""
-    missing_path = tmp_path / "nonexistent.db"
-    res = await overseer_instance.optimize_sqlite_db(target_db=missing_path)
-
-    assert res["status"] == "completed"
-    db_res = res["optimized_databases"][0]
-    assert db_res["status"] == "skipped"
-    assert "not found" in db_res["reason"].lower()
-
-
-# ============================================================================
-# Vector Store Audit Tests
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_audit_vector_store(
-    overseer_instance: TheOverseer, tmp_path: Path, monkeypatch
-):
-    """Tests vector store structure and SQLite quick-check inspection."""
-    chroma_dir = tmp_path / "chroma_test"
-    chroma_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create dummy Chroma SQLite database
-    chroma_sqlite = chroma_dir / "chroma.sqlite3"
-    conn = get_connection(str(chroma_sqlite))
-    conn.execute(
-        "CREATE TABLE collections (id TEXT PRIMARY KEY, name TEXT);"
-    )
-    conn.execute(
-        "INSERT INTO collections VALUES ('col_1', 'datasheets');"
-    )
-    conn.commit()
-    conn.close()
-
-    monkeypatch.setattr(
-        "charon.agents.overseer.vector_store.CHROMA_DB_DIR", chroma_dir
-    )
-
-    res = await overseer_instance.audit_vector_store()
-
-    assert res["exists"] is True
-    assert res["sqlite_size_bytes"] > 0
-    assert res["integrity_check"] == "ok"
-    assert res["active_collections_count"] == 1
-
-
-# ============================================================================
-# Log and Cache Pruning Tests
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_prune_logs_and_cache(
-    overseer_instance: TheOverseer, tmp_path: Path, monkeypatch
-):
-    """Tests that files older than the retention threshold are pruned while newer files remain."""
-    logs_dir = tmp_path / "logs"
-    cache_dir = tmp_path / "data" / "cache"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create an old file (> 10 days old)
-    old_log = logs_dir / "old_app.log"
-    old_log.write_text("old log contents")
-    ten_days_ago = time.time() - (10 * 86400)
-    os.utime(old_log, (ten_days_ago, ten_days_ago))
-
-    # Create a fresh file (< 1 day old)
-    fresh_log = logs_dir / "fresh_app.log"
-    fresh_log.write_text("fresh log contents")
-
-    monkeypatch.setattr("charon.agents.overseer.pruning.LOGS_DIR", logs_dir)
-    monkeypatch.setattr(
-        "charon.agents.overseer.pruning.DATA_DIR", tmp_path / "data"
-    )
-
-    res = await overseer_instance.prune_logs_and_cache(prune_days=7)
-
-    assert res["status"] == "completed"
-    assert res["pruned_files_count"] == 1
-    assert not old_log.exists()
-    assert fresh_log.exists()
-
-
-# ============================================================================
-# Orphaned Asset Sweep Tests
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_prune_orphaned_assets(
-    overseer_instance: TheOverseer, tmp_path: Path
-):
-    """Tests sweeping broken symlinks and orphaned files from target directories."""
-    datasheets_dir = tmp_path / "datasheets"
-    datasheets_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create orphan file
-    orphan_pdf = datasheets_dir / "untracked_spec.pdf"
-    orphan_pdf.write_text("dummy PDF content")
-
-    # Create broken symlink (non-windows platform support)
-    broken_link = datasheets_dir / "broken_link.pdf"
-    try:
-        os.symlink(tmp_path / "does_not_exist.pdf", broken_link)
-        has_symlink = True
-    except (OSError, NotImplementedError):
-        has_symlink = False
-
-    res = await overseer_instance.prune_orphaned_assets(
-        datasheets_dir=datasheets_dir
-    )
-
-    assert res["status"] == "completed"
-    assert not orphan_pdf.exists()
-    if has_symlink:
-        assert res["broken_symlinks_removed"] >= 1
-
-
-# ============================================================================
-# System Telemetry & Health Tests
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_get_system_health(overseer_instance: TheOverseer):
-    """Tests host telemetry aggregation and dictionary output keys."""
-    health = await overseer_instance.get_system_health()
-
-    assert "timestamp" in health
-    assert "telemetry" in health
-    assert "database_sizes" in health
-
-
-# ============================================================================
-# Agent Action Dispatcher (`execute`) Tests
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_execute_action_routing(
-    overseer_instance: TheOverseer, sample_sqlite_db: Path
-):
-    """Tests routing actions and aliases through the Overseer execute dispatcher."""
-    # Action Alias Test: 'vacuum' -> 'optimize_databases'
-    res_vacuum = await overseer_instance.execute(
-        action="vacuum", parameters={"target_db": str(sample_sqlite_db)}
-    )
-    assert res_vacuum["status"] == "completed"
-    assert len(res_vacuum["optimized_databases"]) == 1
-
-    # Health Check Test
-    res_health = await overseer_instance.execute(action="health")
-    assert "telemetry" in res_health
-
-    # Full Maintenance Sweep
-    res_maint = await overseer_instance.execute(action="run_full_maintenance")
-    assert res_maint["action"] == "run_full_maintenance"
-    assert res_maint["status"] == "completed"
-    assert "database_optimization" in res_maint
-    assert "vector_store_audit" in res_maint
-    assert "log_cache_prune" in res_maint
-    assert "orphaned_asset_prune" in res_maint
-    assert "system_health" in res_maint
-
-
-@pytest.mark.asyncio
-async def test_execute_invalid_action(overseer_instance: TheOverseer):
-    """Tests fallback behavior or raising ValueError for unsupported actions."""
-    # Unknown actions default to health check via model fallback
-    res = await overseer_instance.execute(action="unknown_invalid_action")
-    assert "telemetry" in res or "timestamp" in res
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/test_planner.py`
-
-```python
-"""Unit tests for ThePlanner agent and its submodules."""
-
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
-import pytest
-
-from charon.agents.planner import ACTION_MAP, VALID_PLANNER_ACTIONS, ThePlanner
-
-
-@pytest.fixture
-def planner():
-    """Fixture providing an instance of ThePlanner with a mocked Ollama client."""
-    with patch("charon.agents.planner.agent.ollama.AsyncClient") as mock_client_cls:
-        mock_client = AsyncMock()
-        mock_client_cls.return_value = mock_client
-        agent = ThePlanner(model_name="llama3.1")
-        agent.client = mock_client
-        yield agent
-
-
-# ============================================================================
-# 1. INITIALIZATION & METADATA TESTS
-# ============================================================================
-
-
-def test_planner_initialization(planner):
-    """Verify default initialization parameters and valid planner actions."""
-    assert planner.model_name == "llama3.1"
-    assert planner.python_cmd is not None
-    assert isinstance(VALID_PLANNER_ACTIONS, tuple)
-    assert "decompose_task" in VALID_PLANNER_ACTIONS
-    assert "draft_build_sequence" in VALID_PLANNER_ACTIONS
-    assert "analyze_error_logs" in VALID_PLANNER_ACTIONS
-    assert "execute_sandbox_code" in VALID_PLANNER_ACTIONS
-
-
-def test_action_map_aliases():
-    """Verify alias mapping correctly normalizes action names."""
-    assert ACTION_MAP["decompose"] == "decompose_task"
-    assert ACTION_MAP["plan"] == "draft_build_sequence"
-    assert ACTION_MAP["diagnose"] == "analyze_error_logs"
-    assert ACTION_MAP["sandbox"] == "execute_sandbox_code"
-
-
-# ============================================================================
-# 2. TASK DECOMPOSITION TESTS (dag.py)
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_decompose_task_success(planner):
-    """Test successful task decomposition into a JSON DAG execution sequence."""
-    mock_dag = [
-        {
-            "step": 1,
-            "agent": "The_Archivist",
-            "action": "search_ledger",
-            "parameters": {"query": "CAD standards"},
-        },
-        {
-            "step": 2,
-            "agent": "The_Cleaner",
-            "action": "initialize_project_workspace",
-            "parameters": {"project_name": "rover"},
-        },
-    ]
-    planner.client.generate.return_value = {"response": json.dumps(mock_dag)}
-
-    result = await planner.execute(
-        action="decompose_task",
-        params={"objective": "Set up rover project based on CAD standards"},
-    )
-
-    assert isinstance(result, list)
-    assert len(result) == 2
-    assert result[0]["agent"] == "The_Archivist"
-    assert result[1]["agent"] == "The_Cleaner"
-    planner.client.generate.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_decompose_task_markdown_codeblock_parsing(planner):
-    """Test handling of raw LLM outputs enclosed in markdown JSON blocks."""
-    raw_response = (
-        "```json\n"
-        '[\n  {"step": 1, "agent": "The_Scout", "action": "web_search", "parameters": {"query": "test"}}\n]\n'
-        "```"
-    )
-    planner.client.generate.return_value = {"response": raw_response}
-
-    result = await planner.execute(
-        action="decompose",  # Using alias
-        params={"objective": "Search test"},
-    )
-
-    assert isinstance(result, list)
-    assert len(result) == 1
-    assert result[0]["agent"] == "The_Scout"
-
-
-@pytest.mark.asyncio
-async def test_decompose_task_empty_objective(planner):
-    """Test handling when no objective or prompt is provided."""
-    result = await planner.execute(action="decompose_task", params={})
-    assert result == []
-    planner.client.generate.assert_not_called()
-
-
-# ============================================================================
-# 3. ENGINEERING SEQUENCE DRAFTING TESTS (sequencing.py)
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_draft_build_sequence_success(planner):
-    """Test drafting an engineering build sequence without streaming."""
-    expected_plan = (
-        "## 1. OBJECTIVE SUMMARY\n"
-        "Build a CAD bracket.\n\n"
-        "## 2. ARCHITECTURE & COMPONENT BREAKDOWN\n"
-        "- cad/bracket.py\n"
-    )
-    planner.client.generate.return_value = {"response": expected_plan}
-
-    result = await planner.execute(
-        action="plan",  # Using alias
-        params={"objective": "Design a bracket"},
-    )
-
-    assert "OBJECTIVE SUMMARY" in result
-    assert "cad/bracket.py" in result
-
-
-@pytest.mark.asyncio
-async def test_draft_build_sequence_streaming(planner):
-    """Test streaming callback execution during sequence drafting."""
-    chunks = ["Building ", "blueprint... ", "Done."]
-
-    async def mock_stream_generator(*args, **kwargs):
-        for chunk in chunks:
-            yield {"response": chunk}
-
-    planner.client.generate.side_effect = mock_stream_generator
-
-    received_tokens = []
-
-    def callback(token: str):
-        received_tokens.append(token)
-
-    result = await planner.execute(
-        action="draft_build_sequence",
-        params={"objective": "Stream plan"},
-        stream_callback=callback,
-    )
-
-    assert result == "Building blueprint... Done."
-    assert received_tokens == ["Building ", "blueprint... ", "Done."]
-
-
-# ============================================================================
-# 4. DIAGNOSTICS & ERROR LOG ANALYSIS TESTS (diagnostics.py)
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_analyze_error_logs_success(planner):
-    """Test log analysis with mock compiler/runtime error logs."""
-    planner.client.generate.return_value = {
-        "response": "Root cause: SyntaxError on line 12. Solution: Add missing colon."
-    }
-
-    result = await planner.execute(
-        action="diagnose",  # Using alias
-        params={"log_content": "SyntaxError: invalid syntax at line 12"},
-    )
-
-    assert "Log Analysis:" in result
-    assert "Root cause: SyntaxError" in result
-
-
-@pytest.mark.asyncio
-async def test_analyze_error_logs_missing_content(planner):
-    """Test response when error log content is missing."""
-    result = await planner.execute(action="analyze_error_logs", params={})
-    assert "Error: 'log_content' is required" in result
-
-
-# ============================================================================
-# 5. SANDBOX CODE EXECUTION TESTS (sandbox.py)
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_execute_sandbox_code_success(planner, tmp_path):
-    """Test generating and executing python code in subshell sandbox."""
-    generated_python_code = (
-        "```python\n"
-        "import sys\n"
-        "print('Sandbox execution verified.')\n"
-        "```"
-    )
-    planner.client.generate.return_value = {"response": generated_python_code}
-
-    with patch(
-        "charon.agents.planner.sandbox.extract_target_directory",
-        return_value=str(tmp_path),
-    ):
-        result = await planner.execute(
-            action="execute_sandbox_code",
-            params={
-                "prompt": f"Write script in project workspace {str(tmp_path)}"
-            },
-        )
-
-    assert "Sandbox execution verified." in result
-    assert "Sandbox Execution Complete." in result
-
-
-@pytest.mark.asyncio
-async def test_execute_sandbox_code_empty_prompt(planner):
-    """Test dynamic execution request with missing prompt."""
-    result = await planner.execute(action="execute_sandbox_code", params={})
-    assert (
-        "Error: A 'prompt' or 'intent' parameter is required to execute sandbox code."
-        in result
-    )
-
-
-# ============================================================================
-# 6. UNKNOWN ACTION & ERROR HANDLING TESTS
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_unknown_action_raises_value_error(planner):
-    """Verify that an unsupported action raises a ValueError."""
-    with pytest.raises(ValueError, match="Unknown Planner action"):
-        # Bypass fallback payload validation by providing explicit unknown action
-        with patch(
-            "charon.agents.planner.agent.PlannerPayload.model_validate"
-        ) as mock_validate:
-            mock_payload = MagicMock()
-            mock_payload.action = "invalid_action_xyz"
-            mock_validate.return_value = mock_payload
-
-            await planner.execute(action="invalid_action_xyz")
-
-```
-
-────────────────────────────────────────────────────────────────────────────────
-
-## Target File: `tests/pytest/agents/test_steward.py`
-
-```python
-"""tests/agents/test_steward.py — Pytest suite for The Steward (Home Automation & IoT Agent)."""
-
-import os
-from unittest.mock import MagicMock, patch
-import pytest
-
-from charon.agents.steward import TheSteward, StewardAgent, execute_steward_task
-from charon.intent.payloads.hardware import StewardPayload
-
-
-@pytest.fixture
-def mock_env_vars(monkeypatch):
-    """Sets mock environment variables for Home Assistant and MQTT testing."""
-    monkeypatch.setenv("HOMEASSISTANT_URL", "http://ha.test:8123")
-    monkeypatch.setenv("HOMEASSISTANT_TOKEN", "mock_jwt_token_123")
-    monkeypatch.setenv("MQTT_BROKER_HOST", "mqtt.test.local")
-    monkeypatch.setenv("MQTT_BROKER_PORT", "1883")
-    monkeypatch.setenv("MQTT_USER", "test_user")
-    monkeypatch.setenv("MQTT_PASSWORD", "test_pass")
-
-
-@pytest.fixture
-def steward(mock_env_vars):
-    """Provides a fresh instance of TheSteward initialized with test environment variables."""
-    return TheSteward()
-
-
-class TestStewardInitialization:
-    """Tests proper initialization and configuration parsing of TheSteward."""
-
-    def test_init_defaults(self, mock_env_vars):
-        agent = TheSteward()
-        assert agent.ha_url == "http://ha.test:8123"
-        assert agent.ha_token == "mock_jwt_token_123"
-        assert agent.mqtt_host == "mqtt.test.local"
-        assert agent.mqtt_port == 1883
-        assert agent.mqtt_user == "test_user"
-        assert agent.mqtt_pass == "test_pass"
-
-    def test_backward_compatibility_alias(self):
-        assert StewardAgent is TheSteward
-
-
-class TestControlAppliance:
-    """Tests the Home Assistant entity control action."""
-
-    def test_invalid_target_device_format(self, steward):
-        res = steward.control_appliance(
-            target_device="invalid_entity_id", command="turn_on"
-        )
-        assert res["status"] == "error"
-        assert "Invalid target_device format" in res["message"]
-
-    @patch("charon.agents.steward.home_assistant.make_ha_request")
-    def test_control_appliance_success(self, mock_make_request, steward):
-        mock_make_request.return_value = {"status": "success", "code": 200, "data": []}
-
-        res = steward.control_appliance(
-            target_device="switch.workbench_power",
-            command="turn_on",
-            payload={"brightness": 100},
-        )
-
-        mock_make_request.assert_called_once_with(
-            "http://ha.test:8123",
-            "mock_jwt_token_123",
-            "/api/services/switch/turn_on",
-            method="POST",
-            payload={"entity_id": "switch.workbench_power", "brightness": 100},
-        )
-        assert res["action"] == "control_appliance"
-        assert res["target_device"] == "switch.workbench_power"
-        assert res["command"] == "turn_on"
-        assert res["response"]["status"] == "success"
-
-
-class TestPublishMQTT:
-    """Tests direct MQTT message publication."""
-
-    @patch("charon.agents.steward.mqtt.publish_mqtt_message")
-    def test_publish_mqtt_success(self, mock_publish, steward):
-        mock_publish.return_value = {
-            "action": "publish_mqtt",
-            "topic": "lab/sensors/temp",
-            "payload": {"deg_c": 22.5},
-            "status": "success",
-        }
-
-        res = steward.publish_mqtt(
-            topic="lab/sensors/temp", payload={"deg_c": 22.5}
-        )
-
-        mock_publish.assert_called_once_with(
-            topic="lab/sensors/temp",
-            payload={"deg_c": 22.5},
-            host="mqtt.test.local",
-            port=1883,
-            user="test_user",
-            password="test_pass",
-        )
-        assert res["status"] == "success"
-        assert res["topic"] == "lab/sensors/temp"
-
-
-class TestReadSensorNetAndDiscover:
-    """Tests Home Assistant state inspection and device discovery."""
-
-    @patch("charon.agents.steward.home_assistant.make_ha_request")
-    def test_read_specific_sensor(self, mock_make_request, steward):
-        mock_make_request.return_value = {
-            "status": "success",
-            "code": 200,
-            "data": {"entity_id": "sensor.temp", "state": "21.4"},
-        }
-
-        res = steward.read_sensor_net(target_device="sensor.temp")
-
-        mock_make_request.assert_called_once_with(
-            "http://ha.test:8123",
-            "mock_jwt_token_123",
-            "/api/states/sensor.temp",
-            method="GET",
-        )
-        assert res["action"] == "read_sensor_net"
-        assert res["target_device"] == "sensor.temp"
-
-    @patch("charon.agents.steward.home_assistant.make_ha_request")
-    def test_discover_devices(self, mock_make_request, steward):
-        mock_make_request.return_value = {
-            "status": "success",
-            "code": 200,
-            "data": [
-                {
-                    "entity_id": "light.desk_lamp",
-                    "state": "on",
-                    "attributes": {"friendly_name": "Desk Lamp"},
-                },
-                {
-                    "entity_id": "sensor.humidity",
-                    "state": "45%",
-                    "attributes": {"friendly_name": "Lab Humidity"},
-                },
-            ],
-        }
-
-        res = steward.discover_devices()
-
-        mock_make_request.assert_called_once_with(
-            "http://ha.test:8123",
-            "mock_jwt_token_123",
-            "/api/states",
-            method="GET",
-        )
-        assert res["action"] == "discover_devices"
-        assert res["count"] == 2
-        assert res["devices"][0]["entity_id"] == "light.desk_lamp"
-
-
-class TestExecuteRouterAndAliases:
-    """Tests action resolution, aliases, and payload normalization in execute()."""
-
-    @pytest.mark.parametrize(
-        "action_alias", ["control_appliance", "control", "set_state", "toggle"]
-    )
-    @patch.object(TheSteward, "control_appliance")
-    def test_control_appliance_action_aliases(
-        self, mock_control, action_alias, steward
-    ):
-        mock_control.return_value = {"status": "mocked"}
-        params = {"target_device": "switch.test", "command": "turn_on"}
-
-        res = steward.execute(action=action_alias, params=params)
-
-        mock_control.assert_called_once_with(
-            target_device="switch.test", command="turn_on", payload=None
-        )
-        assert res == {"status": "mocked"}
-
-    @patch.object(TheSteward, "read_sensor_net")
-    def test_unknown_action_fallback_to_read_sensor_net(self, mock_read, steward):
-        """Tests that unsupported actions fall back gracefully to read_sensor_net."""
-        mock_read.return_value = {"action": "read_sensor_net", "status": "fallback"}
-
-        res = steward.execute(action="unsupported_action")
-
-        mock_read.assert_called_once_with(target_device=None)
-        assert res == {"action": "read_sensor_net", "status": "fallback"}
-
-
-class TestTaskDispatcher:
-    """Tests the top-level execute_steward_task entry point."""
-
-    @patch.object(TheSteward, "execute")
-    def test_execute_task_with_dict(self, mock_execute):
-        mock_execute.return_value = {"status": "ok"}
-        payload = {"action": "discover_devices"}
-
-        res = execute_steward_task(payload)
-
-        mock_execute.assert_called_once_with(
-            action="discover_devices", params=payload
-        )
-        assert res == {"status": "ok"}
-
-    @patch.object(TheSteward, "execute")
-    def test_execute_task_with_pydantic_payload(self, mock_execute):
-        mock_execute.return_value = {"status": "ok"}
-        payload = StewardPayload(
-            action="control_appliance",
-            target_device="light.ceiling",
-            command="turn_off",
-        )
-
-        res = execute_steward_task(payload)
-
-        mock_execute.assert_called_once_with(
-            action="control_appliance",
-            params={
-                "target_device": "light.ceiling",
-                "command": "turn_off",
-                "topic": None,
-                "payload": {},
-            },
-        )
-        assert res == {"status": "ok"}
-
-    def test_execute_task_invalid_payload(self):
-        res = execute_steward_task(payload="invalid_str_payload")
-        assert res["status"] == "error"
-        assert "Invalid payload format" in res["message"]
 
 ```
 

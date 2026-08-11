@@ -1,7 +1,7 @@
 # Subsystem Domain Context: 01_Specs_and_Architecture
-> **Generated:** 2026-08-10 05:34 UTC  
+> **Generated:** 2026-08-11 06:46 UTC  
 > **Charon Core Version:** v8.0  
-> **Git Branch:** `main` | **Commit:** `bc5f379`
+> **Git Branch:** `Streamline-Dynamic-Routing` | **Commit:** `c416670`
 
 ---
 
@@ -1935,6 +1935,12 @@ dependencies = [
     "fastapi>=0.141.1",
     "uvicorn>=0.51.0",
     "ollama>=0.6.2",
+    "requests>=2.34.2",
+    "psutil>=7.2.2",
+    "paho-mqtt>=2.1.0",
+    "beautifulsoup4>=4.15.0",
+    "pynvml>=13.0.1",
+    "platformio>=5.0.4",
 ]
 
 [project.optional-dependencies]

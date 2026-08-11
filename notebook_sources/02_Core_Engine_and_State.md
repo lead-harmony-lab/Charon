@@ -1,7 +1,7 @@
 # Subsystem Domain Context: 02_Core_Engine_and_State
-> **Generated:** 2026-08-10 05:34 UTC  
+> **Generated:** 2026-08-11 06:46 UTC  
 > **Charon Core Version:** v8.0  
-> **Git Branch:** `main` | **Commit:** `bc5f379`
+> **Git Branch:** `Streamline-Dynamic-Routing` | **Commit:** `c416670`
 
 ---
 
@@ -57,7 +57,7 @@ __all__ = [
 ```python
 """
 charon/core/agent_runner.py
-System Version: v0.3.3 | File Revision: 1.0.0
+System Version: v0.3.4 | File Revision: 1.1.0
 
 Module: Generic, Stateless Agent Execution Harness.
 Instantiates agent personas dynamically via role abstraction, hydra-loads tool specs
@@ -67,8 +67,9 @@ Janitorial Working Anchor.
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
+from charon.config.settings import DEFAULT_HEAVY_MODEL
 from charon.core.skills.librarian import SkillLibrarian
 
 logger = logging.getLogger("Charon.Core.AgentRunner")
@@ -88,7 +89,7 @@ class AgentRunner:
 
     def __init__(
         self,
-        role_name: str = "default_system_generalist",
+        role_name: str = "system_generalist",
         librarian: Optional[SkillLibrarian] = None,
         max_tool_turns: int = 5,
     ) -> None:
@@ -125,7 +126,7 @@ class AgentRunner:
         self,
         task_prompt: str,
         llm_client: Any,
-        model_name: str = "llama3.1:8b",
+        model_name: Optional[str] = None,
         blackboard_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -135,6 +136,7 @@ class AgentRunner:
         3. Intercepts tool calls and executes matching plugin.py handlers
         4. Returns final response and telemetry settlement
         """
+        active_model = model_name or DEFAULT_HEAVY_MODEL
         context = blackboard_context or {}
         tools = self.get_tool_schemas()
         sys_prompt = self.system_prompt
@@ -148,7 +150,7 @@ class AgentRunner:
         ]
 
         logger.info(
-            f"[{self.display_name}] Executing task with {len(tools)} loaded tools..."
+            f"[{self.display_name}] Executing task on model '{active_model}' with {len(tools)} loaded tools..."
         )
 
         turn_count = 0
@@ -158,7 +160,7 @@ class AgentRunner:
             # Dispatch turn to LLM Client (Expected interface: Ollama or OpenAI compatible client)
             try:
                 response = llm_client.chat(
-                    model=model_name,
+                    model=active_model,
                     messages=messages,
                     tools=tools if tools else None,
                 )
@@ -178,6 +180,7 @@ class AgentRunner:
                     "role_name": self.role_name,
                     "agent_id": self.agent_id,
                     "display_name": self.display_name,
+                    "model_used": active_model,
                     "output": final_content,
                     "turns_taken": turn_count,
                 }
@@ -945,11 +948,12 @@ __all__ = [
 ```python
 """
 charon/core/coordinator/blackboard.py
-System Version: v0.3.2 | File Revision: 3.6.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Core state blackboard and execution TaskBlackboard models.
 Provides strongly-typed schemas for multi-step artifact propagation, unfulfilled task tracking,
 contract reflection, state mutation tracking, execution history, and DB state hydration.
+Strictly preserves canonical database identifiers across all state interactions.
 """
 
 import json
@@ -961,7 +965,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from pydantic import Field
 
 from charon.core.contracts import ContractResponse, ExecutionStatus
-from charon.core.skills import SkillLibrarian
+from charon.core.skills.librarian import SkillLibrarian
 from charon.intent.base import StrictBaseModel
 
 
@@ -1042,7 +1046,7 @@ class UnfulfilledRequirement(StrictBaseModel):
     )
     assigned_role_override: Optional[str] = Field(
         default=None,
-        description="Abstract system role assigned during escalation (e.g., 'default_system_engineer').",
+        description="Abstract system role assigned during escalation (e.g., 'system_engineer').",
     )
     assigned_agent_override: Optional[str] = Field(
         default=None,
@@ -1141,12 +1145,24 @@ class TaskBlackboard(StrictBaseModel):
 
     def get_role_display_name(self, role: str) -> str:
         """Resolves human-readable presentation label via SkillLibrarian accessors."""
+        clean_role = str(getattr(role, "value", role)).strip() if role else ""
+        if not clean_role:
+            return "system_generalist"
+
         librarian = SkillLibrarian.get_instance()
-        if hasattr(librarian, "get_display_name_for_role") and callable(librarian.get_display_name_for_role):
-            return librarian.get_display_name_for_role(role)
-        if hasattr(librarian, "get_display_name_for_agent") and callable(librarian.get_display_name_for_agent):
-            return librarian.get_display_name_for_agent(role)
-        return role
+        if hasattr(librarian, "get_display_name_for_role") and callable(
+            librarian.get_display_name_for_role
+        ):
+            name = librarian.get_display_name_for_role(clean_role)
+            if name:
+                return name
+        if hasattr(librarian, "get_display_name_for_agent") and callable(
+            librarian.get_display_name_for_agent
+        ):
+            name = librarian.get_display_name_for_agent(clean_role)
+            if name:
+                return name
+        return clean_role
 
     def emit_thought(
         self,
@@ -1157,9 +1173,14 @@ class TaskBlackboard(StrictBaseModel):
         bus_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> ThoughtRecord:
         """Emits a live CoT reasoning event to the blackboard and optional bus callback."""
+        clean_role = (
+            str(getattr(source_role, "value", source_role)).strip()
+            if source_role
+            else "system_generalist"
+        )
         record = ThoughtRecord(
             task_id=self.task_id,
-            source_role=source_role,
+            source_role=clean_role,
             thought_type=thought_type,
             message=message,
             context_data=context_data or {},
@@ -1186,8 +1207,13 @@ class TaskBlackboard(StrictBaseModel):
         except Exception:
             return f"<{type(value).__name__} Unserializable Object>"
 
-    def set_artifact(self, key: str, value: Any, source_role: str = "default_system_generalist") -> None:
+    def set_artifact(self, key: str, value: Any, source_role: str = "system_generalist") -> None:
         """Stores a ground truth artifact on the blackboard and logs a truncated mutation."""
+        clean_role = (
+            str(getattr(source_role, "value", source_role)).strip()
+            if source_role
+            else "system_generalist"
+        )
         previous_val = self.artifacts.get(key)
         self.artifacts[key] = value
 
@@ -1196,7 +1222,7 @@ class TaskBlackboard(StrictBaseModel):
             "key": key,
             "previous_value": self._safe_summary(previous_val),
             "new_value": self._safe_summary(value),
-            "source_role": source_role,
+            "source_role": clean_role,
         })
 
     def get_artifact(self, key: str, default: Any = None) -> Any:
@@ -1219,29 +1245,31 @@ class TaskBlackboard(StrictBaseModel):
             self.active_gaps.remove(gap_description)
 
     def record_step(
-            self,
-            role: Any = None,
-            action: str = "",
-            status: str = "SUCCESS",
-            output_summary: str = "",
-            produced_artifacts: Optional[Dict[str, Any]] = None,
-            unresolved_gaps: Optional[List[str]] = None,
-            error_message: Optional[str] = None,
-            agent: Any = None,  # Added as alias for role
+        self,
+        role: Any = None,
+        action: str = "",
+        status: str = "SUCCESS",
+        output_summary: str = "",
+        produced_artifacts: Optional[Dict[str, Any]] = None,
+        unresolved_gaps: Optional[List[str]] = None,
+        error_message: Optional[str] = None,
+        agent: Any = None,  # Alias for role
     ) -> ExecutionStepRecord:
         """Appends an execution turn to history and updates blackboard artifacts."""
         resolved_role = role if role is not None else agent
-        if resolved_role is None:
-            resolved_role = "system_fallback"
+        clean_role = (
+            str(getattr(resolved_role, "value", resolved_role)).strip()
+            if resolved_role
+            else "system_generalist"
+        )
 
         produced = produced_artifacts or {}
         gaps = unresolved_gaps or []
         step_number = len(self.execution_history) + 1
-        role_str = str(getattr(resolved_role, "value", resolved_role))
 
         record = ExecutionStepRecord(
             step_number=step_number,
-            role=role_str,
+            role=clean_role,
             action=action,
             status=status,
             output_summary=output_summary,
@@ -1255,7 +1283,7 @@ class TaskBlackboard(StrictBaseModel):
             self.log_gap(gap)
 
         for k, v in produced.items():
-            self.set_artifact(k, v, source_role=role_str)
+            self.set_artifact(k, v, source_role=clean_role)
 
         return record
 
@@ -1267,12 +1295,16 @@ class TaskBlackboard(StrictBaseModel):
     ) -> ExecutionStepRecord:
         """Integrates a formal Pydantic ContractResponse directly into state history."""
         produced = produced_artifacts_map or {}
-        summary = " | ".join(response.accomplishments) if response.accomplishments else (response.reason or "")
+        summary = (
+            " | ".join(response.accomplishments)
+            if response.accomplishments
+            else (response.reason or "")
+        )
 
         resolved_role = getattr(
             response,
             "role_name",
-            getattr(response, "agent_name", "system_fallback"),
+            getattr(response, "agent_name", "system_generalist"),
         )
 
         is_success = response.status in (ExecutionStatus.SUCCESS, ExecutionStatus.SATISFIED)
@@ -1342,12 +1374,12 @@ class TaskBlackboard(StrictBaseModel):
 ```python
 """
 charon/core/coordinator/decomposer.py
-System Version: v0.3.2 | File Revision: 1.6.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Requirement Decomposition and Payload Parsing Engine.
 Parses prompts and metadata into discrete blackboard requirements and seed artifacts.
-Updated for dynamic SkillLibrarian queries, Revision 3 SQLite Schema compatibility,
-and fail-fast default action contract resolution.
+Strictly enforces Database as SSOT across all SkillLibrarian resolutions.
+Raises RuntimeError on unmapped roles or inactive capabilities.
 """
 
 import logging
@@ -1362,7 +1394,7 @@ from charon.core.coordinator.blackboard import (
 )
 from charon.core.skills import SkillLibrarian
 
-# Safe import for legacy manifest lookup
+# Safe import for manifest lookup
 try:
     from charon.intent.manifests import get_agent_manifest
 except ImportError:
@@ -1372,80 +1404,84 @@ logger = logging.getLogger("charon.core.coordinator.decomposer")
 
 
 class RequirementDecomposer:
-    """Decomposes prompts into initial blackboard artifacts and unfulfilled requirements using dynamic skills."""
+    """Decomposes prompts into initial blackboard artifacts and unfulfilled requirements using SSOT skills."""
 
     def __init__(self, librarian: Optional[SkillLibrarian] = None):
         self.librarian = librarian or SkillLibrarian.get_instance()
 
     def _resolve_agent_override(self, raw_override: Any) -> tuple[Optional[str], Optional[str]]:
-        """Resolves raw role/agent strings into (role_name, agent_id) matching system_roles / agent_registry FKs."""
+        """Resolves raw role/agent inputs into canonical (agent_id, agent_id) tuples via direct DB lookup."""
         if not raw_override:
             return None, None
 
-        raw_str = str(getattr(raw_override, "value", raw_override))
-        role_name = raw_str
-        agent_id = raw_str
+        clean_id = str(getattr(raw_override, "value", raw_override)).strip()
+        if not clean_id:
+            return None, None
 
-        # Schema Compliance: Check if raw_override is a role_name mapped in system_roles
-        if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(self.librarian.resolve_agent_id_for_role):
-            resolved = self.librarian.resolve_agent_id_for_role(raw_str)
-            if resolved:
-                agent_id = resolved
+        agent_id = None
+        if hasattr(self.librarian, "resolve_agent_id") and callable(self.librarian.resolve_agent_id):
+            agent_id = self.librarian.resolve_agent_id(clean_id)
+        elif hasattr(self.librarian, "resolve_agent_id_for_role") and callable(
+            self.librarian.resolve_agent_id_for_role
+        ):
+            agent_id = self.librarian.resolve_agent_id_for_role(clean_id)
 
-        return role_name, agent_id
+        if not agent_id:
+            raise RuntimeError(
+                f"[DECOMPOSER FAULT] Identifier '{clean_id}' could not be resolved in DB via SkillLibrarian."
+            )
 
-    def _resolve_agent_default_action(self, agent_or_role: Optional[str] = None) -> str:
-        """Dynamically resolves default interface action for an agent/role via SkillLibrarian or manifest.
+        resolved_str = str(agent_id)
+        return resolved_str, resolved_str
 
-        If agent_or_role is not provided, resolves default action for the system 'generalist' role.
+    def _resolve_agent_default_action(self, agent_or_role: str) -> str:
+        """Dynamically resolves default interface action for an agent/role strictly via SkillLibrarian or manifest.
 
         Raises:
-            RuntimeError: If default action contract cannot be resolved.
+            RuntimeError: If default action contract is not explicitly defined in the database or manifest.
         """
-        target_agent = agent_or_role
+        if not agent_or_role or not str(agent_or_role).strip():
+            raise RuntimeError(
+                "[DECOMPOSER FAULT] Cannot resolve default action: No agent or role identifier provided."
+            )
 
-        # 1. Resolve role_name -> agent_id if mapped
-        if target_agent and hasattr(self.librarian, "resolve_agent_id_for_role") and callable(self.librarian.resolve_agent_id_for_role):
-            resolved = self.librarian.resolve_agent_id_for_role(target_agent)
-            if resolved:
-                target_agent = resolved
+        target_id = str(agent_or_role).strip()
 
-        # 2. If no target provided, resolve system generalist role
-        if not target_agent:
-            for role_key in ["generalist", "default_generalist", "system_fallback"]:
-                if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(self.librarian.resolve_agent_id_for_role):
-                    resolved = self.librarian.resolve_agent_id_for_role(role_key)
-                    if resolved:
-                        target_agent = resolved
-                        break
+        # 1. Query SkillLibrarian API strictly with exact identifier
+        if hasattr(self.librarian, "get_agent_default_action") and callable(
+            self.librarian.get_agent_default_action
+        ):
+            action = self.librarian.get_agent_default_action(target_id)
+            if action:
+                return str(action)
 
-        if target_agent:
-            # Query SkillLibrarian API
-            if hasattr(self.librarian, "get_agent_default_action") and callable(self.librarian.get_agent_default_action):
-                action = self.librarian.get_agent_default_action(target_agent)
-                if action:
-                    return str(action)
+        # 2. Query Manifest directly
+        try:
+            manifest = get_agent_manifest(target_id)
+            if manifest:
+                default_act = (
+                    manifest.get("default_action")
+                    if isinstance(manifest, dict)
+                    else getattr(manifest, "default_action", None)
+                )
+                if default_act:
+                    return str(default_act)
+        except Exception:
+            pass
 
-            # Query Manifest Cache directly
-            try:
-                manifest = get_agent_manifest(target_agent)
-                if manifest:
-                    default_act = manifest.get("default_action") if isinstance(manifest, dict) else getattr(manifest, "default_action", None)
-                    if default_act:
-                        return str(default_act)
-            except Exception:
-                pass
-
+        # Strictly fail fast if not mapped in SSOT
         raise RuntimeError(
-            f"[DECOMPOSER ERROR] Cannot resolve default action contract for target '{agent_or_role or 'generalist'}': "
-            "No 'default_action' mapped in manifest or database state."
+            f"[DECOMPOSER FAULT] Cannot resolve default action contract for identifier '{target_id}': "
+            "No 'default_action' mapped in database state or manifest."
         )
 
     def get_action_capability(self, action_name: str) -> Optional[Dict[str, Any]]:
         """Retrieves action metadata from the dynamic skill registry, filtering for ACTIVE status."""
         cap = self.librarian.get_action_details(action_name)
         if cap and cap.get("status", "ACTIVE") != "ACTIVE":
-            logger.warning(f"[DECOMPOSER] Requested action '{action_name}' is not ACTIVE (status={cap.get('status')}).")
+            logger.warning(
+                f"[DECOMPOSER] Requested action '{action_name}' is not ACTIVE (status={cap.get('status')})."
+            )
             return None
         return cap
 
@@ -1471,7 +1507,7 @@ class RequirementDecomposer:
         """Populates blackboard with seed artifacts and initial requirement stack."""
         metadata = metadata or {}
 
-        # 1. MPN / Part Number Regex Extraction (Strict alphanumeric heuristics)
+        # 1. MPN / Part Number Regex Extraction
         mpn_match = re.search(r"\b([A-Z0-9]+-[A-Z0-9_\-]+|[A-Z0-9]{5,})\b", prompt, re.IGNORECASE)
         if mpn_match:
             blackboard.set_artifact("target_part", mpn_match.group(1))
@@ -1479,7 +1515,7 @@ class RequirementDecomposer:
         blackboard.set_artifact("original_prompt", prompt)
         handled_by_payload = False
 
-        # 2. Check Typed Agent/Role Payloads / Dynamic Payloads
+        # 2. Check Typed Agent/Role Payloads
         payload_obj = (
             metadata.get("payload")
             or metadata.get("agent_payload")
@@ -1502,17 +1538,26 @@ class RequirementDecomposer:
                     intent_extraction.get("action") if isinstance(intent_extraction, dict) else None
                 )
                 params = getattr(intent_extraction, "parameters", None) or (
-                    intent_extraction.get("parameters", {}) if isinstance(intent_extraction, dict) else {}
+                    intent_extraction.get("parameters", {})
+                    if isinstance(intent_extraction, dict)
+                    else {}
                 )
 
                 if action:
-                    cap_info = self.get_action_capability(action) or {}
+                    cap_info = self.get_action_capability(action)
+                    if not cap_info:
+                        raise RuntimeError(
+                            f"[DECOMPOSER FAULT] Intent specified action '{action}', "
+                            "but it is missing or inactive in SkillLibrarian database."
+                        )
+
+                    cap_name = cap_info.get("capability_name") or cap_info.get("action_name", action)
                     produced = cap_info.get("produced_artifacts", [])
                     esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
 
                     blackboard.unfulfilled_requirements.append(
                         UnfulfilledRequirement(
-                            capability_required=cap_info.get("capability_name", action),
+                            capability_required=cap_name,
                             target_artifact_key=produced[0] if produced else None,
                             escalation_level=esc_level,
                             assigned_role_override=role_override,
@@ -1557,54 +1602,60 @@ class RequirementDecomposer:
                     cap_info = self.get_action_capability(cap_name) if cap_name else None
 
                     if not cap_info:
-                        agent_actions = self.librarian.list_available_actions(
-                            getattr(manifest, "name", role_str) if manifest else role_str
-                        )
+                        agent_actions = self.librarian.list_available_actions(role_str)
                         if agent_actions:
                             cap_info = self.get_action_capability(agent_actions[0])
                         else:
-                            fallback_action = self._resolve_agent_default_action(agent_id_str or role_str)
+                            fallback_action = self._resolve_agent_default_action(role_str)
                             cap_info = self.get_action_capability(fallback_action)
 
-                    if cap_info:
-                        hint_params = (
-                            routing_hint.get("parameters", {})
-                            if isinstance(routing_hint, dict)
-                            else {}
+                    if not cap_info:
+                        raise RuntimeError(
+                            f"[DECOMPOSER FAULT] Could not resolve an active capability contract for target '{role_str}'."
                         )
-                        produced = cap_info.get("produced_artifacts", [])
-                        esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
-                        blackboard.unfulfilled_requirements.append(
-                            UnfulfilledRequirement(
-                                capability_required=cap_info.get("capability_name", cap_info.get("action_name")),
-                                target_artifact_key=produced[0] if produced else None,
-                                escalation_level=esc_level,
-                                assigned_role_override=role_str,
-                                assigned_agent_override=agent_id_str,
-                                parameters=hint_params,
-                            )
-                        )
-                        handled_by_payload = True
 
-        # 4. Default Fallback -> Conversational Query
+                    hint_params = (
+                        routing_hint.get("parameters", {})
+                        if isinstance(routing_hint, dict)
+                        else {}
+                    )
+                    cap_name_val = cap_info.get("capability_name") or cap_info.get("action_name")
+                    produced = cap_info.get("produced_artifacts", [])
+                    esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
+
+                    blackboard.unfulfilled_requirements.append(
+                        UnfulfilledRequirement(
+                            capability_required=cap_name_val,
+                            target_artifact_key=produced[0] if produced else None,
+                            escalation_level=esc_level,
+                            assigned_role_override=role_str,
+                            assigned_agent_override=agent_id_str,
+                            parameters=hint_params,
+                        )
+                    )
+                    handled_by_payload = True
+
+        # 4. Default Fallback -> Direct system_generalist Lookup
         if not blackboard.unfulfilled_requirements:
-            generalist_action = self._resolve_agent_default_action()
+            generalist_action = self._resolve_agent_default_action("system_generalist")
             cap_info = self.get_action_capability(generalist_action)
+
             if not cap_info:
                 raise RuntimeError(
-                    f"[DECOMPOSER ERROR] Default generalist action '{generalist_action}' "
-                    "is missing or not active in database."
+                    f"[DECOMPOSER FAULT] Default generalist action '{generalist_action}' "
+                    "resolved for 'system_generalist' is missing or inactive in SkillLibrarian database."
                 )
 
-            cap_name = cap_info.get("capability_name", generalist_action)
+            cap_name = cap_info.get("capability_name") or cap_info.get("action_name", generalist_action)
             esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
-            produced = cap_info.get("produced_artifacts", ["response_text"])
+            produced = cap_info.get("produced_artifacts", [])
 
             blackboard.unfulfilled_requirements.append(
                 UnfulfilledRequirement(
                     capability_required=cap_name,
                     target_artifact_key=produced[0] if produced else "response_text",
                     escalation_level=esc_level,
+                    parameters={"prompt": prompt},
                 )
             )
 
@@ -1633,11 +1684,17 @@ class RequirementDecomposer:
         if not action:
             return False
 
-        cap_info = self.get_action_capability(action) or {}
+        cap_info = self.get_action_capability(action)
+        if not cap_info:
+            raise RuntimeError(
+                f"[DECOMPOSER FAULT] Payload specified action '{action}', "
+                "but capability is missing or inactive in SkillLibrarian database."
+            )
 
         req_params = {k: v for k, v in payload_dict.items() if v is not None}
         req_params["requires_approval"] = requires_approval
 
+        cap_name = cap_info.get("capability_name") or cap_info.get("action_name", action)
         produced = cap_info.get("produced_artifacts", [])
         esc_level = cap_info.get("escalation_level", EscalationLevel.L1_SPECIALIST)
 
@@ -1651,7 +1708,7 @@ class RequirementDecomposer:
 
         blackboard.unfulfilled_requirements.append(
             UnfulfilledRequirement(
-                capability_required=cap_info.get("capability_name", action),
+                capability_required=cap_name,
                 target_artifact_key=produced[0] if produced else None,
                 escalation_level=esc_level,
                 assigned_role_override=role_str,
@@ -1669,12 +1726,13 @@ class RequirementDecomposer:
 ```python
 """
 charon/core/coordinator/discovery.py
-System Version: v0.4.1 | File Revision: 2.4.0
+System Version: v0.8.0 | File Revision: 8.1.0
 
 Module: Coordinator Agent & Role Discovery & Probing Manager.
 Handles agent and role registration, candidate preplanning, live capability probing,
-host binary availability verification, dynamic profile building, and
-gap detection with hard fail-fast assertions if system roles or contracts are missing.
+host binary availability verification, and dynamic profile building.
+Enforces strict zero-fallback execution: raises fast RoleConfigurationError exceptions
+if skill metadata or agent capabilities cannot be resolved via SkillLibrarian.
 """
 
 import logging
@@ -1682,11 +1740,7 @@ import shutil
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from charon.agents.base import BaseAgent
-from charon.core.coordinator.blackboard import (
-    EscalationLevel,
-    TaskBlackboard,
-    UnfulfilledRequirement,
-)
+from charon.core.coordinator.blackboard import TaskBlackboard, UnfulfilledRequirement
 from charon.core.coordinator.profile import (
     AgentProfile,
     CapabilityContract,
@@ -1694,40 +1748,72 @@ from charon.core.coordinator.profile import (
 )
 from charon.core.skills.librarian import SkillLibrarian
 
-# Safe import for legacy manifest lookup
+# Safe import for manifest lookup
 try:
     from charon.intent.manifests import get_agent_manifest
 except ImportError:
     get_agent_manifest = lambda agent_id: None
 
-logger = logging.getLogger("Charon.Discovery")
-
-FALLBACK_ENGINEER_ROLE = "system_engineer"
+logger = logging.getLogger("charon.core.coordinator.discovery")
 
 
 class RoleConfigurationError(RuntimeError):
-    """Raised when a required system role, default agent, or action contract is not assigned in runtime or DB state."""
+    """Raised when a required system role, agent capability, or action contract cannot be strictly resolved."""
 
 
 class AgentDiscoveryManager:
-    """Manages agent/role registration, health probing, dynamic profile resolution, and gap escalation."""
+    """Manages agent/role registration, health probing, and dynamic profile resolution without magic fallbacks."""
 
     def __init__(self, librarian: Optional[SkillLibrarian] = None) -> None:
         self.librarian = librarian or SkillLibrarian.get_instance()
         self.agents: Dict[str, BaseAgent] = {}
         self.active_profiles: Dict[str, AgentProfile] = {}
 
+    def _resolve_agent_id(self, agent_or_role: Any) -> str:
+        """Resolves a role name, enum, or identifier to a canonical agent_id via SkillLibrarian SSOT."""
+        if not agent_or_role:
+            return ""
+
+        role_str = str(getattr(agent_or_role, "value", agent_or_role)).strip()
+        if not role_str:
+            return ""
+
+        if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(
+            self.librarian.resolve_agent_id_for_role
+        ):
+            try:
+                resolved = self.librarian.resolve_agent_id_for_role(role_str)
+                if resolved:
+                    return str(resolved).strip()
+            except Exception as err:
+                logger.debug(f"[Discovery] SkillLibrarian failed to resolve role '{role_str}': {err}")
+
+        elif hasattr(self.librarian, "resolve_agent_id") and callable(
+            self.librarian.resolve_agent_id
+        ):
+            try:
+                resolved = self.librarian.resolve_agent_id(role_str)
+                if resolved:
+                    return str(resolved).strip()
+            except Exception as err:
+                logger.debug(f"[Discovery] SkillLibrarian failed to resolve agent ID for '{role_str}': {err}")
+
+        return role_str
+
     def register_agent(self, agent_key: Any, agent_instance: BaseAgent) -> None:
-        """Registers a live BaseAgent instance with the Coordinator discovery pool for health probing."""
-        agent_str = str(getattr(agent_key, "value", agent_key)).lower()
+        """Registers a live BaseAgent instance with the Coordinator discovery pool."""
+        agent_str = self._resolve_agent_id(agent_key)
+        if not agent_str:
+            raise RoleConfigurationError("[Discovery] Cannot register agent instance with empty agent identifier.")
+
         self.agents[agent_str] = agent_instance
         logger.info(
-            f"[Discovery] Registered live agent instance for '{agent_str}' ({agent_instance.name})"
+            f"[Discovery] Registered live agent instance for '{agent_str}' ({getattr(agent_instance, 'name', 'unnamed')})"
         )
 
     def probe_agent(self, agent: Any, probe_type: str = "full") -> Dict[str, Any]:
         """Probes a specific registered agent instance for runtime health and dynamic capabilities."""
-        agent_str = str(getattr(agent, "value", agent)).lower()
+        agent_str = self._resolve_agent_id(agent)
         agent_instance = self.agents.get(agent_str)
 
         if agent_instance and hasattr(agent_instance, "probe"):
@@ -1757,7 +1843,10 @@ class AgentDiscoveryManager:
 
     def _ensure_profile_active(self, agent: Any) -> Optional[AgentProfile]:
         """Ensures an AgentProfile exists in self.active_profiles, constructing it on-demand if missing."""
-        agent_str = str(getattr(agent, "value", agent)).lower()
+        agent_str = self._resolve_agent_id(agent)
+        if not agent_str:
+            return None
+
         if agent_str in self.active_profiles:
             return self.active_profiles[agent_str]
 
@@ -1792,41 +1881,52 @@ class AgentDiscoveryManager:
                 or (source.get("target_agent") if isinstance(source, dict) else None)
             )
             if agent_val:
-                candidates.add(str(getattr(agent_val, "value", agent_val)).lower())
+                resolved = self._resolve_agent_id(agent_val)
+                if resolved:
+                    candidates.add(resolved)
 
         # 2. Extract explicit overrides
         override = metadata.get("role_override") or metadata.get("agent_override")
         if override:
-            candidates.add(str(getattr(override, "value", override)).lower())
+            resolved_override = self._resolve_agent_id(override)
+            if resolved_override:
+                candidates.add(resolved_override)
 
         # 3. Query DB Semantic Matcher
-        if hasattr(self.librarian, "search_skills"):
+        if hasattr(self.librarian, "search_skills") and callable(self.librarian.search_skills):
             try:
                 matched_results = self.librarian.search_skills(prompt)
                 if matched_results:
                     matched_agents = [
-                        res.get("role_id") or res.get("agent_id")
+                        self._resolve_agent_id(res.get("role_id") or res.get("agent_id"))
                         for res in matched_results
                         if isinstance(res, dict) and (res.get("role_id") or res.get("agent_id"))
                     ]
+                    matched_agents = [a for a in matched_agents if a]
                     if matched_agents:
                         logger.info(
-                            f"[Discovery] Fast-path DB hit for prompt: Matched agents/roles -> {matched_agents}"
+                            f"[Discovery] Fast-path DB hit for prompt: Matched agents -> {matched_agents}"
                         )
                         return matched_agents
             except Exception as err:
                 logger.warning(f"[Discovery] Skill matching probe failed gracefully: {err}")
 
         # 4. Query registered DB roles
-        if not candidates and hasattr(self.librarian, "list_registered_roles"):
+        if not candidates and hasattr(self.librarian, "list_registered_roles") and callable(
+            self.librarian.list_registered_roles
+        ):
             try:
                 registered = self.librarian.list_registered_roles()
                 if registered:
-                    candidates.update(registered)
+                    candidates.update(
+                        resolved
+                        for resolved in (self._resolve_agent_id(r) for r in registered)
+                        if resolved
+                    )
             except Exception as err:
                 logger.warning(f"[Discovery] Error querying registered roles from DB: {err}")
 
-        # 5. Last resort: in-memory registered agents
+        # 5. Check in-memory registered agents pool
         if not candidates:
             candidates.update(self.agents.keys())
 
@@ -1845,18 +1945,20 @@ class AgentDiscoveryManager:
             or details.get("agent")
             or details.get("primary_role_id")
             or details.get("primary_agent_id")
+            or details.get("agent_id")
         )
-        fallback_str = str(getattr(fallback_agent, "value", fallback_agent)).lower()
-        target_agent = str(getattr(raw_agent, "value", raw_agent)).lower() if raw_agent else fallback_str
+        fallback_str = self._resolve_agent_id(fallback_agent)
+        target_agent = self._resolve_agent_id(raw_agent) if raw_agent else fallback_str
 
         esc_level = details.get("escalation_level")
         if esc_level is None:
             esc_level = get_default_escalation_level()
 
         req_binaries = details.get("system_requirements") or details.get("required_binaries") or []
+        cap_name = details.get("action_name") or details.get("capability_name") or details.get("skill_id", "")
 
         return CapabilityContract(
-            capability_name=details.get("capability_name", details.get("action_name", "")),
+            capability_name=cap_name,
             agent=target_agent,
             description=details.get("description", ""),
             consumed_artifacts=details.get("consumed_artifacts", []),
@@ -1868,11 +1970,13 @@ class AgentDiscoveryManager:
     def _build_agent_profiles(
         self, candidate_agents: List[Any]
     ) -> Dict[str, AgentProfile]:
-        """Builds AgentProfiles populated with active capabilities from DB and live system binary checks."""
+        """Builds AgentProfiles populated strictly with capabilities resolved via SkillLibrarian."""
         profiles: Dict[str, AgentProfile] = {}
 
         for agent in candidate_agents:
-            agent_str = str(getattr(agent, "value", agent)).lower()
+            agent_str = self._resolve_agent_id(agent)
+            if not agent_str:
+                continue
 
             try:
                 manifest = get_agent_manifest(agent_str)
@@ -1880,14 +1984,16 @@ class AgentDiscoveryManager:
                 manifest = None
 
             if isinstance(manifest, dict):
-                manifest_name = manifest.get("name", agent_str.capitalize())
+                manifest_name = manifest.get("name", agent_str)
                 default_action = manifest.get("default_action")
             else:
-                manifest_name = getattr(manifest, "name", agent_str.capitalize())
+                manifest_name = getattr(manifest, "name", agent_str)
                 default_action = getattr(manifest, "default_action", None)
 
             action_names: List[str] = []
-            if hasattr(self.librarian, "list_available_actions"):
+            if hasattr(self.librarian, "list_available_actions") and callable(
+                self.librarian.list_available_actions
+            ):
                 try:
                     action_names = self.librarian.list_available_actions(agent_str) or []
                 except Exception as err:
@@ -1900,13 +2006,21 @@ class AgentDiscoveryManager:
                     contract = self._details_to_contract(details, agent_str)
                     if contract:
                         cap_dict[contract.capability_name] = contract
+                        if details.get("action_name"):
+                            cap_dict[details["action_name"]] = contract
+                        if details.get("skill_id"):
+                            cap_dict[details["skill_id"]] = contract
 
             if default_action:
                 default_details = self.librarian.get_action_details(default_action)
                 if default_details:
                     default_contract = self._details_to_contract(default_details, agent_str)
-                    if default_contract and default_contract.capability_name not in cap_dict:
+                    if default_contract:
                         cap_dict[default_contract.capability_name] = default_contract
+                        if default_details.get("action_name"):
+                            cap_dict[default_details["action_name"]] = default_contract
+                        if default_details.get("skill_id"):
+                            cap_dict[default_details["skill_id"]] = default_contract
 
             is_healthy = True
             health_info: Dict[str, Any] = {"healthy": True, "status": "Operational"}
@@ -1960,7 +2074,8 @@ class AgentDiscoveryManager:
     ) -> Tuple[AgentProfile, CapabilityContract]:
         """
         Finds an active agent profile equipped to handle the given requirement.
-        Fails hard immediately if missing system roles, unmapped fallback actions, or unequipped agents occur.
+        Strict Zero-Fallback Policy: Raises a RoleConfigurationError immediately if
+        no equipped agent or valid skill data can be resolved through SkillLibrarian.
         """
         target_cap_name = requirement.capability_required
         available_artifacts = blackboard.available_artifact_keys
@@ -1972,7 +2087,7 @@ class AgentDiscoveryManager:
             requirement, "assigned_agent_override", None
         )
         if override_agent:
-            target_str = str(getattr(override_agent, "value", override_agent)).lower()
+            target_str = self._resolve_agent_id(override_agent)
             profile = self._ensure_profile_active(target_str)
             if profile:
                 cap_contract = profile.capabilities.get(target_cap_name) or (
@@ -1987,125 +2102,83 @@ class AgentDiscoveryManager:
                     if equipped:
                         return profile, cap_contract
 
-        # 2. Direct action owner lookup from DB metadata
+        # 2. Direct action owner or mapped agent lookup via SkillLibrarian
+        candidate_agents: List[str] = []
         if target_details:
-            owner_val = (
-                target_details.get("role")
-                or target_details.get("agent")
-                or target_details.get("primary_role_id")
-                or target_details.get("primary_agent_id")
+            raw_owners = (
+                target_details.get("agents")
+                or target_details.get("roles")
+                or [
+                    target_details.get(k)
+                    for k in ("role", "agent", "primary_role_id", "primary_agent_id", "agent_id")
+                    if target_details.get(k)
+                ]
             )
-            if owner_val:
-                owner_str = str(getattr(owner_val, "value", owner_val)).lower()
-                profile = self._ensure_profile_active(owner_str)
-                if profile:
-                    contract = self._details_to_contract(target_details, owner_str)
-                    if contract:
-                        cap_contract = profile.capabilities.get(target_cap_name, contract)
-                        if target_cap_name not in profile.capabilities:
-                            profile.capabilities[target_cap_name] = cap_contract
+            if isinstance(raw_owners, (str, bytes)):
+                candidate_agents.append(str(raw_owners))
+            elif isinstance(raw_owners, list):
+                candidate_agents.extend([str(o) for o in raw_owners if o])
 
-                        equip_res = profile.is_equipped(target_cap_name, available_artifacts)
-                        equipped = equip_res[0] if isinstance(equip_res, tuple) else bool(equip_res)
-                        if equipped:
-                            return profile, cap_contract
+        for method_name in ("get_agents_for_action", "get_agents_for_skill", "resolve_agents_for_action"):
+            if hasattr(self.librarian, method_name) and callable(getattr(self.librarian, method_name)):
+                try:
+                    res = getattr(self.librarian, method_name)(target_cap_name)
+                    if res:
+                        if isinstance(res, list):
+                            candidate_agents.extend([str(x) for x in res if x])
+                        elif isinstance(res, str):
+                            candidate_agents.append(res)
+                        break
+                except Exception as err:
+                    logger.debug(f"[Discovery] SkillLibrarian.{method_name} query failed: {err}")
 
-        # 3. Check active profiles currently in memory
+        for c_agent in candidate_agents:
+            c_str = self._resolve_agent_id(c_agent)
+            if not c_str:
+                continue
+            profile = self._ensure_profile_active(c_str)
+            if profile:
+                contract = profile.capabilities.get(target_cap_name) or (
+                    self._details_to_contract(target_details, c_str) if target_details else None
+                )
+                if contract:
+                    if target_cap_name not in profile.capabilities:
+                        profile.capabilities[target_cap_name] = contract
+
+                    equip_res = profile.is_equipped(target_cap_name, available_artifacts)
+                    equipped = equip_res[0] if isinstance(equip_res, tuple) else bool(equip_res)
+                    if equipped:
+                        return profile, contract
+
+        # 3. Check active profiles currently in memory (including manifest default actions)
         for profile in self.active_profiles.values():
-            if target_cap_name in profile.capabilities:
+            contract = profile.capabilities.get(target_cap_name)
+            if not contract and target_details:
+                manifest_default = None
+                if isinstance(profile.manifest, dict):
+                    manifest_default = profile.manifest.get("default_action")
+                elif profile.manifest:
+                    manifest_default = getattr(profile.manifest, "default_action", None)
+
+                if manifest_default and str(manifest_default).lower() == str(target_cap_name).lower():
+                    contract = self._details_to_contract(target_details, profile.agent)
+                    if contract:
+                        profile.capabilities[target_cap_name] = contract
+
+            if contract:
                 equip_res = profile.is_equipped(target_cap_name, available_artifacts)
                 equipped = equip_res[0] if isinstance(equip_res, tuple) else bool(equip_res)
                 if equipped:
-                    return profile, profile.capabilities[target_cap_name]
+                    return profile, contract
 
-        # 4. CAPABILITY GAP DETECTED -> Escalate to System Engineer (Fail Fast if Unmapped)
-        engineer_agent_id = None
-        if hasattr(self.librarian, "resolve_agent_id_for_role"):
-            engineer_agent_id = self.librarian.resolve_agent_id_for_role(FALLBACK_ENGINEER_ROLE)
-            if not engineer_agent_id:
-                engineer_agent_id = self.librarian.resolve_agent_id_for_role("default_system_engineer")
+        # 4. CAPABILITY GAP DETECTED -> Fail Fast
+        gap_msg = f"Capability Gap: No registered agent is equipped with action '{target_cap_name}'."
+        blackboard.log_gap(gap_msg)
 
-        if not engineer_agent_id and hasattr(self.librarian, "get_diagnostic_agent"):
-            engineer_agent_id = self.librarian.get_diagnostic_agent()
-
-        if not engineer_agent_id:
-            raise RoleConfigurationError(
-                f"[FATAL DISCOVERY FAULT] Required system role '{FALLBACK_ENGINEER_ROLE}' "
-                f"is not mapped to an agent in 'system_roles'. Run database initialization/migrations."
-            )
-
-        escalation_lvl = EscalationLevel.L4_ENGINEER_FALLBACK
-
-        logger.warning(
-            f"[Discovery] Capability Gap Registered: No agent equipped for '{target_cap_name}'. "
-            f"Escalating requirement to Level {int(escalation_lvl)} fallback agent: '{engineer_agent_id}'."
+        raise RoleConfigurationError(
+            f"[FATAL DISCOVERY FAULT] Required capability '{target_cap_name}' cannot be resolved to an equipped, "
+            f"active agent. Ensure the skill is mapped in SkillLibrarian and that mandatory artifacts are available."
         )
-
-        blackboard.log_gap(f"Capability Gap: No active agent equipped for action '{target_cap_name}'")
-        blackboard.set_artifact(
-            "registered_capability_gap",
-            {
-                "missing_capability": target_cap_name,
-                "requirement_params": getattr(requirement, "parameters", {}),
-                "escalated_to_role": FALLBACK_ENGINEER_ROLE,
-                "escalated_to_agent": engineer_agent_id,
-            },
-        )
-
-        if hasattr(blackboard, "current_escalation_level"):
-            blackboard.current_escalation_level = escalation_lvl
-
-        engineer_profile = self._ensure_profile_active(engineer_agent_id)
-        if not engineer_profile:
-            raise RoleConfigurationError(
-                f"[FATAL DISCOVERY FAULT] Mapped engineer agent '{engineer_agent_id}' "
-                f"for role '{FALLBACK_ENGINEER_ROLE}' is not registered or active in 'agent_registry'."
-            )
-
-        # Dynamic fallback action resolution (Fail Fast if default_action missing from agent manifest/DB)
-        engineer_action = None
-        if hasattr(self.librarian, "get_agent_default_action") and callable(self.librarian.get_agent_default_action):
-            engineer_action = self.librarian.get_agent_default_action(engineer_agent_id)
-
-        if not engineer_action and engineer_profile.manifest:
-            m = engineer_profile.manifest
-            if isinstance(m, dict):
-                engineer_action = m.get("default_action")
-            else:
-                engineer_action = getattr(m, "default_action", None)
-
-        if not engineer_action:
-            raise RoleConfigurationError(
-                f"[FATAL DISCOVERY FAULT] Mapped engineer agent '{engineer_agent_id}' "
-                f"has no 'default_action' configured in its manifest or database metadata."
-            )
-
-        eng_contract = engineer_profile.capabilities.get(engineer_action)
-        if not eng_contract:
-            details = self.librarian.get_action_details(engineer_action)
-            if details:
-                eng_contract = self._details_to_contract(details, engineer_agent_id)
-
-        if not eng_contract:
-            raise RoleConfigurationError(
-                f"[FATAL DISCOVERY FAULT] Mapped engineer agent '{engineer_agent_id}' "
-                f"default action '{engineer_action}' could not be resolved into a valid CapabilityContract."
-            )
-
-        if not hasattr(requirement, "parameters") or requirement.parameters is None:
-            requirement.parameters = {}
-
-        requirement.parameters["failed_action"] = target_cap_name
-        requirement.parameters["failure_reason"] = "Capability Gap: No registered agent is equipped with this action."
-
-        # Mutate requirement to route through resolved engineer agent and action
-        requirement.capability_required = engineer_action
-        requirement.assigned_role_override = FALLBACK_ENGINEER_ROLE
-        requirement.assigned_agent_override = engineer_agent_id
-        if hasattr(requirement, "escalation_level"):
-            requirement.escalation_level = escalation_lvl
-
-        return engineer_profile, eng_contract
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2115,12 +2188,13 @@ class AgentDiscoveryManager:
 ```python
 """
 charon/core/coordinator/engine.py
-System Version: v0.3.2 | File Revision: 6.3.1
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Core Reflection Engine and Multi-Intent Coordinator Facade.
 Orchestrates prompt decomposition, contract negotiations, dynamic agent discovery,
 diagnostic gap dynamic re-routing, blueprint capturing, and stateful reflection loops
 aligned with Revision 3 CBAC database schema & trigger guardrails.
+Enforces canonical role & agent lookup via SkillLibrarian SSOT.
 """
 
 import asyncio
@@ -2159,6 +2233,37 @@ logger = logging.getLogger("charon.core.coordinator")
 MAX_LOOP_LIMIT = 25
 
 
+def _resolve_agent_id(agent_or_role: Any) -> str:
+    """Resolves a role name, enum, or identifier to a canonical agent_id via SkillLibrarian SSOT."""
+    if not agent_or_role:
+        return ""
+
+    role_str = str(getattr(agent_or_role, "value", agent_or_role)).strip()
+    if not role_str:
+        return ""
+
+    librarian = SkillLibrarian.get_instance()
+    if hasattr(librarian, "resolve_agent_id_for_role") and callable(
+        librarian.resolve_agent_id_for_role
+    ):
+        try:
+            resolved = librarian.resolve_agent_id_for_role(role_str)
+            if resolved:
+                return str(resolved).strip()
+        except Exception as err:
+            logger.debug(f"[Engine] SkillLibrarian failed to resolve role '{role_str}': {err}")
+
+    elif hasattr(librarian, "resolve_agent_id") and callable(librarian.resolve_agent_id):
+        try:
+            resolved = librarian.resolve_agent_id(role_str)
+            if resolved:
+                return str(resolved).strip()
+        except Exception as err:
+            logger.debug(f"[Engine] SkillLibrarian failed to resolve agent ID for '{role_str}': {err}")
+
+    return role_str
+
+
 def get_capability(
     capability_name: str, agent: Optional[Union[str, Any]] = None
 ) -> Optional[CapabilityContract]:
@@ -2183,7 +2288,7 @@ def get_capability(
         else getattr(librarian, "get_system_fallback", lambda: "system_fallback")()
     )
     raw_agent = agent or details.get("primary_agent_id", default_agent)
-    target_agent = str(raw_agent.value) if hasattr(raw_agent, "value") else str(raw_agent)
+    target_agent = _resolve_agent_id(raw_agent)
 
     return CapabilityContract(
         capability_name=details.get(
@@ -2249,10 +2354,12 @@ class Coordinator:
         return self.discovery.active_profiles
 
     def register_agent(self, agent_key: Union[str, Any], agent_instance: BaseAgent) -> None:
-        self.discovery.register_agent(agent_key, agent_instance)
+        canonical_key = _resolve_agent_id(agent_key)
+        self.discovery.register_agent(canonical_key, agent_instance)
 
     def probe_agent(self, agent: Union[str, Any], probe_type: str = "full") -> Dict[str, Any]:
-        return self.discovery.probe_agent(agent, probe_type=probe_type)
+        canonical_key = _resolve_agent_id(agent)
+        return self.discovery.probe_agent(canonical_key, probe_type=probe_type)
 
     def probe_all_agents(self, probe_type: str = "full") -> Dict[str, Dict[str, Any]]:
         return self.discovery.probe_all_agents(probe_type=probe_type)
@@ -2261,24 +2368,21 @@ class Coordinator:
         """Resolves the diagnostic engineer agent ID via system_roles table lookup."""
         librarian = SkillLibrarian.get_instance()
 
-        # 1. Try explicit diagnostic agent accessor
         if hasattr(librarian, "get_diagnostic_agent") and callable(librarian.get_diagnostic_agent):
             res = librarian.get_diagnostic_agent()
             if res:
-                return str(res)
+                return _resolve_agent_id(res)
 
-        # 2. Resolve via system_roles mapping ('default_system_engineer' role -> agent_id)
         if hasattr(librarian, "resolve_agent_id_for_role") and callable(librarian.resolve_agent_id_for_role):
-            res = librarian.resolve_agent_id_for_role("default_system_engineer")
+            res = librarian.resolve_agent_id_for_role("system_engineer")
             if res:
-                return str(res)
+                return _resolve_agent_id(res)
 
-        # 3. Fallback to active agent in discovery registry if role lookup is unpopulated
         for agent_id, agent_obj in self.agents.items():
             if getattr(agent_obj, "is_active", True):
-                return str(agent_id)
+                return _resolve_agent_id(agent_id)
 
-        return "default_system_engineer"
+        return "system_engineer"
 
     def _get_agent_default_action(self, agent_id: str) -> str:
         """Dynamically resolves default interface action for an agent_id via SkillLibrarian.
@@ -2286,22 +2390,26 @@ class Coordinator:
         Raises:
             ValueError: If the target agent manifest does not define a default_action.
         """
+        canonical_agent = _resolve_agent_id(agent_id)
         librarian = SkillLibrarian.get_instance()
 
-        # 1. Prefer explicit Librarian API method if available
         if hasattr(librarian, "get_agent_default_action") and callable(librarian.get_agent_default_action):
-            action = librarian.get_agent_default_action(agent_id)
+            action = librarian.get_agent_default_action(canonical_agent)
             if action:
                 return str(action)
 
-        # 2. Query manifest cache directly
-        manifest = librarian.get_agent_manifest(agent_id)
-        if manifest and manifest.get("default_action"):
+        manifest = (
+            librarian.get_agent_manifest(canonical_agent)
+            if hasattr(librarian, "get_agent_manifest")
+            else None
+        )
+        if isinstance(manifest, dict) and manifest.get("default_action"):
             return str(manifest["default_action"])
+        elif manifest and getattr(manifest, "default_action", None):
+            return str(getattr(manifest, "default_action"))
 
-        # 3. Fail fast: No default action registered for agent
         raise ValueError(
-            f"[COORDINATOR ERROR] Cannot route task to agent '{agent_id}': "
+            f"[COORDINATOR ERROR] Cannot route task to agent '{canonical_agent}': "
             "Agent manifest is missing a required 'default_action' contract."
         )
 
@@ -2373,11 +2481,10 @@ class Coordinator:
         self, agent: Union[str, Any], requirement: UnfulfilledRequirement, blackboard: TaskBlackboard
     ) -> ContractResponse:
         """Conducts pre-turn contract negotiation with target agent and logs trace telemetry."""
-        agent_key = agent.value if hasattr(agent, "value") else str(agent)
+        agent_key = _resolve_agent_id(agent)
         agent_instance = self.agents.get(agent_key) or self.agents.get(agent)
-        agent_name = agent_instance.name if agent_instance else agent_key
+        agent_name = getattr(agent_instance, "name", agent_key)
 
-        # Guard against inactive agents (Schema trigger protection)
         if agent_instance and hasattr(agent_instance, "is_active") and not agent_instance.is_active:
             engineer_agent_id = self._get_diagnostic_engineer()
             return ContractResponse(
@@ -2454,12 +2561,12 @@ class Coordinator:
         """
         override_agent = getattr(requirement, "assigned_agent_override", None)
         if override_agent:
-            target_agent_key = override_agent.value if hasattr(override_agent, "value") else str(override_agent)
+            target_agent_key = _resolve_agent_id(override_agent)
         else:
-            target_agent_key = capability.agent.value if hasattr(capability.agent, "value") else str(capability.agent)
+            target_agent_key = _resolve_agent_id(capability.agent)
 
         agent_instance = self.agents.get(target_agent_key) or self.agents.get(override_agent or capability.agent)
-        agent_name = agent_instance.name if agent_instance else target_agent_key
+        agent_name = getattr(agent_instance, "name", target_agent_key)
 
         if not agent_instance:
             response = ContractResponse(
@@ -2573,11 +2680,10 @@ class Coordinator:
         response: ContractResponse,
     ) -> None:
         """Evaluates step failure and DiagnosticGap to perform dynamic re-routing or escalation."""
-        agent_str = current_agent.value if hasattr(current_agent, "value") else str(current_agent)
+        agent_str = _resolve_agent_id(current_agent)
         diag = response.diagnostics
         engineer_agent_id = self._get_diagnostic_engineer()
 
-        # Log skill gap if tool missing (Schema FK requirement: requesting_agent -> agent_registry)
         if diag and diag.gap_type == GapType.MISSING_TOOL:
             librarian = SkillLibrarian.get_instance()
             if hasattr(librarian, "record_skill_gap"):
@@ -2596,7 +2702,6 @@ class Coordinator:
                 f"{diag.description if diag else response.reason}"
             )
 
-            # Inject context and dynamically resolve target action for the re-routed engineer (fails fast if unconfigured)
             if not hasattr(requirement, "parameters") or requirement.parameters is None:
                 requirement.parameters = {}
             requirement.parameters["failed_action"] = requirement.capability_required
@@ -2652,14 +2757,13 @@ class Coordinator:
 
             negotiation_resp = self.negotiate_contract(target_agent, req, blackboard)
             if negotiation_resp.status == ExecutionStatus.INCAPABLE:
-                target_str = target_agent.value if hasattr(target_agent, "value") else str(target_agent)
+                target_str = _resolve_agent_id(target_agent)
                 if target_str != engineer_agent_id:
                     logger.warning(
                         f"[COORDINATOR] Agent {target_str} incapable during negotiation. "
                         f"Overriding requirement target to {engineer_agent_id}."
                     )
 
-                    # Inject context and dynamically resolve target action for negotiation re-routing (fails fast if unconfigured)
                     if not hasattr(req, "parameters") or req.parameters is None:
                         req.parameters = {}
                     req.parameters["failed_action"] = req.capability_required
@@ -2702,12 +2806,12 @@ class Coordinator:
 ```python
 """
 charon/core/coordinator/escalation.py
-System Version: v0.4.1 | File Revision: 2.0.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: 4-Level Self-Healing Escalation Engine.
 Manages automatic step recovery with live TelemetryBus trace emissions,
-strict DB role-to-agent resolution via SkillLibrarian, and fail-fast
-assertions when system roles or default agents are unassigned.
+strict DB role-to-agent resolution via SkillLibrarian,
+and fail-fast assertions when system roles or default agents are unassigned.
 """
 
 import logging
@@ -2719,14 +2823,14 @@ from charon.core.coordinator.blackboard import (
     TaskStatus,
     UnfulfilledRequirement,
 )
-from charon.core.skills import SkillLibrarian
+from charon.core.skills.librarian import SkillLibrarian
 from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
 logger = logging.getLogger("charon.core.coordinator.escalation")
 
 
 class RoleConfigurationError(RuntimeError):
-    """Raised when a required system role or default agent is not assigned in SQLite state."""
+    """Raised when a required system role or default agent is not assigned in SkillLibrarian state."""
 
 
 class EscalationManager:
@@ -2738,36 +2842,42 @@ class EscalationManager:
     def _resolve_agent_target(
         self, details: Dict[str, Any], default_system_role: str
     ) -> Tuple[str, str]:
-        """
-        Resolves (role_name, agent_id) from action details or system_roles lookup.
+        """Resolves (role_name, agent_id) from action details or system_roles lookup via SkillLibrarian.
+
+        Strictly relies on DB resolution without string mutation or synthetic fallbacks.
         Fails fast if the role or agent cannot be resolved from database state.
         """
-        raw_role = details.get("primary_role_id") or details.get("role") or default_system_role
-        raw_agent = details.get("primary_agent_id") or details.get("agent")
+        raw_role = (
+            details.get("primary_role_id")
+            or details.get("role")
+            or default_system_role
+        )
+        if not raw_role:
+            raise RoleConfigurationError(
+                "[FATAL ESCALATION FAULT] No valid role identifier provided or resolved from action details."
+            )
 
-        role_name = str(raw_role)
-        agent_id = str(raw_agent) if raw_agent else None
+        role_name = str(getattr(raw_role, "value", raw_role)).strip()
+
+        raw_agent = details.get("primary_agent_id") or details.get("agent")
+        agent_id = str(raw_agent).strip() if raw_agent else None
 
         # Resolve agent_id via librarian if not directly supplied by action details
         if not agent_id:
-            try:
-                if hasattr(self.librarian, "resolve_agent_id_for_role"):
-                    agent_id = self.librarian.resolve_agent_id_for_role(role_name)
-                elif hasattr(self.librarian, "resolve_role"):
-                    agent_id = self.librarian.resolve_role(role_name)
-                elif hasattr(self.librarian, "get_agent_for_role"):
-                    agent_id = self.librarian.get_agent_for_role(role_name)
-            except Exception as e:
-                logger.error(
-                    f"[Escalation] Critical error resolving role '{role_name}' via librarian: {e}"
-                )
-                agent_id = None
+            if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(
+                self.librarian.resolve_agent_id_for_role
+            ):
+                agent_id = self.librarian.resolve_agent_id_for_role(role_name)
+            elif hasattr(self.librarian, "resolve_agent_id") and callable(
+                self.librarian.resolve_agent_id
+            ):
+                agent_id = self.librarian.resolve_agent_id(role_name)
 
-        # Fail-fast assertion: synthetic string fallbacks are prohibited
+        # Fail-fast assertion: synthetic string fallbacks (e.g., agent_id = role_name) are prohibited
         if not agent_id:
             raise RoleConfigurationError(
                 f"[FATAL ESCALATION FAULT] Required system role '{role_name}' "
-                f"is not mapped to an active agent in 'system_roles' or 'agent_registry'."
+                f"is not mapped to an active agent in SkillLibrarian state."
             )
 
         return role_name, str(agent_id)
@@ -2788,7 +2898,7 @@ class EscalationManager:
 
         logger.warning(
             f"[Escalation] Escalating requirement '{failed_cap_name}' "
-            f"from Level {current_level.value if hasattr(current_level, 'value') else current_level} "
+            f"from Level {getattr(current_level, 'value', current_level)} "
             f"(Reason: {failure_reason})"
         )
 
@@ -2873,11 +2983,11 @@ class EscalationManager:
 ```python
 """
 charon/core/coordinator/profile.py
-System Version: v0.4.1 | File Revision: 1.3.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Agent profile definition and capability mapping.
-Defines CapabilityContract and AgentProfile integrated with dynamic SkillLibrarian.
-Enforces active skill status checks and strict schema alignment.
+Defines CapabilityContract and AgentProfile integrated with dynamic SkillLibrarian SSOT.
+Enforces database-first agent and role resolution, active skill status checks, and strict schema alignment.
 """
 
 import logging
@@ -2885,9 +2995,38 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from pydantic import BaseModel, Field
 
 from charon.core.coordinator.blackboard import EscalationLevel
-from charon.core.skills import SkillLibrarian
+from charon.core.skills.librarian import SkillLibrarian
 
 logger = logging.getLogger("charon.core.coordinator.profile")
+
+
+def _resolve_agent_id(agent_or_role: Any, librarian: Optional[SkillLibrarian] = None) -> str:
+    """Resolves a role name, enum, or identifier to a canonical agent_id via SkillLibrarian SSOT."""
+    if not agent_or_role:
+        return ""
+
+    role_str = str(getattr(agent_or_role, "value", agent_or_role)).strip()
+    if not role_str:
+        return ""
+
+    lib = librarian or SkillLibrarian.get_instance()
+    if hasattr(lib, "resolve_agent_id_for_role") and callable(lib.resolve_agent_id_for_role):
+        try:
+            resolved = lib.resolve_agent_id_for_role(role_str)
+            if resolved:
+                return str(resolved).strip()
+        except Exception as err:
+            logger.debug(f"[Profile] SkillLibrarian failed to resolve role '{role_str}': {err}")
+
+    elif hasattr(lib, "resolve_agent_id") and callable(lib.resolve_agent_id):
+        try:
+            resolved = lib.resolve_agent_id(role_str)
+            if resolved:
+                return str(resolved).strip()
+        except Exception as err:
+            logger.debug(f"[Profile] SkillLibrarian failed to resolve agent ID for '{role_str}': {err}")
+
+    return role_str
 
 
 def get_default_escalation_level() -> EscalationLevel:
@@ -2927,16 +3066,19 @@ class AgentProfile:
         health_status: Optional[Dict[str, Any]] = None,
         librarian: Optional[SkillLibrarian] = None,
     ):
-        self.agent = agent
-        agent_str = agent.value if hasattr(agent, "value") else str(agent)
         self.librarian = librarian or SkillLibrarian.get_instance()
+        self.agent = agent
+        agent_str = _resolve_agent_id(agent, self.librarian)
 
-        # Resolve display label dynamically via SkillLibrarian accessor or fallback
         display_name = name
         if not display_name:
-            if hasattr(self.librarian, "get_display_name_for_agent"):
+            if hasattr(self.librarian, "get_display_name_for_agent") and callable(
+                self.librarian.get_display_name_for_agent
+            ):
                 display_name = self.librarian.get_display_name_for_agent(agent_str)
-            elif hasattr(self.librarian, "get_display_name_for_role"):
+            elif hasattr(self.librarian, "get_display_name_for_role") and callable(
+                self.librarian.get_display_name_for_role
+            ):
                 display_name = self.librarian.get_display_name_for_role(agent_str)
 
         self.name = display_name or agent_str
@@ -2949,8 +3091,8 @@ class AgentProfile:
 
     @property
     def agent_id(self) -> str:
-        """Returns the normalized string representation of the agent ID."""
-        return self.agent.value if hasattr(self.agent, "value") else str(self.agent)
+        """Returns the canonical string representation of the agent ID resolved from DB."""
+        return _resolve_agent_id(self.agent, self.librarian)
 
     @property
     def role_id(self) -> str:
@@ -2975,7 +3117,7 @@ class AgentProfile:
             or details.get("primary_role_id")
             or self.agent_id
         )
-        target_agent_str = target_agent.value if hasattr(target_agent, "value") else str(target_agent)
+        target_agent_str = _resolve_agent_id(target_agent, self.librarian)
 
         req_binaries = details.get("system_requirements") or details.get("required_binaries") or []
 
@@ -3154,12 +3296,13 @@ def extract_artifacts_from_result(
 ```python
 """
 charon/core/dispatcher/dispatcher.py
-System Version: v0.4.0 | File Revision: 7.2.0
+System Version: v0.7.0 | File Revision: 8.0.0
 
 Module: Core AgentDispatcher implementation.
 Handles specialist agent execution, dynamic skill negotiation, telemetry event routing,
 and stateful TaskBlackboard reflection loops. Standardized on action_name routing,
 dynamic agent resolution via SkillLibrarian, and guaranteed output telemetry emission.
+Hardened against None return values from missing role defaults and prompt lookups.
 """
 
 import inspect
@@ -3264,6 +3407,9 @@ class AgentDispatcher:
 
     def _resolve_agent(self, agent_id: str) -> Any:
         """Delegates agent resolution to AgentRouter and binds telemetry callbacks."""
+        if not agent_id:
+            raise ValueError("[DISPATCHER] Agent resolution failed: agent_id was empty or None.")
+
         agent_instance = self.router.get_agent_instance(
             agent_id=agent_id,
             heavy_model=self.heavy_model,
@@ -3308,6 +3454,9 @@ class AgentDispatcher:
         stream_cb: Any = None,
     ) -> Any:
         """Executes a single discrete step on a specialist agent and returns execution result."""
+        if not action:
+            raise ValueError("[DISPATCHER] Invalid execution step: 'action' parameter cannot be empty.")
+
         agent_instance = self._resolve_agent(agent_id)
         librarian = SkillLibrarian.get_instance(self.db_path)
         display_name = librarian.get_display_name_for_agent(agent_id)
@@ -3402,7 +3551,9 @@ class AgentDispatcher:
         cb = stream_cb or kwargs.get("stream_callback")
 
         librarian = SkillLibrarian.get_instance(self.db_path)
-        default_generalist_action = librarian.get_default_action_for_role("system_generalist")
+        default_generalist_action = (
+            librarian.get_default_action_for_role("system_generalist") or "general_query"
+        )
 
         init_agent_id = (
             initial_agent_id
@@ -3462,7 +3613,11 @@ class AgentDispatcher:
 
             if not step_selection and iteration == 1 and init_agent_id:
                 manifest = get_agent_manifest(init_agent_id)
-                action_hint = initial_action_hint or (manifest.default_action if manifest else default_generalist_action)
+                action_hint = (
+                    initial_action_hint
+                    or (manifest.default_action if manifest else None)
+                    or default_generalist_action
+                )
                 action_details = librarian.get_action_details(action_hint) or {
                     "action_name": action_hint,
                     "agent": init_agent_id,
@@ -3491,7 +3646,11 @@ class AgentDispatcher:
             bound_params = {**blackboard.artifacts, **step_params}
 
             if isinstance(capability_info, dict):
-                action = capability_info.get("action_name", getattr(req, "capability_required", default_generalist_action))
+                action = (
+                    capability_info.get("action_name")
+                    or getattr(req, "capability_required", None)
+                    or default_generalist_action
+                )
                 requested_agent = (
                     capability_info.get("agent")
                     or capability_info.get("assigned_agent")
@@ -3501,7 +3660,12 @@ class AgentDispatcher:
                 )
             else:
                 requested_agent = getattr(capability_info, "agent", init_agent_id)
-                action = getattr(capability_info, "capability_name", getattr(capability_info, "action", default_generalist_action))
+                action = (
+                    getattr(capability_info, "capability_name", None)
+                    or getattr(capability_info, "action", None)
+                    or getattr(req, "capability_required", None)
+                    or default_generalist_action
+                )
 
             target_role, fallback_role = self.router.resolve_route(
                 action_name=action,
@@ -4239,7 +4403,7 @@ __all__ = [
 ```python
 """
 charon/core/engine/dag_executor.py
-System Version: v0.3.0 | File Revision: 3.3.0
+System Version: v0.6.3 | File Revision: 4.0.0
 
 Module: Asynchronous DAG execution and context substitution engine.
 Enforces strict fail-fast contracts on system_roles, prevents deadlock
@@ -4249,6 +4413,7 @@ hazards via guaranteed future resolution, and prevents dependency cascades.
 import asyncio
 import inspect
 import logging
+import re
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from charon.core.engine.self_healing import SelfHealingHandler
@@ -4288,6 +4453,13 @@ class DAGPlanExecutor:
             return int(step_val)
         except (ValueError, TypeError):
             return str(step_val).strip()
+
+    def _step_sort_key(self, step_id: Any) -> tuple:
+        """Orders numeric steps numerically first, followed by string identifiers lexicographically."""
+        norm = self._normalize_step_id(step_id)
+        if isinstance(norm, int):
+            return (0, norm)
+        return (1, str(norm))
 
     async def execute_plan_sequence(
         self,
@@ -4389,51 +4561,64 @@ class DAGPlanExecutor:
             try:
                 # 1. Await Dependencies & Prevent Failure Cascading
                 for dep in deps:
-                    if dep in step_futures:
-                        dep_output = await step_futures[dep]
-
-                        # Short-circuit downstream execution if prerequisite failed or was blocked
-                        if isinstance(dep_output, str) and any(
-                            dep_output.startswith(p)
-                            for p in (
-                                "[Authorization Denied]",
-                                "[Authorization Error]",
-                                "[Dependency Error]",
-                                "[Runtime Error]",
-                            )
-                        ):
-                            fail_msg = (
-                                f"[Dependency Error]: Step {step_num} ({resolved_agent_id}::{action}) "
-                                f"aborted due to failure in dependency Step {dep}."
-                            )
-                            logger.warning(fail_msg)
-                            results_history[step_num] = {
-                                "step": step_num,
-                                "agent": resolved_agent_id,
-                                "action": action,
-                                "output": fail_msg,
-                            }
-                            return fail_msg
-
-                # 2. Resolve Parameters using completed dependency outputs
-                history_list = [results_history[k] for k in sorted(results_history.keys(), key=lambda x: str(x))]
-                resolved_params = self._resolve_step_references(raw_params, history_list)
-
-                # 3. Capability Authorization Guard (agent_skill_map compliance)
-                if hasattr(self.librarian, "can_agent_execute_action"):
-                    if not self.librarian.can_agent_execute_action(resolved_agent_id, action):
-                        fail_msg = (
-                            f"[Authorization Error]: Agent '{resolved_agent_id}' is not authorized "
-                            f"to execute action '{action}' per agent_skill_map."
+                    if dep not in step_futures:
+                        step_result = (
+                            f"[Dependency Error]: Step {step_num} ({resolved_agent_id}::{action}) "
+                            f"depends on unknown or non-existent Step '{dep}'."
                         )
-                        logger.error(fail_msg)
+                        logger.error(step_result)
                         results_history[step_num] = {
                             "step": step_num,
                             "agent": resolved_agent_id,
                             "action": action,
-                            "output": fail_msg,
+                            "output": step_result,
                         }
-                        return fail_msg
+                        return step_result
+
+                    dep_output = await step_futures[dep]
+
+                    # Short-circuit downstream execution if prerequisite failed or was blocked
+                    if isinstance(dep_output, str) and any(
+                        dep_output.startswith(p)
+                        for p in (
+                            "[Authorization Denied]",
+                            "[Authorization Error]",
+                            "[Dependency Error]",
+                            "[Runtime Error]",
+                        )
+                    ):
+                        step_result = (
+                            f"[Dependency Error]: Step {step_num} ({resolved_agent_id}::{action}) "
+                            f"aborted due to failure in dependency Step {dep}."
+                        )
+                        logger.warning(step_result)
+                        results_history[step_num] = {
+                            "step": step_num,
+                            "agent": resolved_agent_id,
+                            "action": action,
+                            "output": step_result,
+                        }
+                        return step_result
+
+                # 2. Resolve Parameters using completed dependency outputs
+                sorted_history_keys = sorted(results_history.keys(), key=self._step_sort_key)
+                history_list = [results_history[k] for k in sorted_history_keys]
+                resolved_params = self._resolve_step_references(raw_params, history_list)
+
+                # 3. Capability Authorization Guard (agent_skill_map compliance)
+                if not self.librarian.is_skill_available(action, resolved_agent_id):
+                    step_result = (
+                        f"[Authorization Error]: Agent '{resolved_agent_id}' is not authorized "
+                        f"to execute action '{action}' per agent_skill_map."
+                    )
+                    logger.error(step_result)
+                    results_history[step_num] = {
+                        "step": step_num,
+                        "agent": resolved_agent_id,
+                        "action": action,
+                        "output": step_result,
+                    }
+                    return step_result
 
                 logger.info(f"Executing Step {step_num} [{resolved_agent_id}::{action}]")
                 if self.ledger and task_id:
@@ -4469,14 +4654,14 @@ class DAGPlanExecutor:
 
                     decision = await self.gatekeeper.wait_for_decision(approval_id, timeout=300.0)
                     if decision not in ("APPROVED", "PROCEED"):
-                        failure_msg = f"[Authorization Denied]: Step {step_num} ({resolved_agent_id}::{action}) blocked."
+                        step_result = f"[Authorization Denied]: Step {step_num} ({resolved_agent_id}::{action}) blocked."
                         results_history[step_num] = {
                             "step": step_num,
                             "agent": resolved_agent_id,
                             "action": action,
-                            "output": failure_msg,
+                            "output": step_result,
                         }
-                        return failure_msg
+                        return step_result
 
                     if self.state_mgr and task_id:
                         await self.state_mgr.update_status(task_id=task_id, status=TaskStatus.RUNNING)
@@ -4550,7 +4735,7 @@ class DAGPlanExecutor:
                 return step_result
 
             finally:
-                # Guarantee step future resolution to prevent downstream async deadlocks
+                # Guarantee step future resolution with populated result to prevent downstream async deadlocks
                 if step_num in step_futures and not step_futures[step_num].done():
                     step_futures[step_num].set_result(step_result)
 
@@ -4559,7 +4744,7 @@ class DAGPlanExecutor:
 
         # --- Final Assembly ---
         step_outputs: List[str] = []
-        for step_num in sorted(results_history.keys(), key=lambda x: str(x)):
+        for step_num in sorted(results_history.keys(), key=self._step_sort_key):
             step_data = results_history[step_num]
             formatted = f"**Step {step_num} Output ({step_data['agent']})**:\n{step_data['output']}"
             step_outputs.append(formatted)
@@ -4600,15 +4785,20 @@ class DAGPlanExecutor:
             val = val.replace("$PREVIOUS_STEP_OUTPUT", last_output)
             val = val.replace("$LAST_OUTPUT", last_output)
 
-            for step_data in history:
-                s_idx = str(step_data.get("step", ""))
-                placeholder = f"$STEP_{s_idx}_OUTPUT"
-                if placeholder in val:
-                    raw_step_out = step_data.get("output", "")
-                    sanitized_out = self._sanitize_output_for_injection(
+            history_map = {self._normalize_step_id(item.get("step", "")): item for item in history}
+
+            # Regex token matching avoids substring collisions (e.g. $STEP_1_OUTPUT vs $STEP_10_OUTPUT)
+            def replace_placeholder(match: re.Match) -> str:
+                raw_step_key = match.group(1)
+                norm_key = self._normalize_step_id(raw_step_key)
+                if norm_key in history_map:
+                    raw_step_out = history_map[norm_key].get("output", "")
+                    return self._sanitize_output_for_injection(
                         raw_step_out, max_chars=max_output_chars
                     )
-                    val = val.replace(placeholder, sanitized_out)
+                return match.group(0)
+
+            val = re.sub(r"\$STEP_([a-zA-Z0-9_-]+)_OUTPUT", replace_placeholder, val)
             return val
 
         if isinstance(parameters, dict):
@@ -4633,17 +4823,15 @@ class DAGPlanExecutor:
 ```python
 """
 charon/core/engine/engine.py
-System Version: v0.6.0 | File Revision: 3.0.0
+System Version: v0.6.3 | File Revision: 4.0.0
 
 Module: Main Orchestration Engine facade for Charon.
 Enforces strict agent_registry identifier normalization, CBAC Schema V2 compliance,
-active agent validation, quarantine lifecycle handling, and interface parameter decoupling
-per the Janitorial Working Anchor.
+active agent validation, quarantine lifecycle handling, and direct Librarian integration.
 """
 
 import inspect
 import logging
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from charon.core.engine.dag_executor import DAGPlanExecutor
@@ -4658,7 +4846,7 @@ from charon.intent import RoutingPayload
 
 logger = logging.getLogger("Charon.Engine")
 
-# Mandatory minimum system roles per the Janitorial Working Anchor
+# Mandatory minimum system roles required for core operation
 REQUIRED_SYSTEM_ROLES: Tuple[str, ...] = (
     "system_generalist",
     "system_engineer",
@@ -4681,7 +4869,7 @@ class OrchestrationEngine:
     ):
         self.librarian = librarian or SkillLibrarian.get_instance()
 
-        # Janitorial Working Anchor: Enforce role resolution on startup
+        # Enforce role resolution on startup
         self._verify_required_system_roles()
 
         self.orchestrator = orchestrator or SessionGateway(
@@ -4712,9 +4900,8 @@ class OrchestrationEngine:
         Verifies that all required system roles can be resolved by SkillLibrarian.
         Halts execution on startup if any minimum system role cannot be resolved.
         """
-        if hasattr(self.librarian, "validate_core_roles"):
-            if not self.librarian.validate_core_roles():
-                logger.warning("[ENGINE] Librarian reported missing or inactive core role mappings.")
+        if not self.librarian.validate_core_roles():
+            logger.warning("[ENGINE] Librarian reported missing or inactive core role mappings.")
 
         missing_roles = []
         for role in REQUIRED_SYSTEM_ROLES:
@@ -4729,7 +4916,7 @@ class OrchestrationEngine:
         if missing_roles:
             fatal_msg = (
                 f"CRITICAL STARTUP FAILURE: SkillLibrarian could not resolve required system roles: "
-                f"{missing_roles}. System halting per Janitorial Working Anchor."
+                f"{missing_roles}. System halting."
             )
             logger.critical(fatal_msg)
             raise RuntimeError(fatal_msg)
@@ -4755,29 +4942,30 @@ class OrchestrationEngine:
         registered in the database, preventing orphaned foreign keys or execution against quarantined agents.
         """
         if not agent_input:
-            return self._get_agent_for_role("default_system_generalist")
+            return self._get_agent_for_role("system_generalist")
 
         try:
-            # 1. Try role-based or ID resolution via SkillLibrarian
+            # 1. Direct Agent ID check: If agent_input is already an active agent ID, return it immediately
+            if self.librarian.is_agent_active(agent_input):
+                return agent_input
+
+            # 2. Try role-based resolution via SkillLibrarian
             resolved_id = self.librarian.resolve_agent_id_for_role(agent_input)
 
-            # 2. Check if librarian provides active agent validation
-            if hasattr(self.librarian, "is_agent_active"):
+            if resolved_id:
                 if not self.librarian.is_agent_active(resolved_id):
                     logger.warning(
                         f"[ENGINE] Resolved agent '{resolved_id}' for input '{agent_input}' is inactive or quarantined. "
                         "Falling back to default generalist."
                     )
-                    return self._get_agent_for_role("default_system_generalist")
-
-            if resolved_id:
+                    return self._get_agent_for_role("system_generalist")
                 return resolved_id
         except Exception as err:
             logger.warning(f"[ENGINE] Failed to resolve agent input '{agent_input}': {err}")
 
-        # 3. Fall back to default generalist if resolution fails
+        # 3. Fallback to default system generalist
         logger.warning(f"[ENGINE] Unrecognized or invalid agent override '{agent_input}'. Falling back to default generalist.")
-        return self._get_agent_for_role("default_system_generalist")
+        return self._get_agent_for_role("system_generalist")
 
     def bind_gateway_context(
         self,
@@ -4818,9 +5006,8 @@ class OrchestrationEngine:
 
         logger.info(f"Engine processing request [{task_id or 'volatile'}]: '{raw_prompt[:60]}...'")
 
-        # Dynamically resolve roles to agent IDs
-        generalist_agent = self._get_agent_for_role("default_system_generalist")
-        planner_agent = self._get_agent_for_role("default_system_planner")
+        generalist_agent = self._get_agent_for_role("system_generalist")
+        planner_agent = self._get_agent_for_role("system_planner")
         fallback_agent = self._get_agent_for_role("system_fallback")
 
         result: str = ""
@@ -4939,7 +5126,7 @@ class OrchestrationEngine:
                     except Exception as emit_err:
                         logger.warning(f"Failed to broadcast synthesized response to emitter: {emit_err}")
 
-        # 5. Engine-Level Concierge Proactive Evaluation (Decoupled Interface Fallback)
+        # 5. Engine-Level Concierge Proactive Evaluation
         if (
             self.concierge
             and self.emitter
@@ -4947,7 +5134,6 @@ class OrchestrationEngine:
             and not result.startswith(("[Awaiting Authorization]", "[Authorization Denied]", "[System Error]"))
         ):
             try:
-                # Decoupled interface contract: avoid assigning agent_id (target_agent) to action_name
                 action_name = getattr(routing, "action", None) or "general_response"
 
                 eval_fn = getattr(
@@ -4989,11 +5175,12 @@ class OrchestrationEngine:
         if stream_cb:
             ack_msg = ""
             action_str = getattr(extraction, "action", "")
-            params = getattr(extraction, "parameters", {}) if hasattr(extraction, "parameters") else {}
+            params = getattr(extraction, "parameters", {})
 
-            if self.concierge and hasattr(self.concierge, "generate_acknowledgment"):
+            ack_fn = getattr(self.concierge, "generate_acknowledgment", None)
+            if ack_fn:
                 try:
-                    res_ack = self.concierge.generate_acknowledgment(
+                    res_ack = ack_fn(
                         agent=resolved_agent,
                         action=action_str,
                         parameters=params,
@@ -5002,8 +5189,10 @@ class OrchestrationEngine:
                 except Exception as ack_err:
                     logger.debug(f"[ENGINE] Concierge acknowledgment generation fallback: {ack_err}")
 
-            if not ack_msg and hasattr(self.orchestrator, "get_acknowledgment"):
-                ack_msg = self.orchestrator.get_acknowledgment(resolved_agent, action=action_str, parameters=params)
+            if not ack_msg:
+                orch_ack_fn = getattr(self.orchestrator, "get_acknowledgment", None)
+                if orch_ack_fn:
+                    ack_msg = orch_ack_fn(resolved_agent, action=action_str, parameters=params)
 
             if ack_msg:
                 stream_cb(f"{ack_msg}\n\n")
@@ -5082,20 +5271,22 @@ class OrchestrationEngine:
 ```python
 """
 charon/core/engine/self_healing.py
-System Version: v0.3.0 | File Revision: 2.2.0
+System Version: v0.6.3 | File Revision: 4.0.0
 
 Module: Diagnostic intercept and self-healing handler for Charon.
-Refactored to query system_roles schema directly and raise explicit fail-fast
-runtime errors if mandatory roles are unbound.
+Refactored to query system_roles schema directly, raise explicit fail-fast
+runtime errors if mandatory roles are unbound, and protect context limits.
+Enforces direct librarian role/action resolution without defensive hasattr checks.
 """
 
 import inspect
 import logging
-from typing import Callable, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 from charon.core.ledger import ExecutionLedger
 from charon.core.session import SessionGateway
 from charon.core.skills.librarian import SkillLibrarian
+from charon.core.skills.roles import RoleResolutionError
 
 logger = logging.getLogger("Charon.Engine.SelfHealing")
 
@@ -5116,20 +5307,28 @@ class SelfHealingHandler:
     def _resolve_diagnostic_agent(self) -> str:
         """Dynamically query the Librarian for the agent assigned to diagnostics."""
         # 1. Action-based dynamic resolution
-        if hasattr(self.librarian, "resolve_agent_id_for_action"):
+        try:
             diag_agent = self.librarian.resolve_agent_id_for_action("diagnose")
             if diag_agent:
                 return diag_agent
+        except RoleResolutionError:
+            pass
 
         # 2. Prefer system_engineer role for diagnostic execution
-        engineer_id = self.librarian.resolve_agent_id_for_role("system_engineer")
-        if engineer_id:
-            return engineer_id
+        try:
+            engineer_id = self.librarian.resolve_agent_id_for_role("system_engineer")
+            if engineer_id:
+                return engineer_id
+        except RoleResolutionError:
+            pass
 
         # 3. Secondary system_planner fallback
-        planner_id = self.librarian.resolve_agent_id_for_role("system_planner")
-        if planner_id:
-            return planner_id
+        try:
+            planner_id = self.librarian.resolve_agent_id_for_role("system_planner")
+            if planner_id:
+                return planner_id
+        except RoleResolutionError:
+            pass
 
         # Fail Fast: Raise explicit error rather than hallucinating fallbacks
         raise RuntimeError(
@@ -5137,20 +5336,36 @@ class SelfHealingHandler:
             "roles could be resolved in system_roles for self-healing diagnostics."
         )
 
+    def _truncate_log_for_context(self, log_text: str, max_chars: int = 4000) -> str:
+        """Truncates diagnostic log content to fit comfortably within model context windows."""
+        if len(log_text) <= max_chars:
+            return log_text
+        half = max_chars // 2
+        truncated_count = len(log_text) - max_chars
+        return (
+            f"{log_text[:half]}\n\n"
+            f"[... Charon Self-Healing Context Guard: Truncated {truncated_count} log characters ...]\n\n"
+            f"{log_text[-half:]}"
+        )
+
     async def handle_if_needed(
         self,
         step_num: Union[int, str],
         agent_name: str,
-        step_result: str,
+        step_result: Any,
         raw_prompt: str,
         stream_cb: Optional[Callable[[str], None]] = None,
         task_id: Optional[str] = None,
     ) -> str:
         """Inspects step results for failure indicators and invokes a diagnostic action."""
-        if not step_result:
-            return step_result
+        if step_result is None:
+            return ""
 
-        # Explicit Authorization & Dependency Guardrails
+        step_result_str = str(step_result)
+        if not step_result_str.strip():
+            return step_result_str
+
+        # Explicit Authorization & Dependency Guardrails / Loop Prevention
         auth_prefixes = (
             "[Awaiting Authorization]",
             "[Authorization Denied]",
@@ -5158,12 +5373,12 @@ class SelfHealingHandler:
             "[Dependency Error]",
             "[System Error]",
         )
-        if any(step_result.startswith(prefix) for prefix in auth_prefixes):
+        if any(step_result_str.startswith(prefix) for prefix in auth_prefixes) or "[Self-Healing" in step_result_str:
             logger.debug(
-                f"Step {step_num} result indicates policy/status control ({step_result[:30]}). "
+                f"Step {step_num} result indicates policy/status control or existing diagnosis. "
                 f"Bypassing self-healing diagnosis."
             )
-            return step_result
+            return step_result_str
 
         failure_triggers = [
             "[Runtime Error]",
@@ -5175,10 +5390,10 @@ class SelfHealingHandler:
             "KeyError:",
             "NameError:",
         ]
-        has_error = any(trigger.lower() in step_result.lower() for trigger in failure_triggers)
+        has_error = any(trigger.lower() in step_result_str.lower() for trigger in failure_triggers)
 
         if not has_error:
-            return step_result
+            return step_result_str
 
         logger.warning(f"Step {step_num} ({agent_name}) hit an execution issue. Initiating self-healing...")
 
@@ -5186,7 +5401,7 @@ class SelfHealingHandler:
             await self.ledger.log_event(
                 task_id=task_id,
                 event_type="step_self_healing_triggered",
-                data={"step": step_num, "agent": agent_name, "error_preview": step_result[:300]},
+                data={"step": step_num, "agent": agent_name, "error_preview": step_result_str[:300]},
             )
 
         if stream_cb:
@@ -5196,20 +5411,28 @@ class SelfHealingHandler:
             diagnostic_agent_id = self._resolve_diagnostic_agent()
             diagnostic_agent = self.orchestrator.dispatcher._resolve_agent(diagnostic_agent_id)
 
-            # Build execution kwargs and reflectively inject stream callback
+            sanitized_log = self._truncate_log_for_context(step_result_str, max_chars=4000)
+
+            # Build execution kwargs
             exec_kwargs = {
                 "action": "diagnose",
                 "parameters": {
-                    "log_content": step_result,
+                    "log_content": sanitized_log,
                     "failing_agent": agent_name,
                     "step_num": step_num,
                 },
                 "raw_prompt": raw_prompt,
             }
 
-            sig = inspect.signature(diagnostic_agent.execute) if hasattr(diagnostic_agent, "execute") else None
+            # Inspect signature including **kwargs support
+            execute_fn = getattr(diagnostic_agent, "execute", None)
+            sig = inspect.signature(execute_fn) if execute_fn else None
             if sig:
-                if "stream_cb" in sig.parameters:
+                has_kwargs = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values()
+                )
+                if "stream_cb" in sig.parameters or has_kwargs:
                     exec_kwargs["stream_cb"] = stream_cb
                 elif "stream_callback" in sig.parameters:
                     exec_kwargs["stream_callback"] = stream_cb
@@ -5224,7 +5447,7 @@ class SelfHealingHandler:
                     data={"step": step_num, "diagnosis_preview": str(diagnosis)[:300]},
                 )
 
-            return f"{step_result}\n\n[Self-Healing Recovery Intercept]:\n{diagnosis}"
+            return f"{step_result_str}\n\n[Self-Healing Recovery Intercept]:\n{diagnosis}"
 
         except Exception as diag_err:
             logger.error(f"Failed to execute self-healing diagnosis: {diag_err}", exc_info=True)
@@ -5234,7 +5457,7 @@ class SelfHealingHandler:
                     event_type="step_self_healing_failed",
                     data={"step": step_num, "error": str(diag_err)},
                 )
-            return f"{step_result}\n\n[Self-Healing Failed]: {str(diag_err)}"
+            return f"{step_result_str}\n\n[Self-Healing Failed]: {str(diag_err)}"
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -5244,16 +5467,15 @@ class SelfHealingHandler:
 ```python
 """
 charon/core/engine/synthesizer.py
-System Version: v0.3.1 | File Revision: 2.2.0
+System Version: v0.4.0 | File Revision: 3.0.0
 
 Module: Response synthesis module via dynamic agent routing.
-Patched to inspect variadic keyword arguments (**kwargs) for streaming callbacks,
-guarantee CLI output delivery on fallback, and enforce fail-fast system role resolution.
+Updated to route synthesis directly through the 'synthesize' DB action SSOT.
 """
 
 import inspect
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from charon.core.session import SessionGateway
 from charon.core.skills.librarian import SkillLibrarian
@@ -5273,66 +5495,73 @@ class OutputSynthesizer:
         self.librarian = librarian or SkillLibrarian.get_instance()
 
     def _get_synthesis_agent_id(self) -> str:
-        """Queries the Librarian to dynamically determine the synthesis agent."""
-        # 1. Direct action resolution via Librarian
-        if hasattr(self.librarian, "resolve_agent_id_for_action"):
-            synth_agent = self.librarian.resolve_agent_id_for_action("synthesize")
-            if synth_agent:
-                return synth_agent
+        """Queries the Librarian SSOT to determine the synthesis agent ID."""
+        # 1. Look for explicit candidates authorized for the 'synthesize' action
+        if hasattr(self.librarian, "get_agents_for_action"):
+            agents = self.librarian.get_agents_for_action("synthesize")
+            if agents:
+                return agents[0]
 
-        # 2. System generalist role resolution (matches system_roles table key)
+        # 2. System generalist / planner fallback resolution
         generalist_id = self.librarian.resolve_agent_id_for_role("system_generalist")
         if generalist_id:
             return generalist_id
 
         # Fail Fast: Enforce database bootstrap integrity
         raise RuntimeError(
-            "Bootstrap Error: Mandatory system role 'system_generalist' is not bound in system_roles."
+            "[FAIL-FAST] Mandatory 'synthesize' action or 'system_generalist' role not registered in database."
+        )
+
+    def _truncate_raw_output_for_context(self, text: str, max_chars: int = 6000) -> str:
+        """Truncates raw output from the middle to prevent LLM context window overflows."""
+        if len(text) <= max_chars:
+            return text
+        half = max_chars // 2
+        truncated_count = len(text) - max_chars
+        return (
+            f"{text[:half]}\n\n"
+            f"[... Charon Synthesis Guard: Truncated {truncated_count} raw characters ...]\n\n"
+            f"{text[-half:]}"
         )
 
     async def synthesize(
         self,
         user_query: str,
         agent: str,
-        raw_output: str,
+        raw_output: Any,
         stream_cb: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Synthesizes raw specialist tool outputs into clean, user-facing responses."""
-        if not raw_output or not raw_output.strip():
+        raw_str = str(raw_output) if raw_output is not None else ""
+
+        if not raw_str.strip():
             return "Task executed successfully with no output returned."
 
-        # Resolve display name for logger & prompt if input is an agent ID or role
+        # Resolve display name for logger & prompt
         display_agent = (
             self.librarian.get_display_name_for_agent(agent)
             if hasattr(self.librarian, "get_display_name_for_agent")
-            else agent
+            else str(agent)
         )
 
         logger.info(f"Synthesizing raw tool output from '{display_agent}'...")
-
-        synthesis_prompt = (
-            f"User Prompt: {user_query}\n"
-            f"Executing Specialist: {display_agent}\n"
-            f"Raw Execution Data:\n```\n{raw_output}\n```\n\n"
-            "Synthesize this execution output into a concise, well-formatted response for the user. "
-            "Do not describe what you are doing—just present the final result directly."
-        )
+        sanitized_context = self._truncate_raw_output_for_context(raw_str, max_chars=6000)
 
         try:
-            # 1. Dynamically resolve synthesis agent
+            # 1. Resolve agent authorized for action 'synthesize'
             synth_agent_id = self._get_synthesis_agent_id()
 
             # 2. Retrieve agent instance from dispatcher
             synth_agent = self.orchestrator.dispatcher._resolve_agent(synth_agent_id)
 
-            # 3. Construct execution parameters and inspect streaming signature
+            # 3. Construct parameters targeting strict DB action 'synthesize'
             exec_kwargs = {
                 "action": "synthesize",
                 "parameters": {
-                    "prompt": synthesis_prompt,
-                    "context": raw_output,
-                    "raw_output": raw_output,
                     "user_query": user_query,
+                    "raw_output": raw_str,
+                    "context": sanitized_context,
+                    "executing_agent": display_agent,
                 },
                 "raw_prompt": user_query,
             }
@@ -5355,21 +5584,19 @@ class OutputSynthesizer:
 
             if not res_str:
                 logger.warning(
-                    f"Agent '{synth_agent_id}' returned empty synthesis output. Falling back to raw tool output."
+                    f"Agent '{synth_agent_id}' returned empty synthesis. Falling back to raw output."
                 )
-                if stream_cb and raw_output:
-                    stream_cb(f"{raw_output}\n")
-                return raw_output
+                if stream_cb and raw_str:
+                    stream_cb(f"{raw_str}\n")
+                return raw_str
 
             return res_str
 
         except Exception as synth_err:
-            logger.warning(
-                f"Output synthesis failed; returning raw execution output: {synth_err}"
-            )
-            if stream_cb and raw_output:
-                stream_cb(f"{raw_output}\n")
-            return raw_output
+            logger.warning(f"Synthesis failed; returning raw execution output: {synth_err}")
+            if stream_cb and raw_str:
+                stream_cb(f"{raw_str}\n")
+            return raw_str
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -5505,7 +5732,7 @@ class ExecutionLedger:
 ```python
 """
 charon/core/parser.py
-System Version: v0.2.0 | File Revision: 2.4.0
+System Version: v0.2.0 | File Revision: 2.4.1
 
 Module: Pass 1 (Triage Routing) and Pass 2 (Schema Extraction) intent parser
 with Tiered Fallback Recovery, Manifest-Driven Routing, and Dynamic Skill Bus Interception.
@@ -5521,10 +5748,10 @@ import ollama
 from pydantic import BaseModel, ValidationError, create_model
 
 from charon.core.prompts import CHARON_ROUTING_PROMPT, EXTRACTION_SYSTEM_PROMPT
-from charon.core.utils import clean_json_string, get_schema_json
 from charon.core.skills import SkillLibrarian
+from charon.core.utils import clean_json_string, get_schema_json
+from charon.intent.manifests import get_agent_manifest, get_triage_agent_descriptions
 from charon.intent.routing import RoutingPayload
-from charon.intent.manifests import get_triage_agent_descriptions, get_agent_manifest
 from charon.utils.memory import ConversationBuffer
 
 logger = logging.getLogger("Charon.Parser")
@@ -5563,8 +5790,8 @@ class IntentParser:
                 if resolved_action_agent:
                     return resolved_action_agent
 
-            # Attempt primary database fallback roles
-            resolved_planner = self.librarian.resolve_agent_id_for_role("default_system_planner")
+            # Primary DB role lookup using standard canonical name
+            resolved_planner = self.librarian.resolve_agent_id_for_role("system_planner")
             if resolved_planner:
                 return resolved_planner
 
@@ -5576,7 +5803,7 @@ class IntentParser:
 
         fatal_msg = (
             "CRITICAL ROUTING FAILURE: Could not resolve mandatory fallback system roles "
-            "('system_fallback' or 'default_system_planner') from the database."
+            "('system_fallback' or 'system_planner') from the database."
         )
         logger.critical(fatal_msg)
         raise RuntimeError(fatal_msg)
@@ -5609,7 +5836,7 @@ class IntentParser:
             objective=(Optional[str], None),
             problem=(Optional[str], None),
             target_device=(Optional[str], None),
-            __base__=BaseModel
+            __base__=BaseModel,
         )
 
     async def parse_routing(
@@ -5628,8 +5855,12 @@ class IntentParser:
                     target_agent = matched_skill.get("primary_agent_id") or matched_skill.get("agent_id")
                     skill_name = matched_skill.get("action_name") or matched_skill.get("name")
                 else:
-                    target_agent = getattr(matched_skill, "primary_agent_id", None) or getattr(matched_skill, "agent_id", None)
-                    skill_name = getattr(matched_skill, "action_name", None) or getattr(matched_skill, "name", None)
+                    target_agent = getattr(matched_skill, "primary_agent_id", None) or getattr(
+                        matched_skill, "agent_id", None
+                    )
+                    skill_name = getattr(matched_skill, "action_name", None) or getattr(
+                        matched_skill, "name", None
+                    )
 
                 if not target_agent:
                     target_agent = self._get_fallback_agent(action_name=skill_name)
@@ -5640,7 +5871,9 @@ class IntentParser:
         except RuntimeError:
             raise  # Bubble up hard runtime errors from missing DB roles
         except Exception as e:
-            logger.warning(f"SkillLibrarian fast-path check failed: {e}. Falling back to standard LLM triage.")
+            logger.warning(
+                f"SkillLibrarian fast-path check failed: {e}. Falling back to standard LLM triage."
+            )
         # --------------------------------------------
 
         # --- STANDARD CONVERSATIONAL/STATIC TRIAGE ---
@@ -5657,9 +5890,7 @@ class IntentParser:
 
         recent_history = self.memory.get_context_string() if hasattr(self.memory, "get_context_string") else ""
         history_context = (
-            f"Recent Conversational Context:\n{recent_history}\n\n"
-            if recent_history
-            else ""
+            f"Recent Conversational Context:\n{recent_history}\n\n" if recent_history else ""
         )
 
         prompt = (
@@ -5694,7 +5925,9 @@ class IntentParser:
                 logger.info(f"Triage routed task to: {payload.agent}")
                 return payload
             except Exception as direct_err:
-                logger.debug(f"Direct routing validation failed: {direct_err}. Attempting key alias extraction.")
+                logger.debug(
+                    f"Direct routing validation failed: {direct_err}. Attempting key alias extraction."
+                )
 
             # Tier 2: Key Alias Unwrapping
             parsed_dict = json.loads(clean_json)
@@ -5769,7 +6002,9 @@ class IntentParser:
 
             # Tier 3: Defensive Fallback
             if extraction is None:
-                logger.warning(f"Pass 2 extraction failed for {agent}. Triggering defensive payload fallback.")
+                logger.warning(
+                    f"Pass 2 extraction failed for {agent}. Triggering defensive payload fallback."
+                )
                 extraction = self._build_fallback_payload(schema_class, agent, user_input)
 
             # Stage 2 Prompt Enrichment
@@ -5788,9 +6023,17 @@ class IntentParser:
                         f"NEVER modify, truncate, or overwrite the target directory path specified in the PRIMARY USER COMMAND.\n"
                         f"{ledger_context}"
                     )
-                    for attr in ("prompt", "objective", "problem"):
-                        if hasattr(extraction, attr) and getattr(extraction, attr, None) is not None:
-                            setattr(extraction, attr, enriched)
+                    updates = {
+                        attr: enriched
+                        for attr in ("prompt", "objective", "problem")
+                        if hasattr(extraction, attr) and getattr(extraction, attr, None) is not None
+                    }
+                    if updates:
+                        try:
+                            extraction = extraction.model_copy(update=updates)
+                        except Exception:
+                            for k, v in updates.items():
+                                setattr(extraction, k, v)
 
             return extraction
 
@@ -5858,11 +6101,11 @@ class IntentParser:
 ```python
 """
 charon/core/prompts.py
-System Version: v0.3.0 | File Revision: 3.2.0
+System Version: v0.4.0 | File Revision: 4.0.0
 
-Module: Dynamic prompt generation and ACK formatting adhering strictly to the
-Janitorial Anchor Directive (Role-based abstraction, DB-driven prompts, and
-SkillLibrarian display accessors).
+Module: Pure DB-driven prompt generation and ACK formatting adhering strictly to
+dynamic routing tables (dynamic_routing_rules, route_registry, system_roles).
+Zero hardcoded string bias. Zero static fallbacks.
 """
 
 import logging
@@ -5872,115 +6115,136 @@ from typing import Any, Dict, Optional, Union
 
 from charon.config.paths import STATE_DB_PATH
 from charon.core.skills.librarian import SkillLibrarian
+from charon.db.connection import get_connection
 from charon.db.repositories.prompts import PromptRepository
 
 logger = logging.getLogger("Charon.Core.Prompts")
 
-# Fallback keys used to load base system prompts
-ROUTING_PROMPT_KEY = "system_routing_base"
-EXTRACTION_PROMPT_KEY = "system_extraction_base"
 
-# Static fallback templates when DB system prompts are empty or unpopulated
-DEFAULT_ROUTING_PROMPT = """You are Charon's Intent Routing System.
-Analyze user requests and route them to the appropriate active role based on the registered roster below.
-
-{dynamic_roster}"""
-
-DEFAULT_EXTRACTION_PROMPT = """You are Charon's Action Parameter Extractor.
-Extract parameters matching the registered action schema for the target role.
-
-{dynamic_capabilities}"""
+class DynamicRoutingError(RuntimeError):
+    """Raised when the database contains no active routing rules or system roles."""
+    pass
 
 
-def _fetch_db_prompt_template(
-    prompt_key: str,
-    repo: Optional[PromptRepository] = None,
-    db_path: Union[str, Path] = STATE_DB_PATH,
-) -> str:
+def fetch_dynamic_routing_context(db_path: Union[str, Path] = STATE_DB_PATH) -> str:
     """
-    Retrieves a system prompt template strictly via PromptRepository.
-    Falls back to static default constants if no custom prompt is defined.
+    Constructs the routing context strictly from dynamic_routing_rules.
     """
-    repo = repo or PromptRepository(db_path)
-    role_target = "role_planner" if "routing" in prompt_key else "default_system_generalist"
+    query = """
+        SELECT trigger, agent_id, description 
+        FROM dynamic_routing_rules
+        ORDER BY trigger ASC;
+    """
+    try:
+        with get_connection(db_path, read_only=True, row_factory=True) as conn:
+            cursor = conn.execute(query)
+            rules = cursor.fetchall()
 
-    template = repo.get_system_prompt_template(role_target)
-    if template:
-        return template
+        if not rules:
+            return ""
 
-    # Fall back to hardcoded default constants
-    if prompt_key == ROUTING_PROMPT_KEY:
-        return DEFAULT_ROUTING_PROMPT
-    if prompt_key == EXTRACTION_PROMPT_KEY:
-        return DEFAULT_EXTRACTION_PROMPT
-
-    return "{dynamic_content}"
+        rule_lines = [
+            f"- IF request matches '{r['trigger']}' -> ROUTE TO '{r['agent_id']}' ({r['description']})"
+            for r in rules
+        ]
+        return "\n".join(rule_lines)
+    except Exception as err:
+        logger.error(f"[Prompts] Failed to query dynamic_routing_rules: {err}")
+        return ""
 
 
 def build_routing_prompt(
+    target_role_or_agent: Optional[str] = None,
     repo: Optional[PromptRepository] = None,
     db_path: Union[str, Path] = STATE_DB_PATH,
 ) -> str:
     """
-    Dynamically builds the routing prompt by populating DB prompt templates
-    with available system_roles rather than raw agent_ids.
+    Dynamically builds the routing prompt purely from active system roles and
+    dynamic routing rules in SQLite. Fails fast if no DB state is present.
     """
     repo = repo or PromptRepository(db_path)
-    roster_items = repo.get_active_role_roster()
+
+    # 1. Fetch active role roster
+    roster_items = repo.get_active_role_roster() if hasattr(repo, "get_active_role_roster") else []
+
+    # 2. Fetch dynamic routing rules
+    routing_rules = fetch_dynamic_routing_context(db_path)
+
+    if not roster_items and not routing_rules:
+        raise DynamicRoutingError(
+            "[FATAL] Cannot build routing prompt: No active system_roles or dynamic_routing_rules "
+            "found in charon_state.db."
+        )
 
     roster_lines = [
-        f"- {item['role_name']}: {item['description']}" for item in roster_items
+        f"- Role '{item['role_name']}': {item['description']}"
+        for item in roster_items
+        if isinstance(item, dict)
     ]
 
-    dynamic_roster = "\n".join(roster_lines) if roster_lines else "NO ACTIVE ROLES REGISTERED."
+    prompt_parts = []
 
-    # Load base prompt template directly from database / fallbacks
-    base_template = _fetch_db_prompt_template(ROUTING_PROMPT_KEY, repo=repo, db_path=db_path)
+    # Optional role-specific system prompt override from agent_registry
+    if target_role_or_agent and hasattr(repo, "get_system_prompt_template"):
+        custom_base = repo.get_system_prompt_template(target_role_or_agent)
+        if custom_base:
+            prompt_parts.append(custom_base)
 
-    if "{dynamic_roster}" in base_template:
-        return base_template.format(dynamic_roster=dynamic_roster)
+    if roster_lines:
+        prompt_parts.append("ACTIVE ROLES:\n" + "\n".join(roster_lines))
 
-    return f"{base_template}\n\nACTIVE ROLES:\n{dynamic_roster}"
+    if routing_rules:
+        prompt_parts.append("DYNAMIC ROUTING RULES:\n" + routing_rules)
+
+    return "\n\n".join(prompt_parts)
 
 
 def build_extraction_prompt(
+    target_role_or_agent: Optional[str] = None,
     repo: Optional[PromptRepository] = None,
     db_path: Union[str, Path] = STATE_DB_PATH,
 ) -> str:
     """
-    Dynamically builds extraction capabilities mapped across roles and skill registries.
+    Dynamically builds capability extraction schemas mapped across active roles
+    and skill registries directly from SQLite.
     """
     repo = repo or PromptRepository(db_path)
-    capabilities = repo.get_role_capabilities()
+
+    capabilities = repo.get_role_capabilities() if hasattr(repo, "get_role_capabilities") else []
+    if not capabilities:
+        raise DynamicRoutingError(
+            "[FATAL] Cannot build extraction prompt: No active skill schemas registered in skill_registry."
+        )
 
     capability_lines = []
     current_role = ""
 
     for row in capabilities:
-        role_name = row["role_name"]
+        if not isinstance(row, dict):
+            continue
+        role_name = row.get("role_name", "UNKNOWN")
         if role_name != current_role:
             capability_lines.append(f"\nFOR ROLE {role_name.upper()}:")
             current_role = role_name
 
-        action = row["action_name"]
-        desc = row["description"]
-        params = row["parameters"] or "{}"
+        action = row.get("action_name", "")
+        desc = row.get("description", "")
+        params = row.get("parameters") or "{}"
 
         capability_lines.append(
-            f'    - {desc} -> Set "action": "{action}", matching schema: {params}'
+            f'    - {desc} -> Action: "{action}", Schema: {params}'
         )
 
-    dynamic_capabilities = (
-        "\n".join(capability_lines) if capability_lines else "NO ACTIVE SKILLS REGISTERED."
-    )
+    prompt_parts = []
 
-    # Load base extraction prompt template directly from database / fallbacks
-    base_template = _fetch_db_prompt_template(EXTRACTION_PROMPT_KEY, repo=repo, db_path=db_path)
+    if target_role_or_agent and hasattr(repo, "get_system_prompt_template"):
+        custom_base = repo.get_system_prompt_template(target_role_or_agent)
+        if custom_base:
+            prompt_parts.append(custom_base)
 
-    if "{dynamic_capabilities}" in base_template:
-        return base_template.format(dynamic_capabilities=dynamic_capabilities)
+    prompt_parts.append("ACTIVE CAPABILITIES:\n" + "\n".join(capability_lines))
 
-    return f"{base_template}\n\nACTIVE CAPABILITIES:\n{dynamic_capabilities}"
+    return "\n\n".join(prompt_parts)
 
 
 def get_agent_ack(
@@ -5992,12 +6256,11 @@ def get_agent_ack(
 ) -> str:
     """
     Formats a status acknowledgment using SkillLibrarian presentation accessors
-    to resolve human-readable display names instead of leaking raw IDs.
+    to resolve human-readable display names dynamically from DB state.
     """
     params = parameters or {}
     target = params.get("target_path") or params.get("query") or params.get("command") or ""
 
-    # Always retrieve presentation label via SkillLibrarian accessor
     display_name = SkillLibrarian.get_display_name_for_role(agent_id_or_role)
     if display_name == agent_id_or_role:
         display_name = SkillLibrarian.get_display_name_for_agent(agent_id_or_role)
@@ -6007,15 +6270,18 @@ def get_agent_ack(
         return f"[{display_name}: Executing {action} on '{clean_target}']"
 
     repo = repo or PromptRepository(db_path)
-    fallback = repo.get_default_action_for_identifier(agent_id_or_role) or "Processing request."
+    fallback = "Processing request."
+    try:
+        if hasattr(repo, "get_default_action_for_identifier") and callable(repo.get_default_action_for_identifier):
+            fallback = repo.get_default_action_for_identifier(agent_id_or_role) or fallback
+    except Exception as err:
+        logger.debug(f"[Prompts] Failed to query default action for identifier '{agent_id_or_role}': {err}")
 
     return f"[{display_name}: {fallback}]"
 
 
 def __getattr__(name: str) -> Any:
-    """
-    Backward-compatibility interface resolving dynamic calls via DB getters.
-    """
+    """Backward-compatibility interface resolving dynamic calls via DB getters."""
     if name == "CHARON_ROUTING_PROMPT":
         return build_routing_prompt()
     if name == "EXTRACTION_SYSTEM_PROMPT":
@@ -6499,7 +6765,7 @@ __all__ = [
 ```python
 """
 charon/core/skills/base.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.7.0 | File Revision: 7.0.0
 
 Module: Abstract Base Class defining the contract for in-memory and dynamic skill plugins.
 Establishes clean separation between code identity (skill_id) and prompt contract (action_name),
@@ -6507,7 +6773,7 @@ aligned with CBAC Schema V2 capability architecture and quarantine lifecycle man
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 class BaseSkill(ABC):
@@ -6528,7 +6794,7 @@ class BaseSkill(ABC):
 
     # Status state machine: 'ACTIVE', 'QUARANTINED', 'DISABLED'
     status: str = "ACTIVE"
-    quarantine_reason: Union[str, None] = None
+    quarantine_reason: Optional[str] = None
 
     # Restrict checkout to specific agent IDs, or ["*"] for global availability
     allowed_agents: List[str] = ["*"]
@@ -6575,11 +6841,12 @@ class BaseSkill(ABC):
 ```python
 """
 charon/core/skills/executor.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.6.3 | File Revision: 7.0.0
 
 Module: Dynamic module import and skill checkout execution mixin for SkillLibrarian.
 Resolves skill_id and handler_name to safely load disk plugins into runtime callables.
 Integrates CBAC Schema V2 permission gatechecking and Quarantine State verification.
+Enforces strict fail-fast role resolution against database registry.
 """
 
 import importlib.util
@@ -6589,6 +6856,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
 from charon.core.skills.base import BaseSkill
+from charon.core.skills.roles import RoleResolutionError
 
 logger = logging.getLogger("Charon.Core.Skills.Executor")
 
@@ -6603,43 +6871,51 @@ class SkillExecutorMixin:
         Validates authorization constraints, quarantine states, and CBAC permissions,
         then signs out the plugin handler callable.
         Resolves action_name -> skill_id -> entry_file_path + handler_name.
+        Fails fast if agent_name cannot be resolved to an active agent in SQLite.
         """
-        canonical_agent = (
-            self.resolve_agent_id_for_role(agent_name)
-            if hasattr(self, "resolve_agent_id_for_role")
-            else agent_name
-        )
+        # Ground Truth DB Lookup: Fails hard if unresolvable
+        canonical_agent = self.resolve_agent_id_for_role(agent_name)
 
         # 1. Look up skill metadata row to identify skill_id and status
-        row = (
-            self.repo.get_skill_by_action(action)
-            if hasattr(self, "repo") and hasattr(self.repo, "get_skill_by_action")
-            else None
-        )
+        row = self.repo.get_skill_by_action(action)
         if not row:
-            details = self.get_action_details(action) if hasattr(self, "get_action_details") else None
-            if not details:
+            row = self.get_action_details(action)
+            if not row:
                 logger.error(f"[LIBRARIAN] Action contract '{action}' not found in registry.")
                 return None
-            row = details
 
-        skill_id = row.get("skill_id", "unknown") if isinstance(row, dict) else getattr(row, "skill_id", "unknown")
-        status = row.get("status", "QUARANTINED") if isinstance(row, dict) else getattr(row, "status", "QUARANTINED")
+        skill_id = (
+            row.get("skill_id", "unknown")
+            if isinstance(row, dict)
+            else getattr(row, "skill_id", "unknown")
+        )
+        status = (
+            row.get("status", "QUARANTINED")
+            if isinstance(row, dict)
+            else getattr(row, "status", "QUARANTINED")
+        )
 
         # 2. Check quarantine state
         if status == "QUARANTINED":
-            quarantine_reason = row.get("quarantine_reason", "Skill is in dynamic quarantine.")
+            quarantine_reason = (
+                row.get("quarantine_reason", "Skill is in dynamic quarantine.")
+                if isinstance(row, dict)
+                else getattr(row, "quarantine_reason", "Skill is in dynamic quarantine.")
+            )
             logger.warning(
                 f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is QUARANTINED. Reason: {quarantine_reason}"
             )
             return None
         elif status == "DISABLED":
-            logger.warning(f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is DISABLED.")
+            logger.warning(
+                f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is DISABLED."
+            )
             return None
 
         # 3. CBAC Authorization Gatecheck
-        if hasattr(self, "permission_repo") and self.permission_repo is not None:
-            authorized = self.permission_repo.authorize_execution(canonical_agent, skill_id)
+        perm_repo = getattr(self, "permission_repo", None)
+        if perm_repo is not None:
+            authorized = perm_repo.authorize_execution(canonical_agent, skill_id)
             if not authorized:
                 logger.warning(
                     f"[LIBRARIAN] CBAC Access Denied: Agent '{canonical_agent}' unauthorized for skill '{skill_id}' ({action})."
@@ -6654,12 +6930,15 @@ class SkillExecutorMixin:
                 return None
 
         # 4. Check in-memory registered skills cache
-        if hasattr(self, "_skills") and action in self._skills:
-            in_mem_skill = self._skills[action]
+        skills_map = getattr(self, "_skills", {})
+        if action in skills_map:
+            in_mem_skill = skills_map[action]
             logger.info(f"[LIBRARIAN] In-memory skill contract '{action}' checked out.")
             if isinstance(in_mem_skill, BaseSkill):
                 if inspect.iscoroutinefunction(in_mem_skill.execute):
-                    async def async_in_mem_wrapper(agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs):
+                    async def async_in_mem_wrapper(
+                        agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
+                    ):
                         return await in_mem_skill.execute(
                             agent_name or agent,
                             parameters if parameters is not None else (params or {}),
@@ -6677,8 +6956,16 @@ class SkillExecutorMixin:
 
         try:
             # Defensive property extraction
-            raw_path = row.get("entry_file_path") if isinstance(row, dict) else getattr(row, "entry_file_path", None)
-            handler_name = row.get("handler_name") if isinstance(row, dict) else getattr(row, "handler_name", "execute")
+            raw_path = (
+                row.get("entry_file_path")
+                if isinstance(row, dict)
+                else getattr(row, "entry_file_path", None)
+            )
+            handler_name = (
+                row.get("handler_name")
+                if isinstance(row, dict)
+                else getattr(row, "handler_name", "execute")
+            )
 
             # Pre-flight Guardrail 1: DB entry missing disk path definition
             if not raw_path:
@@ -6717,9 +7004,13 @@ class SkillExecutorMixin:
                     and attr is not BaseSkill
                 ):
                     instance = attr()
-                    logger.info(f"[LIBRARIAN] Checked out BaseSkill class '{attr_name}' for action '{action}' ({skill_id}).")
+                    logger.info(
+                        f"[LIBRARIAN] Checked out BaseSkill class '{attr_name}' for action '{action}' ({skill_id})."
+                    )
                     if inspect.iscoroutinefunction(instance.execute):
-                        async def async_base_skill_wrapper(agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs):
+                        async def async_base_skill_wrapper(
+                            agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
+                        ):
                             return await instance.execute(
                                 agent_name or agent,
                                 parameters if parameters is not None else (params or {}),
@@ -6736,16 +7027,22 @@ class SkillExecutorMixin:
             # Resolution Priority 2: Explicit function corresponding to handler_name
             if handler_name and hasattr(module, handler_name):
                 target_func = getattr(module, handler_name)
-                logger.info(f"[LIBRARIAN] Checked out handler function '{handler_name}' for action '{action}' ({skill_id}).")
+                logger.info(
+                    f"[LIBRARIAN] Checked out handler function '{handler_name}' for action '{action}' ({skill_id})."
+                )
                 return self._wrap_callable(target_func, default_action=action)
 
             # Resolution Priority 3: Fallback module action entrypoint
             if hasattr(module, "execute_action"):
                 target_func = getattr(module, "execute_action")
-                logger.info(f"[LIBRARIAN] Checked out 'execute_action' fallback for action '{action}' ({skill_id}).")
+                logger.info(
+                    f"[LIBRARIAN] Checked out 'execute_action' fallback for action '{action}' ({skill_id})."
+                )
 
                 if inspect.iscoroutinefunction(target_func):
-                    async def async_fallback(agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs):
+                    async def async_fallback(
+                        agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
+                    ):
                         eff_params = parameters if parameters is not None else (params or {})
                         return await target_func(action, eff_params)
                     return async_fallback
@@ -6825,12 +7122,13 @@ class SkillExecutorMixin:
 ```python
 """
 charon/core/skills/indexer.py
-System Version: v0.6.0 | File Revision: 6.1.0
+System Version: v0.6.3 | File Revision: 7.0.0
 
 Module: Dynamic discovery, skill promotion, route syncing, and database re-indexing mixin.
 Maintains clean separation between immutable code identifiers (skill_id) and prompt contracts (action_name).
 All direct SQL execution extracted to repository layer.
 Integrates CBAC Schema V2 permission indexing and quarantine status preservation.
+Enforces strict fail-fast role resolution against database registry.
 """
 
 import json
@@ -6842,6 +7140,7 @@ from typing import Any, Dict, List, Optional
 from charon.config.paths import DYNAMIC_SKILLS_DIR
 from charon.core.skills.base import BaseSkill
 from charon.core.skills.models import SkillManifest
+from charon.core.skills.roles import RoleResolutionError
 
 logger = logging.getLogger("Charon.Core.Skills.Indexer")
 
@@ -6904,6 +7203,7 @@ class SkillIndexerMixin:
         Unified pipeline for skill indexing and role-based route synchronization.
         Establishes skill_registry entries and maps agent capability FKs via agent_skill_map.
         Saves CBAC Schema V2 required permissions and preserves active quarantine states.
+        Fails fast if any manifest references an invalid role or agent not present in SQLite.
         """
         if not self.db_path.parent.exists():
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7022,13 +7322,13 @@ class SkillIndexerMixin:
                             for raw_agent_id in allowed_agents_list:
                                 if raw_agent_id == "*":
                                     continue
-                                canonical_id = (
-                                    self.resolve_agent_id_for_role(raw_agent_id)
-                                    if hasattr(self, "resolve_agent_id_for_role")
-                                    else raw_agent_id
-                                )
+                                # Strict DB lookup: Fails immediately if raw_agent_id/role is unmapped in SQLite
+                                canonical_id = self.resolve_agent_id_for_role(raw_agent_id)
                                 self.repo.link_agent_to_skill(canonical_id, action_skill_id)
 
+                except RoleResolutionError as rre:
+                    logger.error(f"[LIBRARIAN] Role Resolution Error indexing manifest {manifest_path}: {rre}")
+                    raise
                 except Exception as e:
                     logger.warning(
                         f"[LIBRARIAN] Failed to index manifest {manifest_path}: {e}",
@@ -7045,6 +7345,7 @@ class SkillIndexerMixin:
             logger.info("[LIBRARIAN] Skill reindexing and routing sync complete.")
         except Exception as e:
             logger.error(f"[LIBRARIAN] Reindexing pipeline failed: {e}", exc_info=True)
+            raise
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -7054,11 +7355,12 @@ class SkillIndexerMixin:
 ```python
 """
 charon/core/skills/librarian.py
-System Version: v0.6.0 | File Revision: 9.1.0
+System Version: v0.6.5 | File Revision: 10.3.0
 
 Module: Central registry, hybrid DB/disk discovery hub, dynamic query bus, and authorization desk.
 Combines RoleResolver, RouteManager, SkillIndexer, SkillQuery, and SkillExecutor mixins.
 Integrates CBAC Schema V2 authorization, PermissionRepository, and Quarantine State controls.
+Enforces strict fail-fast role resolution against database registry with dynamic defaults.
 """
 
 import logging
@@ -7075,7 +7377,7 @@ from charon.core.skills.base import BaseSkill
 from charon.core.skills.executor import SkillExecutorMixin
 from charon.core.skills.indexer import SkillIndexerMixin
 from charon.core.skills.query import SkillQueryMixin
-from charon.core.skills.roles import RoleResolverMixin
+from charon.core.skills.roles import RoleResolutionError, RoleResolverMixin
 from charon.core.skills.routes import RouteManagerMixin
 from charon.db.repositories import (
     AgentRepository,
@@ -7156,36 +7458,73 @@ class SkillLibrarian(
     def get_action_manifest(
         self, action: str, agent_name: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        Retrieves action details/manifest for a given skill trigger after validating
-        authorization for the specified agent.
+        """Retrieves action details/manifest for a given skill trigger after validating authorization.
+
+        Gracefully returns None if role resolution fails or skill is unauthorized.
         """
         if not action:
             return None
 
         # Validate agent authorization if agent name/ID provided
         if agent_name:
-            canonical_agent = self.resolve_agent_id_for_role(agent_name)
-            if hasattr(self, "is_skill_available") and not self.is_skill_available(
-                action, canonical_agent
-            ):
+            try:
+                canonical_agent = self.resolve_agent_id_for_role(agent_name)
+                if not self.is_skill_available(action, canonical_agent):
+                    return None
+            except RoleResolutionError:
+                logger.debug(f"[SkillLibrarian] Unmapped agent/role '{agent_name}' for action '{action}'.")
                 return None
 
         # Resolve skill action metadata from query mixin or repository
-        if hasattr(self, "get_action_details"):
-            details = self.get_action_details(action)
-            if details:
-                return details
+        details = self.get_action_details(action)
+        if details:
+            return details
 
         return self.repo.get_skill_by_action(action)
+
+    def get_agents_for_action(self, action_name: str) -> List[str]:
+        """Resolves candidate agent IDs authorized to perform an ACTIVE action capability contract.
+
+        Delegates directly to SkillRepository SSOT query.
+        """
+        if not action_name:
+            return []
+        try:
+            return self.repo.get_agents_for_action(action_name.strip())
+        except Exception as err:
+            logger.error(
+                f"[SkillLibrarian] Error resolving candidate agents for action '{action_name}': {err}"
+            )
+            return []
+
+    def list_available_actions(self, agent_or_role: str) -> List[str]:
+        """Retrieves all active action capability names granted to an agent or role alias.
+
+        Resolves role aliases to canonical agent IDs before querying SSOT state.
+        """
+        if not agent_or_role:
+            return []
+        try:
+            canonical_id = self.resolve_agent_id_for_role(agent_or_role)
+            return self.repo.get_actions_for_agent(canonical_id)
+        except RoleResolutionError as rre:
+            logger.warning(
+                f"[SkillLibrarian] Could not resolve role '{agent_or_role}' for available actions: {rre}"
+            )
+            return []
+        except Exception as err:
+            logger.error(
+                f"[SkillLibrarian] Error listing actions for target '{agent_or_role}': {err}"
+            )
+            return []
 
     # =========================================================================
     # Dynamic Router & Manifest Control API
     # =========================================================================
 
     def get_agent_default_action(self, agent_id: str) -> Optional[str]:
-        """
-        Retrieves the default interface action for an agent.
+        """Retrieves the default interface action for an agent.
+
         Resolves canonical agent ID via RoleResolverMixin and queries cached manifests.
         """
         manifest = self.get_agent_manifest(agent_id)
@@ -7194,13 +7533,11 @@ class SkillLibrarian(
         return None
 
     def get_default_action_for_role(self, role_name: str) -> str:
-        """
-        Resolves and returns the default action_name for a given system role.
-        Falls back to resolving the agent mapped to the role.
+        """Resolves and returns the default action_name for a given system role.
+
+        Fails fast if role_name cannot be resolved to an agent in SQLite.
         """
         agent_id = self.resolve_agent_id_for_role(role_name)
-        if not agent_id:
-            return ""
 
         agent_manifest = self.get_agent_manifest(agent_id) or {}
         if isinstance(agent_manifest, dict):
@@ -7225,14 +7562,17 @@ class SkillLibrarian(
         return self._manifest_cache
 
     def get_agent_manifest(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Retrieves a single manifest by resolving agent target via RoleResolverMixin.
-        Checks canonical agent ID as well as raw inputs.
+        """Retrieves a single manifest by resolving agent target via RoleResolverMixin.
+
+        Fails fast if agent_id is an unmapped role/agent.
         """
         if not agent_id:
             return None
-        canonical_id = self.resolve_agent_id_for_role(agent_id)
-        return self._manifest_cache.get(canonical_id) or self._manifest_cache.get(agent_id)
+        try:
+            canonical_id = self.resolve_agent_id_for_role(agent_id)
+            return self._manifest_cache.get(canonical_id) or self._manifest_cache.get(agent_id)
+        except RoleResolutionError:
+            return None
 
     def update_agent_manifest(self, agent_id: str, update_data: Dict[str, Any]) -> bool:
         """Delegates manifest persistence to AgentRepository via resolved agent ID and refreshes cache."""
@@ -7253,24 +7593,9 @@ class SkillLibrarian(
         return manifest
 
     def set_tool_status(self, agent_id: str, tool_name: str, enabled: bool) -> bool:
-        """
-        Toggles agent capability in agent_skill_map by resolving action contract/skill_id
-        and hot-reloading the manifest cache.
-        """
+        """Toggles agent capability via AgentRepository and hot-reloads the manifest cache."""
         canonical_id = self.resolve_agent_id_for_role(agent_id)
-
-        # Resolve corresponding skill_id if tool_name is passed as action contract trigger
-        skill_row = self.repo.get_skill_by_action(tool_name)
-        skill_id = (
-            skill_row.get("skill_id")
-            if isinstance(skill_row, dict)
-            else (getattr(skill_row, "skill_id", tool_name) if skill_row else tool_name)
-        )
-
-        if enabled:
-            success = self.repo.link_agent_to_skill(canonical_id, skill_id)
-        else:
-            success = self.repo.revoke_skill_by_id(canonical_id, skill_id)
+        success = self.agent_repo.set_tool_status(canonical_id, tool_name, enabled)
 
         if success:
             self.reload_agent_manifest(canonical_id)
@@ -7284,12 +7609,12 @@ class SkillLibrarian(
 ```python
 """
 charon/core/skills/models.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.8.0 | File Revision: 8.0.0
 
 Module: Pydantic schemas for dynamic skill manifests and action specifications.
-Enforces strict System Role abstraction and explicit agent authorization,
-adhering strictly to the Janitorial Working Anchor.
+Enforces Pydantic V2 validation and schema normalization for SkillManifest and ActionMetadata.
 Integrates CBAC Schema V2 permission declarations and quarantine lifecycle states.
+Preserves raw identifier fidelity without forced case conversions or prefix mutations.
 """
 
 from typing import Any, Dict, List, Optional
@@ -7342,8 +7667,8 @@ class SkillManifest(BaseModel):
     )
     author: str = Field(default="Charon Librarian", description="Author or maintainer name")
     primary_agent_id: str = Field(
-        default="default_system_generalist",
-        description="Primary system role owner adhering strictly to Janitorial role abstraction",
+        default="system_generalist",
+        description="Primary system role owner or canonical agent identifier",
     )
     allowed_agents: List[str] = Field(
         default_factory=list,
@@ -7383,25 +7708,36 @@ class SkillManifest(BaseModel):
         """Provides defensive schema export for core utils extraction compatibility."""
         return cls.model_json_schema()
 
-    @field_validator("primary_agent_id")
-    @classmethod
-    def enforce_system_role_abstraction(cls, v: str) -> str:
-        """
-        Fail-fast validator blocking legacy raw agent names and non-conforming role identifiers.
-        Raises ValueError immediately to prevent legacy agent strings from entering the system.
-        """
-        legacy_banned = {"generalist", "engineer", "fallback", "planner", "the_engineer"}
-        clean_v = v.strip().lower()
+    @staticmethod
+    def _clean_identifier(role_str: Any) -> str:
+        """Trims whitespace and extracts string value without case mutation or forced prefixes."""
+        if not role_str:
+            return ""
+        return str(getattr(role_str, "value", role_str)).strip()
 
-        if clean_v in legacy_banned:
-            raise ValueError(
-                f"[JANITORIAL FAULT] Legacy agent string '{v}' detected in manifest. "
-                f"Hardcoded agent names are strictly prohibited. "
-                f"Update manifest to use a System Role (e.g., 'default_system_generalist')."
-            )
+    @field_validator("primary_agent_id", mode="before")
+    @classmethod
+    def sanitize_primary_agent(cls, v: Any) -> str:
+        """Sanitizes primary_agent_id into clean trimmed format."""
+        cleaned = cls._clean_identifier(v)
+        return cleaned or "system_generalist"
+
+    @field_validator("allowed_agents", mode="before")
+    @classmethod
+    def sanitize_allowed_agents(cls, v: Any) -> List[str]:
+        """Coerces strings/lists into trimmed agent identifier list format."""
+        if isinstance(v, str):
+            v = [v]
+        if isinstance(v, list):
+            res = []
+            for agent in v:
+                cleaned = cls._clean_identifier(agent)
+                if cleaned:
+                    res.append(cleaned)
+            return res
         return v
 
-    @field_validator("allowed_agents", "required_permissions", mode="before")
+    @field_validator("required_permissions", mode="before")
     @classmethod
     def coerce_string_to_list(cls, v: Any) -> Any:
         """Coerces single string entries into a standard list prior to schema validation."""
@@ -7409,33 +7745,11 @@ class SkillManifest(BaseModel):
             return [v]
         return v
 
-    @field_validator("allowed_agents")
-    @classmethod
-    def validate_allowed_agents(cls, v: List[str]) -> List[str]:
-        """Ensures allowed_agents entries do not contain banned legacy raw agent names."""
-        legacy_banned = {
-            "generalist",
-            "engineer",
-            "fallback",
-            "planner",
-            "the_engineer",
-            "the_archivist",
-        }
-        for agent in v:
-            clean_agent = agent.strip().lower()
-            if clean_agent in legacy_banned:
-                raise ValueError(
-                    f"[JANITORIAL FAULT] Legacy agent string '{agent}' detected in allowed_agents list. "
-                    f"Use valid agent_ids (e.g., 'agent_planner' or '*') instead."
-                )
-        return v
-
     @model_validator(mode="before")
     @classmethod
     def normalize_manifest_structure(cls, data: Any) -> Any:
         """
         Normalizes template nested action objects and legacy manifest structures.
-        Does NOT perform silent coercion of legacy agent identities.
         """
         if not isinstance(data, dict):
             return data
@@ -7487,23 +7801,68 @@ class SkillManifest(BaseModel):
 ```python
 """
 charon/core/skills/query.py
-System Version: v0.6.0 | File Revision: 6.2.0
+System Version: v0.6.6 | File Revision: 7.3.0
 
 Capability matching and tool schema generation mixin for SkillLibrarian.
-Delegates all database access to SkillRepository (DAL) and performs physical
-executable checks to filter phantom/hallucinated skills.
+Delegates database queries to SkillRepository & AgentRepository (DAL) and performs
+physical executable checks to filter phantom/hallucinated skills.
+Strictly enforces fail-fast role resolution.
 """
 
 import logging
 import os
 import shutil
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set
+
+from charon.core.skills.roles import RoleResolutionError
 
 logger = logging.getLogger("Charon.Core.Skills.Query")
 
 
 class SkillQueryMixin:
     """Action queries, tool schema generation, and authorization checks for SkillLibrarian."""
+
+    def is_agent_active(self, agent_name: str) -> bool:
+        """
+        Validates if an agent persona exists and is currently active in AgentRepository.
+        Prevents Engine triage from falling back during role verification.
+        """
+        if not agent_name or not isinstance(agent_name, str):
+            return False
+
+        try:
+            canonical_agent = self.resolve_agent_id_for_role(agent_name)
+            if hasattr(self, "agent_repo"):
+                return self.agent_repo.get_active_agent(canonical_agent) is not None
+            return False
+        except (RoleResolutionError, Exception) as err:
+            logger.debug(f"[LIBRARIAN] Failed active check for agent '{agent_name}': {err}")
+            return False
+
+    @lru_cache(maxsize=128)
+    def _check_requirement_cached(self, req_clean: str) -> bool:
+        """Helper to cache disk binary and Python package resolution."""
+        import importlib.metadata
+        import importlib.util
+
+        if shutil.which(req_clean) or os.path.exists(req_clean):
+            return True
+
+        try:
+            importlib.metadata.distribution(req_clean)
+            return True
+        except importlib.metadata.PackageNotFoundError:
+            pass
+
+        try:
+            mod_name = req_clean.replace("-", "_")
+            if importlib.util.find_spec(mod_name) is not None:
+                return True
+        except Exception:
+            pass
+
+        return False
 
     def _is_physically_executable(self, action_dict: Dict[str, Any]) -> bool:
         """
@@ -7525,48 +7884,42 @@ class SkillQueryMixin:
             for req in sys_reqs:
                 if isinstance(req, str) and req.strip():
                     req_clean = req.strip()
-                    if not shutil.which(req_clean) and not os.path.exists(req_clean):
+                    if not self._check_requirement_cached(req_clean):
                         logger.warning(
                             f"[LIBRARIAN] Suppressing unequipped skill '{action_dict.get('action_name')}': "
-                            f"missing binary requirement '{req_clean}'"
+                            f"missing requirement '{req_clean}'"
                         )
                         return False
         return True
 
     def get_actions_for_agent(self, agent_name: str) -> List[Dict[str, Any]]:
-        """Retrieves active, unquarantined, and physically verified action metadata for an agent persona."""
+        """
+        Retrieves active, unquarantined, and physically verified action metadata for an agent persona.
+        Fails fast if agent_name cannot be resolved to an active agent in SQLite.
+        """
+        canonical_agent = self.resolve_agent_id_for_role(agent_name)
         actions_by_name: Dict[str, Dict[str, Any]] = {}
-        canonical_agent = (
-            self.resolve_agent_id_for_role(agent_name)
-            if hasattr(self, "resolve_agent_id_for_role")
-            else agent_name
-        )
 
-        try:
-            # Delegate SQL execution entirely to the DAL repository layer
-            db_actions: List[Dict[str, Any]] = self.repo.get_skills_for_agent(
-                canonical_agent, agent_name
-            )
+        # 1. Fetch database skills via DAL
+        db_actions: List[Dict[str, Any]] = self.repo.get_skills_for_agent(canonical_agent)
+        for act in db_actions:
+            act_status = act.get("status", "ACTIVE") or "ACTIVE"
+            act_name = act.get("action_name")
+            if act_status.upper() == "ACTIVE" and act_name:
+                actions_by_name[act_name] = act
 
-            for act in db_actions:
-                act_status = act.get("status", "ACTIVE") or "ACTIVE"
-                if act_status.upper() == "ACTIVE" and self._is_physically_executable(act):
-                    actions_by_name[act["action_name"]] = act
-
-        except Exception as e:
-            logger.error(
-                f"[LIBRARIAN] Error querying DB actions for agent '{agent_name}' ({canonical_agent}): {e}"
-            )
-
-        # Merge in-memory registered skills matching agent permissions and physical existence
+        # 2. Merge in-memory registered skills matching agent permissions
         for act_name, skill in getattr(self, "_skills", {}).items():
+            if act_name in actions_by_name:
+                continue  # Avoid duplicate evaluation if already loaded from DB
+
             s_status = getattr(skill, "status", "ACTIVE") or "ACTIVE"
             if s_status.upper() != "ACTIVE":
                 continue
 
             allowed = getattr(skill, "allowed_agents", []) or []
-            if "*" in allowed or canonical_agent in allowed or agent_name in allowed:
-                skill_dict = {
+            if "*" in allowed or canonical_agent in allowed:
+                actions_by_name[act_name] = {
                     "action_name": getattr(skill, "action_name", act_name),
                     "skill_id": getattr(skill, "skill_id", act_name),
                     "version": getattr(skill, "version", "1.0.0"),
@@ -7580,41 +7933,36 @@ class SkillQueryMixin:
                     "entry_file_path": getattr(skill, "entry_file_path", ""),
                     "handler_name": getattr(skill, "handler_name", "execute"),
                 }
-                if self._is_physically_executable(skill_dict):
-                    actions_by_name[act_name] = skill_dict
 
-        return list(actions_by_name.values())
+        # 3. Perform physical verification once on deduplicated list
+        verified_actions: List[Dict[str, Any]] = []
+        for act in actions_by_name.values():
+            if self._is_physically_executable(act):
+                verified_actions.append(act)
+
+        return verified_actions
 
     def list_available_actions(self, agent_name: str) -> List[str]:
-        """Lists active, unquarantined, verified dynamic skill actions accessible to an agent persona."""
-        actions: Set[str] = set()
-        canonical_agent = (
-            self.resolve_agent_id_for_role(agent_name)
-            if hasattr(self, "resolve_agent_id_for_role")
-            else agent_name
-        )
+        """
+        Lists active, unquarantined, verified dynamic skill actions accessible to an agent.
+        """
+        canonical_agent = self.resolve_agent_id_for_role(agent_name)
+        db_actions = self.get_actions_for_agent(canonical_agent)
 
-        try:
-            db_actions = self.get_actions_for_agent(canonical_agent)
-            for act in db_actions:
-                if isinstance(act, dict) and "action_name" in act:
-                    actions.add(act["action_name"])
-                elif isinstance(act, str):
-                    actions.add(act)
-        except Exception as e:
-            logger.warning(
-                f"[LIBRARIAN] Failed to query mapped actions for '{agent_name}': {e}"
-            )
+        actions: Set[str] = set()
+        for act in db_actions:
+            if isinstance(act, dict) and "action_name" in act:
+                actions.add(act["action_name"])
+            elif isinstance(act, str):
+                actions.add(act)
 
         return sorted(list(actions))
 
     def get_agent_tool_schemas(self, agent_name: str) -> List[Dict[str, Any]]:
-        """Generates OpenAI/Ollama-compliant Function Tool JSON specs for active agent skills."""
-        canonical_agent = (
-            self.resolve_agent_id_for_role(agent_name)
-            if hasattr(self, "resolve_agent_id_for_role")
-            else agent_name
-        )
+        """
+        Generates OpenAI/Ollama-compliant Function Tool JSON specs for active agent skills.
+        """
+        canonical_agent = self.resolve_agent_id_for_role(agent_name)
         actions = self.get_actions_for_agent(canonical_agent)
         tool_schemas: List[Dict[str, Any]] = []
 
@@ -7667,42 +8015,27 @@ class SkillQueryMixin:
         return tool_schemas
 
     def is_skill_available(self, action: str, agent_name: str) -> bool:
-        """Checks if an agent is authorized for an active, unquarantined, and verified skill."""
-        canonical_agent = (
-            self.resolve_agent_id_for_role(agent_name)
-            if hasattr(self, "resolve_agent_id_for_role")
-            else agent_name
-        )
+        """
+        Checks if an agent is authorized for an active, unquarantined, and verified skill.
+        """
+        canonical_agent = self.resolve_agent_id_for_role(agent_name)
+        available_actions = self.list_available_actions(canonical_agent)
 
-        try:
+        if action in available_actions:
             details = self.get_action_details(action)
-            if details and details.get("status", "ACTIVE").upper() == "ACTIVE":
-                if not self._is_physically_executable(details):
-                    return False
-                available_actions = self.list_available_actions(canonical_agent)
-                if action in available_actions:
-                    sys_reqs = details.get("system_requirements", [])
-                    return (
-                        self.verify_system_requirements(sys_reqs)
-                        if hasattr(self, "verify_system_requirements")
-                        else True
-                    )
-        except Exception as e:
-            logger.warning(
-                f"[LIBRARIAN] Authorization lookup error for '{action}' -> '{canonical_agent}': {e}"
-            )
+            if details:
+                sys_reqs = details.get("system_requirements", [])
+                return (
+                    self.verify_system_requirements(sys_reqs)
+                    if hasattr(self, "verify_system_requirements")
+                    else True
+                )
 
         return False
 
     def get_action_details(self, action_name: str) -> Optional[Dict[str, Any]]:
         """Retrieves full action specification record directly via SkillRepository."""
-        try:
-            return self.repo.get_skill_by_action(action_name)
-        except Exception as e:
-            logger.error(
-                f"[LIBRARIAN] Error fetching details for action '{action_name}': {e}"
-            )
-        return None
+        return self.repo.get_skill_by_action(action_name)
 
     def find_matching_action(
         self, query: str, agent_name: Optional[str] = None
@@ -7712,49 +8045,40 @@ class SkillQueryMixin:
         best_match: Optional[Dict[str, Any]] = None
         highest_score = 0.0
 
-        try:
-            if agent_name:
-                canonical_agent = (
-                    self.resolve_agent_id_for_role(agent_name)
-                    if hasattr(self, "resolve_agent_id_for_role")
-                    else agent_name
-                )
-                actions = self.get_actions_for_agent(canonical_agent)
-            else:
-                actions = self.repo.get_all_active_skills()
+        if agent_name:
+            canonical_agent = self.resolve_agent_id_for_role(agent_name)
+            actions = self.get_actions_for_agent(canonical_agent)
+        else:
+            raw_actions = self.repo.get_all_active_skills()
+            actions = [a for a in raw_actions if self._is_physically_executable(a)]
 
-            for r_dict in actions:
-                if r_dict.get("status", "ACTIVE").upper() != "ACTIVE":
-                    continue
+        for r_dict in actions:
+            if r_dict.get("status", "ACTIVE").upper() != "ACTIVE":
+                continue
 
-                if not self._is_physically_executable(r_dict):
-                    continue
+            act_name = r_dict.get("action_name", "")
+            skill_id = r_dict.get("skill_id", "")
+            desc = (r_dict.get("description") or "").lower()
 
-                act_name = r_dict.get("action_name", "")
-                skill_id = r_dict.get("skill_id", "")
-                desc = (r_dict.get("description") or "").lower()
+            score = 0.0
+            if act_name.lower() in query_lower or query_lower in act_name.lower():
+                score += 0.9
+            elif skill_id.lower() in query_lower:
+                score += 0.7
 
-                score = 0.0
-                if act_name.lower() in query_lower or query_lower in act_name.lower():
-                    score += 0.9
-                elif skill_id.lower() in query_lower:
-                    score += 0.7
+            overlap = set(desc.split()).intersection(set(query_lower.split()))
+            if overlap:
+                score += min(0.6, len(overlap) * 0.15)
 
-                overlap = set(desc.split()).intersection(set(query_lower.split()))
-                if overlap:
-                    score += min(0.6, len(overlap) * 0.15)
-
-                if score > highest_score and score >= 0.4:
-                    highest_score = score
-                    best_match = {
-                        "action_name": act_name,
-                        "skill_id": skill_id,
-                        "description": r_dict.get("description"),
-                        "entry_file_path": r_dict.get("entry_file_path"),
-                        "match_score": round(score, 2),
-                    }
-        except Exception as e:
-            logger.error(f"[LIBRARIAN] Error matching action for query '{query}': {e}")
+            if score > highest_score and score >= 0.4:
+                highest_score = score
+                best_match = {
+                    "action_name": act_name,
+                    "skill_id": skill_id,
+                    "description": r_dict.get("description"),
+                    "entry_file_path": r_dict.get("entry_file_path"),
+                    "match_score": round(score, 2),
+                }
 
         return best_match
 ```
@@ -7766,23 +8090,28 @@ class SkillQueryMixin:
 ```python
 """
 charon/core/skills/roles.py
-System Version: v0.6.0 | File Revision: 8.3.0
+System Version: v0.6.3 | File Revision: 9.0.0
 
-Pure database-driven role resolution, role key normalization, and agent entrypoint
-discovery mixin for SkillLibrarian. Backed strictly by RoleRepository.
-Zero hardcoded agent names in domain logic. CBAC Schema V2 compliant.
+Strict database-driven role resolution and entrypoint discovery mixin for SkillLibrarian.
+No in-memory fallback dictionaries. No string-stripping heuristics.
+The database is the single source of truth. Unmapped roles raise RoleResolutionError immediately.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict
 
 from charon.db.repositories import RoleRepository
 
 logger = logging.getLogger("Charon.Core.Skills.Roles")
 
 
+class RoleResolutionError(KeyError):
+    """Raised when a requested role cannot be resolved directly from the database registry."""
+    pass
+
+
 class RoleResolverMixin:
-    """Pure DB-backed role normalization, canonical ID resolution, and entrypoint lookup mixin."""
+    """Strict DB-backed role normalization, canonical ID resolution, and entrypoint lookup mixin."""
 
     @property
     def _role_repo(self) -> RoleRepository:
@@ -7792,78 +8121,65 @@ class RoleResolverMixin:
         return self._cached_role_repo
 
     def _normalize_role_key(self, raw_role: str) -> str:
-        """Normalizes raw role inputs into clean lower snake_case keys."""
+        """Normalizes raw role input string by trimming whitespace and lowercasing."""
         if not raw_role:
             return ""
-        return raw_role.strip().lower().replace(" ", "_").replace("-", "_")
+        return raw_role.strip().lower()
 
     def get_default_agent_id(self) -> str:
         """
-        Queries the database for the designated default system fallback agent ('system_fallback').
-        Fails fast and hard if no fallback or active agent exists in the database.
+        Queries the database for the designated default system fallback agent.
+        Hard-fails if the database query returns no default agent.
         """
-        try:
-            agent_id = self._role_repo.get_default_agent_id()
-            if agent_id:
-                return agent_id
-        except Exception as e:
-            logger.error(f"[LIBRARIAN] Failed querying default agent from database: {e}")
+        agent_id = self._role_repo.get_default_agent_id()
+        if agent_id:
+            return agent_id
 
-        raise RuntimeError(
-            "[LIBRARIAN] Critical Initialization Error: No default or active agent found in database registry."
+        raise RoleResolutionError(
+            "[LIBRARIAN] Critical Registry Failure: No default system agent configured in database."
         )
 
     def validate_core_roles(self) -> bool:
         """
-        Validates that required system roles in `system_roles` have mapped, active agents in `agent_registry`.
-        Returns True if all registered core system roles are validly mapped and active.
+        Validates that all required system roles are explicitly mapped to active agents in SQLite.
+        Strictly read-only database query.
         """
-        try:
-            rows = self._role_repo.get_core_roles_status()
-            if not rows:
-                logger.warning("[LIBRARIAN] No system roles found in database `system_roles` table.")
-                return False
-
-            for role_name, agent_id, is_active in rows:
-                if not agent_id or not is_active:
-                    logger.warning(
-                        f"[LIBRARIAN] Core system role '{role_name}' has unmapped or inactive agent ('{agent_id}')."
-                    )
-                    return False
-            return True
-        except Exception as e:
-            logger.error(f"[LIBRARIAN] Core role validation check failed: {e}")
+        rows = self._role_repo.get_core_roles_status()
+        if not rows:
+            logger.error("[LIBRARIAN] Core role validation failed: `system_roles` table returned no records.")
             return False
+
+        all_valid = True
+        for role_name, agent_id, is_active in rows:
+            if not agent_id or not is_active:
+                logger.error(
+                    f"[LIBRARIAN] Invalid database state: Role '{role_name}' is unmapped or mapped to an inactive agent ('{agent_id}')."
+                )
+                all_valid = False
+
+        return all_valid
 
     def resolve_agent_id_for_role(self, role_input: str) -> str:
         """
-        Resolves raw role input or alias to a canonical agent_id stored in the database.
-        Falls back to the database-defined default agent if unresolvable.
+        Queries the database directly for the agent_id bound to the given role.
+
+        HARD FAIL: Raises `RoleResolutionError` immediately if input is blank or unmapped in DB.
         """
-        if not role_input:
-            return self.get_default_agent_id()
+        if not role_input or not str(role_input).strip():
+            raise RoleResolutionError("[LIBRARIAN] Role lookup rejected: Empty or missing role input.")
 
         norm = self._normalize_role_key(role_input)
-        if not norm:
-            return self.get_default_agent_id()
 
-        system_role_variant = norm if norm.startswith("system_") else f"system_{norm}"
-        agent_id_variant = norm[7:] if norm.startswith("system_") else norm
+        # Single Source of Truth: Database lookup
+        resolved_id = self._role_repo.get_agent_id_for_role(norm)
+        if resolved_id:
+            return resolved_id
 
-        try:
-            resolved_id = self._role_repo.get_agent_id_for_role(
-                norm=norm,
-                agent_id_variant=agent_id_variant,
-                system_role_variant=system_role_variant,
-            )
-            if resolved_id:
-                return resolved_id
-        except Exception as e:
-            logger.warning(
-                f"[LIBRARIAN] Database role resolution failed for '{role_input}': {e}"
-            )
-
-        return self.get_default_agent_id()
+        # HARD FAIL: No in-memory guessing, no default fallback
+        raise RoleResolutionError(
+            f"[LIBRARIAN] Unresolvable Role: '{role_input}' (normalized: '{norm}') "
+            f"has no active agent binding in the database."
+        )
 
     def resolve_role(self, role_input: str) -> str:
         """Alias method for role resolution compatibility."""
@@ -7871,50 +8187,38 @@ class RoleResolverMixin:
 
     def get_agent_entrypoint(self, agent_id: str) -> Dict[str, str]:
         """
-        Retrieves the Python module path and class name for an agent.
-        Uses database dynamic overrides if available, otherwise resolves via
-        canonical package convention (`charon.agents.<agent_id>`).
+        Retrieves the Python module path and class name for a database-validated agent.
+        Raises RoleResolutionError if the agent has no entrypoint in DB.
         """
         canonical_id = self.resolve_agent_id_for_role(agent_id)
 
-        try:
-            entrypoint_data = self._role_repo.get_agent_entrypoint_data(canonical_id)
+        entrypoint_data = self._role_repo.get_agent_entrypoint_data(canonical_id)
 
-            if entrypoint_data and entrypoint_data.get("module") and entrypoint_data.get("class_name"):
-                return entrypoint_data
+        if entrypoint_data and entrypoint_data.get("module") and entrypoint_data.get("class_name"):
+            return entrypoint_data
 
-            if entrypoint_data is not None:
-                class_name = "".join(part.capitalize() for part in canonical_id.split("_")) + "Agent"
-                return {
-                    "module": f"charon.agents.{canonical_id}",
-                    "class_name": class_name,
-                }
-        except Exception as e:
-            logger.warning(
-                f"[LIBRARIAN] Failed fetching entrypoint for agent '{agent_id}' from DB: {e}"
-            )
+        if entrypoint_data is not None:
+            class_name = "".join(part.capitalize() for part in canonical_id.split("_")) + "Agent"
+            return {
+                "module": f"charon.agents.{canonical_id}",
+                "class_name": class_name,
+            }
 
-        default_agent_id = self.get_default_agent_id()
-        class_name = "".join(part.capitalize() for part in default_agent_id.split("_")) + "Agent"
-        return {
-            "module": f"charon.agents.{default_agent_id}",
-            "class_name": class_name,
-        }
+        raise RoleResolutionError(
+            f"[LIBRARIAN] Entrypoint Resolution Failure: No module/class registered for canonical agent '{canonical_id}'."
+        )
 
     def get_display_name_for_agent(self, agent_id: str) -> str:
-        """Retrieves the human-readable display_name for an agent directly from DB."""
+        """Retrieves human-readable display_name for an agent directly from DB."""
         canonical_id = self.resolve_agent_id_for_role(agent_id)
 
-        try:
-            display_name = self._role_repo.get_agent_display_name(canonical_id)
-            if display_name:
-                return display_name
-        except Exception as e:
-            logger.warning(
-                f"[LIBRARIAN] Could not retrieve display name for agent '{agent_id}': {e}"
-            )
+        display_name = self._role_repo.get_agent_display_name(canonical_id)
+        if display_name:
+            return display_name
 
-        return canonical_id.replace("_", " ").title()
+        raise RoleResolutionError(
+            f"[LIBRARIAN] Display Name Failure: Agent '{canonical_id}' has no display name in database."
+        )
 ```
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -7924,10 +8228,11 @@ class RoleResolverMixin:
 ```python
 """
 charon/core/skills/routes.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.6.3 | File Revision: 7.0.0
 
 Route lifecycle, provenance resolution, and operational telemetry tracking mixin for SkillLibrarian.
 Enforces CBAC Schema V2 routing constraints and quarantine state filtering.
+Enforces direct repository delegation without defensive hasattr checks.
 """
 
 import logging
@@ -7951,12 +8256,11 @@ class RouteManagerMixin:
         clean_trigger = action_or_route.strip().lower()
 
         try:
-            if hasattr(self, "route_repo") and hasattr(self.route_repo, "get_route"):
-                route = self.route_repo.get_route(clean_trigger)
-                if route and route.get("is_active", True):
-                    status = str(route.get("status", "ACTIVE")).upper()
-                    if status == "ACTIVE":
-                        return route
+            route = self.route_repo.get_route(clean_trigger)
+            if route and route.get("is_active", True):
+                status = str(route.get("status", "ACTIVE")).upper()
+                if status == "ACTIVE":
+                    return route
         except Exception as e:
             logger.error(
                 f"[LIBRARIAN] Error resolving route '{action_or_route}': {e}"
@@ -7969,8 +8273,7 @@ class RouteManagerMixin:
             return
 
         try:
-            if hasattr(self, "route_repo") and hasattr(self.route_repo, "record_execution"):
-                self.route_repo.record_execution(route_id)
+            self.route_repo.record_execution(route_id)
         except Exception as e:
             logger.warning(
                 f"[LIBRARIAN] Telemetry update failed for route '{route_id}': {e}"
