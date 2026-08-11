@@ -1,9 +1,10 @@
 """
 charon/cli/librarian/manifest.py
-System Version: v0.1.0 | File Revision: 1.1.0
+System Version: v0.2.0 | File Revision: 2.0.0
 
 Module: Dynamic, schema-driven manifest validation and auto-migration engine.
 Leverages Pydantic SkillManifest model directly to eliminate hardcoded format constraints.
+Refactored for multi-action unrolling, robust schema fallback, and clean CLI diagnostics.
 """
 
 import json
@@ -30,6 +31,15 @@ def _migrate_raw_dict(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     """Dynamically converts legacy/deprecated dictionary keys to the current SkillManifest schema."""
     migrated = dict(raw)
     modified = False
+
+    # Ensure required top-level defaults
+    if "category" not in migrated or not migrated["category"]:
+        migrated["category"] = "General"
+        modified = True
+
+    if "version" not in migrated or not migrated["version"]:
+        migrated["version"] = "1.0.0"
+        modified = True
 
     # Standardize actions / legacy keys into supported_actions mapping
     if "actions" in migrated and "supported_actions" not in migrated:
@@ -59,6 +69,20 @@ def _migrate_raw_dict(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
         }
         modified = True
 
+    # Standardize shorthand string actions into full canonical dictionaries
+    if "supported_actions" in migrated and isinstance(migrated["supported_actions"], dict):
+        for act_key, act_val in list(migrated["supported_actions"].items()):
+            if isinstance(act_val, str):
+                migrated["supported_actions"][act_key] = {
+                    "description": act_val,
+                    "parameters": {}
+                }
+                modified = True
+            elif isinstance(act_val, dict):
+                if "description" not in act_val or not act_val["description"]:
+                    act_val["description"] = f"Execution action handler for {act_key}"
+                    modified = True
+
     return migrated, modified
 
 
@@ -75,6 +99,9 @@ def validate_manifest_file(
     except Exception as e:
         return False, [f"JSON Parse Error: {e}"], False
 
+    if not isinstance(raw_data, dict):
+        return False, ["Invalid manifest structure: root JSON must be an object"], False
+
     migrated_data, was_migrated = _migrate_raw_dict(raw_data)
 
     try:
@@ -84,13 +111,14 @@ def validate_manifest_file(
         if (was_migrated or auto_fix) and auto_fix:
             canonical_data = manifest.model_dump(exclude_none=True)
             with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(canonical_data, f, indent=2)
+                json.dump(canonical_data, f, indent=2, ensure_ascii=False)
+                f.write("\n")
             was_fixed = True
 
         return True, [], was_fixed
     except ValidationError as ve:
         errors = [
-            f"[{' -> '.join(str(x) for x in err['loc'])}]: {err['msg']}"
+            f"Field '{' -> '.join(str(x) for x in err['loc'])}': {err['msg']}"
             for err in ve.errors()
         ]
         return False, errors, False
@@ -108,6 +136,8 @@ def run_check(
     manifest_files: List[Path] = []
 
     for path in target_paths:
+        if not path.exists():
+            continue
         if path.is_file() and path.name == "manifest.json":
             manifest_files.append(path)
         elif path.is_dir():
@@ -122,6 +152,7 @@ def run_check(
     table = Table(title="Charon Skill Manifest Validation Report")
     table.add_column("Manifest Path", style="cyan", overflow="fold")
     table.add_column("Skill ID", style="bold white")
+    table.add_column("Category", style="magenta")
     table.add_column("Actions", justify="center")
     table.add_column("Status", justify="center")
     table.add_column("Notes / Errors", style="dim")
@@ -131,11 +162,10 @@ def run_check(
         is_valid, errors, was_fixed = validate_manifest_file(
             manifest_path, auto_fix=auto_fix
         )
-        rel_path = str(manifest_path.resolve())
         try:
             rel_path = str(manifest_path.relative_to(Path.cwd()))
         except ValueError:
-            pass
+            rel_path = str(manifest_path.resolve())
 
         if is_valid:
             status_str = (
@@ -147,16 +177,18 @@ def run_check(
                 with open(manifest_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 skill_id = data.get("skill_id", "unknown")
+                category = data.get("category", "General")
                 actions_count = str(len(data.get("supported_actions", {})))
             except Exception:
-                skill_id, actions_count = "unknown", "?"
+                skill_id, category, actions_count = "unknown", "General", "?"
 
             note = "Migrated to canonical schema" if was_fixed else "OK"
-            table.add_row(rel_path, skill_id, actions_count, status_str, note)
+            table.add_row(rel_path, skill_id, category, actions_count, status_str, note)
         else:
             total_invalid += 1
             table.add_row(
                 rel_path,
+                "-",
                 "-",
                 "0",
                 "[bold red]INVALID[/bold red]",

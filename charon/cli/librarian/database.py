@@ -1,13 +1,17 @@
 """
 charon/cli/librarian/database.py
-System Version: v0.3.0 | File Revision: 1.3.1
+System Version: v0.3.0 | File Revision: 2.0.0
 
 Module: SQLite registry synchronization, agent_skill_map verification, and drift auditing.
+Updated to support namespaced action unrolling and accurate FK schema alignment.
 """
 
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+import re
+from typing import Any, Dict, List, Set, Tuple
+
 from rich.console import Console
 from rich.table import Table
 
@@ -22,6 +26,12 @@ from charon.db.connection import get_connection
 
 console = Console()
 logger = logging.getLogger("charon.cli.librarian.database")
+
+
+def _slugify(text: str) -> str:
+    """Converts display names/categories to clean snake_case identifiers."""
+    text = re.sub(r"[^\w\s-]", "", text.lower())
+    return re.sub(r"[-\s]+", "_", text).strip("_")
 
 
 def run_sync() -> int:
@@ -50,20 +60,20 @@ def run_sync() -> int:
 
 
 def _audit_agent_skill_map(conn) -> List[Tuple[str, str]]:
-    """Identifies orphaned records in agent_skill_map referencing missing actions/skills."""
+    """Identifies orphaned records in agent_skill_map referencing missing skill_ids."""
     cursor = conn.cursor()
-    # Check if agent_skill_map exists
     cursor.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_skill_map'"
     )
     if not cursor.fetchone():
         return []
 
+    # Joined on skill_id to match agent_skill_map foreign key schema
     cursor.execute("""
-        SELECT asm.agent_id, asm.action_name
+        SELECT asm.agent_id, asm.skill_id
         FROM agent_skill_map asm
-        LEFT JOIN skill_registry sr ON asm.action_name = sr.action_name
-        WHERE sr.action_name IS NULL
+        LEFT JOIN skill_registry sr ON asm.skill_id = sr.skill_id
+        WHERE sr.skill_id IS NULL
     """)
     return cursor.fetchall()
 
@@ -74,21 +84,19 @@ def run_audit() -> int:
         "[bold blue]🔍 Auditing SQLite Skill Registry & agent_skill_map vs Filesystem...[/bold blue]\n"
     )
 
-    db_skills: Dict[str, int] = {}
+    db_registered_actions: Set[str] = set()
+    db_registered_skills: Set[str] = set()
     orphaned_mappings: List[Tuple[str, str]] = []
 
     if STATE_DB_PATH.exists():
         try:
             with get_connection(STATE_DB_PATH, read_only=True) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT skill_id, COUNT(action_name) 
-                    FROM skill_registry 
-                    GROUP BY skill_id
-                """)
-                db_skills = {row[0]: row[1] for row in cursor.fetchall()}
+                cursor.execute("SELECT skill_id, action_name FROM skill_registry")
+                for row in cursor.fetchall():
+                    db_registered_skills.add(row[0])
+                    db_registered_actions.add(row[1])
 
-                # Audit agent_skill_map for integrity faults
                 orphaned_mappings = _audit_agent_skill_map(conn)
 
         except Exception as e:
@@ -97,7 +105,7 @@ def run_audit() -> int:
             )
             return 1
 
-    disk_skills: Dict[str, Dict[str, Any]] = {}
+    disk_manifests: Dict[str, Dict[str, Any]] = {}
     search_dirs = [
         PKG_STAGED_SKILLS_DIR,
         PKG_DYNAMIC_SKILLS_DIR,
@@ -113,70 +121,60 @@ def run_audit() -> int:
                     data = json.load(f)
                     sid = data.get("skill_id")
                     if sid:
+                        category = data.get("category", "General")
+                        category_slug = _slugify(category)
                         actions = data.get("supported_actions", {})
-                        action_count = (
-                            len(actions) if isinstance(actions, dict) else 0
-                        )
-                        disk_skills[sid] = {
+
+                        expected_actions = []
+                        if isinstance(actions, dict):
+                            for action_key in actions.keys():
+                                expected_actions.append(f"{category_slug}:{action_key}")
+
+                        disk_manifests[sid] = {
                             "path": manifest_path,
-                            "action_count": action_count,
-                            "stage": data.get("stage", "Unknown"),
+                            "category": category,
+                            "expected_actions": expected_actions,
                         }
             except Exception as e:
                 logger.warning(f"Failed to read manifest at {manifest_path}: {e}")
                 continue
 
-    all_skill_ids = sorted(
-        list(set(db_skills.keys()) | set(disk_skills.keys()))
-    )
-
-    if not all_skill_ids:
+    if not disk_manifests and not db_registered_skills:
         console.print(
             "[yellow]No skills discovered in SQLite or on disk.[/yellow]"
         )
         return 0
 
     table = Table(title="Charon Skill Registry vs Filesystem Audit")
-    table.add_column("Skill ID", style="bold white")
-    table.add_column("Disk Status", justify="center")
-    table.add_column("DB Status", justify="center")
-    table.add_column("Action Handlers (Disk / DB)", justify="center")
+    table.add_column("Manifest Skill ID", style="bold white")
+    table.add_column("Category", style="cyan")
+    table.add_column("Disk Actions", justify="center")
+    table.add_column("DB Indexed Actions", justify="center")
     table.add_column("Drift Analysis", style="yellow")
 
     drift_count = 0
 
-    for sid in all_skill_ids:
-        in_disk = sid in disk_skills
-        in_db = sid in db_skills
+    for sid, meta in disk_manifests.items():
+        expected_actions = meta["expected_actions"]
+        indexed_actions = [
+            act for act in expected_actions if act in db_registered_actions
+        ]
 
-        disk_actions = disk_skills[sid]["action_count"] if in_disk else 0
-        db_actions = db_skills.get(sid, 0)
+        disk_count = len(expected_actions)
+        db_count = len(indexed_actions)
 
-        disk_str = (
-            "[green]EXISTS[/green]" if in_disk else "[red]MISSING[/red]"
-        )
-        db_str = (
-            "[green]INDEXED[/green]" if in_db else "[red]NOT INDEXED[/red]"
-        )
-        action_str = f"{disk_actions} / {db_actions}"
+        action_str = f"{disk_count} / {db_count}"
 
-        if in_disk and not in_db:
-            analysis = "[bold red]Unindexed Skill[/bold red] (Run sync to add)"
+        if db_count == 0:
+            analysis = "[bold red]Unindexed Skill[/bold red] (Run sync to index)"
             drift_count += 1
-        elif in_db and not in_disk:
-            analysis = (
-                "[bold red]Orphaned DB Record[/bold red] (Run sync to purge)"
-            )
-            drift_count += 1
-        elif disk_actions != db_actions:
-            analysis = (
-                "[bold yellow]Action Mismatch[/bold yellow] (Run sync to update)"
-            )
+        elif db_count < disk_count:
+            analysis = f"[bold yellow]Partial Actions Indexed[/bold yellow] ({disk_count - db_count} missing)"
             drift_count += 1
         else:
             analysis = "[dim green]In Sync[/dim green]"
 
-        table.add_row(sid, disk_str, db_str, action_str, analysis)
+        table.add_row(sid, meta["category"], str(disk_count), str(db_count), analysis)
 
     console.print(table)
 
@@ -188,9 +186,9 @@ def run_audit() -> int:
         )
         map_table = Table(title="Orphaned Agent Skill Mappings")
         map_table.add_column("Agent ID", style="bold cyan")
-        map_table.add_column("Missing Action Name", style="bold red")
-        for agent_id, action_name in orphaned_mappings:
-            map_table.add_row(agent_id, action_name)
+        map_table.add_column("Missing Skill ID", style="bold red")
+        for agent_id, skill_id in orphaned_mappings:
+            map_table.add_row(agent_id, skill_id)
         console.print(map_table)
 
     if drift_count > 0:

@@ -1,6 +1,6 @@
 """
 charon/cli/librarian/tui/discovery.py
-System Version: v0.1.0 | File Revision: 2.3.0
+System Version: v0.1.0 | File Revision: 2.3.1
 
 Module: V3-aligned skill discovery, manifest parsing, database permission queries,
 agent default skill bindings, and decoupled dual-pathway integrity auditing.
@@ -88,13 +88,14 @@ def resolve_skill_contract(
     if row:
         return (row[0] or row[1], row[1])
 
-    # 2. Path-based resolution (match folder name in entry_file_path)
+    # 2. Path-based resolution (handles Unix '/' and Windows '\' path separators)
     cursor.execute(
         """
         SELECT action_name, skill_id FROM skill_registry 
         WHERE entry_file_path LIKE ? OR entry_file_path LIKE ?
+           OR entry_file_path LIKE ? OR entry_file_path LIKE ?
         """,
-        (f"%/{identifier}/%", f"%/{norm_id}/%"),
+        (f"%/{identifier}/%", f"%/{norm_id}/%", f"%\\{identifier}\\%", f"%\\{norm_id}\\%"),
     )
     row = cursor.fetchone()
     if row:
@@ -176,6 +177,14 @@ def grant_agent_permission(agent_id: str, skill_id: str) -> None:
             _, target_sk_id = resolve_skill_contract(cursor, skill_id)
             if not target_sk_id:
                 target_sk_id = skill_id
+
+            # Validate skill existence in skill_registry to prevent foreign key violations
+            cursor.execute("SELECT 1 FROM skill_registry WHERE skill_id = ?", (target_sk_id,))
+            if not cursor.fetchone():
+                logger.warning(
+                    f"Cannot grant permission: skill '{target_sk_id}' is not yet indexed in skill_registry."
+                )
+                return
 
             cursor.execute(
                 """
@@ -384,7 +393,6 @@ def audit_agent_skill_integrity() -> Dict[str, Any]:
         with get_connection(STATE_DB_PATH, read_only=True) as conn:
             cursor = conn.cursor()
 
-            # Query all active agents and their default action registry alignment
             cursor.execute(
                 """
                 SELECT 
@@ -440,7 +448,9 @@ def audit_filesystem_manifest_health() -> Dict[str, Any]:
         with get_connection(STATE_DB_PATH, read_only=True) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT entry_file_path FROM skill_registry")
-            registered_paths = {row[0] for row in cursor.fetchall() if row[0]}
+            registered_paths = {
+                str(Path(row[0]).resolve()) for row in cursor.fetchall() if row[0]
+            }
     except Exception as e:
         logger.error(f"Failed to query skill_registry paths: {e}")
 

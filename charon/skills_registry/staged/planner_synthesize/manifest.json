@@ -1,0 +1,37 @@
+{
+  "skill_id": "synthesize",
+  "version": "1.0.0",
+  "description": "Synthesizes, cleans, and formats raw specialist execution output or multi-agent context into clean user-facing responses.",
+  "category": "core",
+  "author": "Charon Librarian",
+  "shelf_tags": ["synthesize", "synthesis", "formatting", "summary", "output"],
+  "allowed_agents": ["*"],
+  "system_requirements": [],
+  "supported_actions": {
+    "synthesize": {
+      "description": "Synthesizes raw execution outputs, context, and query intent into a clean summary.",
+      "parameters": {
+        "user_query": {
+          "type": "string",
+          "description": "Original query or request from the user.",
+          "required": false
+        },
+        "raw_output": {
+          "type": "string",
+          "description": "Raw tool execution output or agent logs to summarize.",
+          "required": true
+        },
+        "context": {
+          "type": "string",
+          "description": "Optional secondary metadata or execution context.",
+          "required": false
+        },
+        "executing_agent": {
+          "type": "string",
+          "description": "Display name or ID of the specialist agent that generated the raw output.",
+          "required": false
+        }
+      }
+    }
+  }
+}

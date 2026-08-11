@@ -1,15 +1,17 @@
 """
 charon/cli/librarian/purge_gaps.py
-System Version: v0.1.0 | File Revision: 1.1.0
+System Version: v0.2.0 | File Revision: 1.2.0
 
 Module: Database maintenance utilities for purging resolved gap records and optimizing state DB.
+Aligned with Schema V3.
 """
 
 import logging
+import sys
 from charon.config.paths import STATE_DB_PATH
 from charon.db.connection import get_connection
 
-logger = logging.getLogger("Charon.CLI.Librarian")
+logger = logging.getLogger("charon.cli.librarian.purge_gaps")
 
 
 def purge_resolved_gaps() -> int:
@@ -21,11 +23,12 @@ def purge_resolved_gaps() -> int:
         logger.info(f"[MAINTENANCE] Database file not found at {STATE_DB_PATH}. Skipping purge.")
         return 0
 
-    # 1. Execute the purge within standard managed transaction
+    # 1. Execute the purge within a standard managed transaction
     with get_connection(STATE_DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM skill_gaps WHERE status = 'resolved'")
+        cursor.execute("DELETE FROM skill_gaps WHERE LOWER(status) = 'resolved'")
         purged_count = cursor.rowcount
+        conn.commit()
 
     # 2. Run VACUUM in autocommit mode if any records were purged
     if purged_count > 0:
@@ -43,4 +46,5 @@ def purge_resolved_gaps() -> int:
 
 
 if __name__ == "__main__":
-    purge_resolved_gaps()
+    logging.basicConfig(level=logging.INFO)
+    sys.exit(0 if purge_resolved_gaps() >= 0 else 1)

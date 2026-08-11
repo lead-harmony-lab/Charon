@@ -179,7 +179,7 @@ async function loadRules() {
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td><code>${r.trigger}</code></td>
-                <td>${r.target_agent}</td>
+                <td>${r.agent_id}</td>
                 <td>${r.description || ''}</td>
                 <td><button class="btn" style="background:var(--danger)" onclick="deleteRule('${r.rule_id}')">Delete</button></td>
             `;
@@ -195,13 +195,13 @@ if (ruleForm) {
     ruleForm.onsubmit = async (e) => {
         e.preventDefault();
         const trigger = document.getElementById('rule-trigger').value;
-        const target_agent = document.getElementById('rule-target').value;
+        const agent_id = document.getElementById('rule-target').value;
         const description = document.getElementById('rule-desc').value;
 
         await authFetch(`${API_BASE}/rules`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ trigger, target_agent, description })
+            body: JSON.stringify({ trigger, agent_id, description })
         });
 
         e.target.reset();

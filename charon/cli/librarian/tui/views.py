@@ -1,9 +1,9 @@
 """
 charon/cli/librarian/tui/views.py
-System Version: v0.1.0 | File Revision: 2.1.0
+System Version: v0.1.0 | File Revision: 2.2.0
 
 Module: Rich visual rendering components, main menu header, and interactive catalog/inspector views.
-Includes support for Schema V3 agent-to-skill default action bindings.
+Includes automatic sync hooks before rendering to guarantee staged folder sanitization.
 """
 
 import json
@@ -134,6 +134,7 @@ def display_skill_table(skills: List[Dict[str, Any]], title: str):
 def view_catalog(agents: List[str], librarian: SkillLibrarian, initial_filter: Optional[str] = None):
     """Displays interactive catalog navigation menu and handles filtered views."""
     while True:
+        run_sync()  # Ensure staged directories and DB mappings are aligned before discovery
         skills = discover_skills()
         broken_deps_count = sum(1 for s in skills if s.get("missing_requirements"))
         render_header(len(skills), len(agents), broken_deps_count)

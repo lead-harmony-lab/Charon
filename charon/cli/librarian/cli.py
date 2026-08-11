@@ -1,8 +1,9 @@
 """
 charon/cli/librarian/cli.py
-System Version: v0.1.0 | File Revision: 1.2.0
+System Version: v0.2.0 | File Revision: 2.0.0
 
-Module: CLI subcommands dispatcher and TUI session launcher.
+Module: CLI subcommands dispatcher and TUI session launcher for Charon Librarian.
+Aligned with Schema V3.
 """
 
 import argparse
@@ -19,7 +20,12 @@ from charon.cli.librarian.lifecycle import (
     run_rename,
 )
 from charon.cli.librarian.manifest import run_check
-from charon.cli.librarian.permissions import run_list, run_permission_change
+from charon.cli.librarian.permissions import (
+    run_list,
+    run_permission_change,
+    set_default_action,
+)
+from charon.cli.librarian.purge_gaps import purge_resolved_gaps
 
 
 def main(args: Optional[List[str]] = None) -> int:
@@ -37,7 +43,7 @@ def main(args: Optional[List[str]] = None) -> int:
     subparsers.add_parser("sync", help="Re-index filesystem manifests into SQLite registry.")
     subparsers.add_parser("audit", help="Audit database registry vs filesystem state drift.")
 
-    # RBAC Management
+    # RBAC & Action Management
     grant_p = subparsers.add_parser("grant", help="Grant agent skill authorization.")
     grant_p.add_argument("skill_id", type=str)
     grant_p.add_argument("agent", type=str)
@@ -45,6 +51,15 @@ def main(args: Optional[List[str]] = None) -> int:
     revoke_p = subparsers.add_parser("revoke", help="Revoke agent skill authorization.")
     revoke_p.add_argument("skill_id", type=str)
     revoke_p.add_argument("agent", type=str)
+
+    default_action_p = subparsers.add_parser(
+        "set-default-action", help="Set default execution action for an agent."
+    )
+    default_action_p.add_argument("agent_id", type=str, help="Target agent ID")
+    default_action_p.add_argument("action_name", type=str, help="Default action name")
+
+    # Maintenance
+    subparsers.add_parser("purge-gaps", help="Purge resolved skill gaps and vacuum DB.")
 
     # Ingestion & Editing
     create_p = subparsers.add_parser("create", help="Scaffold a new skill package.")
@@ -97,9 +112,17 @@ def main(args: Optional[List[str]] = None) -> int:
     elif parsed.subcommand in ("grant", "revoke"):
         return run_permission_change(
             skill_id=parsed.skill_id,
-            agent_name=parsed.agent,
+            agent_id=parsed.agent,
             action=parsed.subcommand,
         )
+    elif parsed.subcommand == "set-default-action":
+        return set_default_action(
+            agent_id=parsed.agent_id,
+            action_name=parsed.action_name,
+        )
+    elif parsed.subcommand == "purge-gaps":
+        purge_resolved_gaps()
+        return 0
     elif parsed.subcommand == "create":
         return run_create(
             skill_id=parsed.skill_id,

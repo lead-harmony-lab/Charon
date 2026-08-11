@@ -1,8 +1,10 @@
 """
 charon/cli/librarian/tui/app.py
-System Version: v0.1.0 | File Revision: 1.4.0
+System Version: v0.1.0 | File Revision: 1.5.0
 
 Module: LibrarianTUI application orchestrator and main menu navigation loop.
+Refactored to support interactive ingestion name resolution, staged folder sanitization,
+and automatic pre-run synchronization.
 """
 
 from pathlib import Path
@@ -15,6 +17,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.syntax import Syntax
 
+from charon.cli.librarian.database import run_sync
 from charon.cli.librarian.forge import main as run_forge
 from charon.cli.librarian.ingestion import SKILLS_TEMPLATES_DIR, run_create, run_ingest
 from charon.cli.librarian.tui.diagnostics import run_diagnostics_suite
@@ -35,9 +38,13 @@ class LibrarianTUI:
         try:
             if hasattr(self.librarian, "agent_repo") and self.librarian.agent_repo:
                 agents = self.librarian.agent_repo.get_all_agents()
-                return [
-                    a.agent_id if hasattr(a, "agent_id") else str(a) for a in agents
+                active_agents = [
+                    a.agent_id if hasattr(a, "agent_id") else str(a)
+                    for a in agents
+                    if getattr(a, "is_active", True)
                 ]
+                if active_agents:
+                    return sorted(active_agents)
         except Exception:
             pass
 
@@ -79,9 +86,10 @@ class LibrarianTUI:
                     "    ├── manifest.json    (Schema metadata: ID, actions, requirements)\n"
                     "    └── plugin.py        (Python entrypoint module handling action callbacks)\n\n"
                     "#### 💡 Ingestion Rules & Automated Normalization\n"
+                    "* **Interactive Resolution**: User is prompted to confirm or customize the `skill_id` slug upon import.\n"
                     "* **Standalone `.py` File**: Copied as `plugin.py` into `skills/staged/<skill_id>/`; boilerplate `manifest.json` generated from template.\n"
                     "* **Directory without Manifest**: Copied to staged area, entrypoint normalized to `plugin.py`, and `manifest.json` generated from template.\n"
-                    "* **Full Package Directory**: Validated against `SkillManifest` Pydantic schema and indexed into SQLite.\n\n"
+                    "* **Staged Sanitization**: Pre-existing folders in `staged/` are auto-slugified and synced during DB maintenance checks.\n\n"
                     "*Documentation Reference:* `https://docs.charon.internal/skills/ingestion`"
                 )
                 console.print(
@@ -194,19 +202,14 @@ class LibrarianTUI:
                     Prompt.ask("Press Enter to try again")
                     continue
 
-                inferred_id = source_path.stem.lower().replace("-", "_").replace(" ", "_")
-                sid_input = Prompt.ask("Custom skill_id", default=inferred_id).strip()
-
-                if sid_input.lower() == "b":
-                    continue
-                if sid_input.lower() == "q":
-                    console.print("[bold cyan]Librarian session closed.[/bold cyan]")
-                    sys.exit(0)
-
-                run_ingest(source_path=source_path, skill_id=sid_input)
+                # run_ingest handles interactive naming, collision detection, and user confirmation
+                run_ingest(source_path=source_path)
                 Prompt.ask("\nPress Enter to return")
 
     def start(self):
+        # Enforce initial DB sync and staged folder sanitization on startup
+        run_sync()
+
         while True:
             skills = discover_skills()
             self.agents = self._fetch_registered_agents()
