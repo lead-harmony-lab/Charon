@@ -1,6 +1,6 @@
 """
 charon/cli/librarian/tui/inspector.py
-System Version: v0.2.0 | File Revision: 1.0.0
+System Version: v0.2.0 | File Revision: 1.0.1
 
 Module: Detailed skill card inspector, permission assignments, manifest editing,
 dependency auto-resolution, and lifecycle state mutation handlers.
@@ -151,46 +151,91 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
                 console.print("[yellow]All system agents already have permission for this skill.[/yellow]")
                 Prompt.ask("Press Enter to continue")
                 continue
+
             console.print("\n[bold]Select Agent to Grant Permission:[/bold]")
             for idx, a in enumerate(available_to_grant, start=1):
                 console.print(f"  [{idx}] {a}")
-            sel = (
-                int(Prompt.ask("Agent", choices=[str(i) for i in range(1, len(available_to_grant) + 1)])) - 1
-            )
-            target_agent = available_to_grant[sel]
 
-            grant_agent_permission(target_agent, skill["skill_id"])
-            run_sync()
-            if hasattr(librarian, "reindex_skills"):
-                librarian.reindex_skills()
+            console.print("  [A] Grant to All Agents")
+            console.print("  [B] Cancel / Back to Inspector")
+            console.print("  [Q] Exit Librarian TUI\n")
 
-            skill.setdefault("authorized_agents", []).append(target_agent)
-            skill["authorized_agents"].sort()
-            console.print(f"[bold green]✓ Granted {target_agent} access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
-            Prompt.ask("Press Enter to refresh")
+            valid_choices = [str(i) for i in range(1, len(available_to_grant) + 1)] + ["a", "A", "b", "B", "q", "Q"]
+            sel = Prompt.ask("Agent", choices=valid_choices, default="B")
+
+            if sel.lower() == "q":
+                console.print("[bold cyan]Librarian session closed.[/bold cyan]")
+                sys.exit(0)
+            elif sel.lower() == "b":
+                continue
+            elif sel.lower() == "a":
+                for target_agent in available_to_grant:
+                    grant_agent_permission(target_agent, skill["skill_id"])
+                    skill.setdefault("authorized_agents", []).append(target_agent)
+                run_sync()
+                if hasattr(librarian, "reindex_skills"):
+                    librarian.reindex_skills()
+                skill["authorized_agents"].sort()
+                console.print(f"[bold green]✓ Granted all remaining agents access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
+                Prompt.ask("Press Enter to refresh")
+            else:
+                target_agent = available_to_grant[int(sel) - 1]
+                grant_agent_permission(target_agent, skill["skill_id"])
+                run_sync()
+                if hasattr(librarian, "reindex_skills"):
+                    librarian.reindex_skills()
+                skill.setdefault("authorized_agents", []).append(target_agent)
+                skill["authorized_agents"].sort()
+                console.print(f"[bold green]✓ Granted {target_agent} access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
+                Prompt.ask("Press Enter to refresh")
 
         elif op == "2":
             if not auth_agents:
                 console.print("[yellow]No agents currently granted access in agent_skill_map.[/yellow]")
                 Prompt.ask("Press Enter to continue")
                 continue
-            console.print("\n[bold]Select Agent to Revoke Permission:[/bold]")
+
+            is_full_fleet = len(auth_agents) == len(agents)
+            fleet_label = " (Entire Fleet)" if is_full_fleet else ""
+
+            console.print(f"\n[bold]Select Agent to Revoke Permission{fleet_label}:[/bold]")
             for idx, a in enumerate(auth_agents, start=1):
                 console.print(f"  [{idx}] {a}")
-            sel = int(Prompt.ask("Agent", choices=[str(i) for i in range(1, len(auth_agents) + 1)])) - 1
-            target_agent = auth_agents[sel]
 
-            revoke_agent_permission(target_agent, skill["skill_id"])
-            run_sync()
-            if hasattr(librarian, "reindex_skills"):
-                librarian.reindex_skills()
+            console.print("  [A] Revoke All Agents")
+            console.print("  [B] Cancel / Back to Inspector")
+            console.print("  [Q] Exit Librarian TUI\n")
 
-            skill["authorized_agents"].remove(target_agent)
-            if target_agent in default_for:
-                default_for.remove(target_agent)
+            valid_choices = [str(i) for i in range(1, len(auth_agents) + 1)] + ["a", "A", "b", "B", "q", "Q"]
+            sel = Prompt.ask("Agent", choices=valid_choices, default="B")
 
-            console.print(f"[bold green]✓ Revoked {target_agent} access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
-            Prompt.ask("Press Enter to refresh")
+            if sel.lower() == "q":
+                console.print("[bold cyan]Librarian session closed.[/bold cyan]")
+                sys.exit(0)
+            elif sel.lower() == "b":
+                continue
+            elif sel.lower() == "a":
+                for target_agent in list(auth_agents):
+                    revoke_agent_permission(target_agent, skill["skill_id"])
+                    skill["authorized_agents"].remove(target_agent)
+                    if target_agent in default_for:
+                        default_for.remove(target_agent)
+                run_sync()
+                if hasattr(librarian, "reindex_skills"):
+                    librarian.reindex_skills()
+                console.print(f"[bold green]✓ Revoked all agent access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
+                Prompt.ask("Press Enter to refresh")
+            else:
+                target_agent = auth_agents[int(sel) - 1]
+                revoke_agent_permission(target_agent, skill["skill_id"])
+                run_sync()
+                if hasattr(librarian, "reindex_skills"):
+                    librarian.reindex_skills()
+                skill["authorized_agents"].remove(target_agent)
+                if target_agent in default_for:
+                    default_for.remove(target_agent)
+                console.print(f"[bold green]✓ Revoked {target_agent} access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
+                Prompt.ask("Press Enter to refresh")
 
         elif op == "3":
             if not auth_agents:
@@ -203,22 +248,32 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
                 is_curr_default = " (Already Default)" if a in default_for else ""
                 console.print(f"  [{idx}] {a}{is_curr_default}")
 
-            sel = int(Prompt.ask("Agent", choices=[str(i) for i in range(1, len(auth_agents) + 1)])) - 1
-            target_agent = auth_agents[sel]
+            console.print("  [B] Cancel / Back to Inspector")
+            console.print("  [Q] Exit Librarian TUI\n")
 
-            set_agent_default_skill(target_agent, skill["skill_id"])
-            run_sync()
-            if hasattr(librarian, "reindex_skills"):
-                librarian.reindex_skills()
+            valid_choices = [str(i) for i in range(1, len(auth_agents) + 1)] + ["b", "B", "q", "Q"]
+            sel = Prompt.ask("Agent", choices=valid_choices, default="B")
 
-            if "default_for_agents" not in skill:
-                skill["default_for_agents"] = []
-            if target_agent not in skill["default_for_agents"]:
-                skill["default_for_agents"].append(target_agent)
+            if sel.lower() == "q":
+                console.print("[bold cyan]Librarian session closed.[/bold cyan]")
+                sys.exit(0)
+            elif sel.lower() == "b":
+                continue
+            else:
+                target_agent = auth_agents[int(sel) - 1]
+                set_agent_default_skill(target_agent, skill["skill_id"])
+                run_sync()
+                if hasattr(librarian, "reindex_skills"):
+                    librarian.reindex_skills()
 
-            was_modified = True
-            console.print(f"[bold green]✓ Set '{skill['skill_id']}' as default skill for agent '{target_agent}' in SQLite DB[/bold green]")
-            Prompt.ask("Press Enter to refresh")
+                if "default_for_agents" not in skill:
+                    skill["default_for_agents"] = []
+                if target_agent not in skill["default_for_agents"]:
+                    skill["default_for_agents"].append(target_agent)
+
+                was_modified = True
+                console.print(f"[bold green]✓ Set '{skill['skill_id']}' as default skill for agent '{target_agent}' in SQLite DB[/bold green]")
+                Prompt.ask("Press Enter to refresh")
 
         elif op == "4":
             if skill["stage"] == "Staged":

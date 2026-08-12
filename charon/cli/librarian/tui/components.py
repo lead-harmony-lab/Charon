@@ -1,12 +1,9 @@
 """
 charon/cli/librarian/tui/components.py
-System Version: v0.2.0 | File Revision: 1.2.0
-
-Module: Visual Rich UI rendering components for main panel header,
-staged/quarantine storage pathway tables, and structured skill catalog tables.
+System Version: v0.2.0 | File Revision: 2.1.0
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -16,33 +13,21 @@ from charon.cli.librarian.ingestion import (
     get_quarantine_skills_summary,
     get_staged_skills_summary,
 )
-from charon.cli.librarian.tui.discovery import (
-    discover_skills,
-    get_open_gaps_count,
-    get_resolved_gaps_count,
-)
 
 console = Console()
-
 
 def render_header(
     skill_count: int,
     agent_count: int,
-    broken_deps_count: Optional[int] = None,
-    orphan_count: int = 0,
+    broken_deps_count: int,
+    orphan_count: int,
+    open_gaps: int,
+    resolved_gaps: int,
 ) -> None:
     """
-    Renders the main control panel header using a borderless 2x2 Rich grid layout
-    with integrated database maintenance status notifications and orphan alerts.
+    Renders the main control panel header using a borderless 2x2 Rich grid layout.
+    Strictly expects all state metrics to be passed by the calling controller.
     """
-    if broken_deps_count is None:
-        skills = discover_skills()
-        broken_deps_count = sum(1 for s in skills if s.get("missing_requirements"))
-        skill_count = len(skills)
-
-    open_gaps = get_open_gaps_count()
-    resolved_gaps = get_resolved_gaps_count()
-
     gap_color = "bold red" if open_gaps > 0 else "dim green"
     broken_color = "bold red" if broken_deps_count > 0 else "dim green"
 
@@ -85,10 +70,10 @@ def render_header(
     console.print(Panel(header_content, border_style="cyan", padding=(0, 2), expand=True))
 
 
-def render_staged_skills_preview() -> None:
+def render_staged_skills_preview() -> List[Dict[str, Any]]:
     """
-    Presentation Layer: Retrieves structured staged and quarantine skill summary data
-    and renders a formatted Rich table.
+    Presentation Layer: Retrieves structured staged and quarantine skill summary data,
+    renders a formatted Rich table, and returns the list of items for interactive selection.
     """
     staged_items = get_staged_skills_summary() or []
     quarantine_items = get_quarantine_skills_summary() or []
@@ -99,7 +84,7 @@ def render_staged_skills_preview() -> None:
         console.print(
             "\n[dim yellow]No staged skills, quarantined items, or unmanifested scripts found.[/dim yellow]"
         )
-        return
+        return []
 
     table = Table(
         title="📂 Packages Sitting in Staged & Quarantine Storage Pathways",
@@ -107,11 +92,13 @@ def render_staged_skills_preview() -> None:
         header_style="bold yellow",
         border_style="cyan",
     )
+    # Added Index Column
+    table.add_column("#", justify="right", style="dim")
     table.add_column("Identifier / Pathway", style="bold cyan")
     table.add_column("Type", style="dim white")
     table.add_column("Status", style="bold green")
 
-    for item in all_items:
+    for idx, item in enumerate(all_items, start=1):
         status = item.get("status", "Unknown")
         if any(term in status for term in ["Quarantine", "Rejected", "Pending", "QUARANTINED"]):
             status = f"[bold yellow]☣️  {status}[/bold yellow]"
@@ -120,9 +107,11 @@ def render_staged_skills_preview() -> None:
         elif "Missing" in status or "Incomplete" in status or "Unmanifested" in status:
             status = f"[bold red]⚠️  {status}[/bold red]"
 
-        table.add_row(item.get("name", "Unknown"), item.get("type", "Unknown"), status)
+        # Added idx string to row rendering
+        table.add_row(str(idx), item.get("name", "Unknown"), item.get("type", "Unknown"), status)
 
     console.print("\n", table, "\n")
+    return all_items
 
 
 def display_skill_table(skills: List[Dict[str, Any]], title: str) -> None:

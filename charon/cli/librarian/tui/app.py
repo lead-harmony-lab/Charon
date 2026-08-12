@@ -1,6 +1,6 @@
 """
 charon/cli/librarian/tui/app.py
-System Version: v0.2.0 | File Revision: 2.2.0
+System Version: v0.2.0 | File Revision: 2.4.0
 
 Module: LibrarianTUI application orchestrator and main menu navigation loop.
 Refactored to trigger startup orphan quarantine auto-sweeps prior to database sync,
@@ -28,7 +28,13 @@ from charon.cli.librarian.ingestion import (
 )
 from charon.cli.librarian.tui.components import render_header
 from charon.cli.librarian.tui.diagnostics import run_diagnostics_suite
-from charon.cli.librarian.tui.discovery import discover_skills, get_active_db_agent_ids
+from charon.cli.librarian.tui.discovery import (
+    discover_skills,
+    get_active_db_agent_ids,
+    get_quarantined_orphans_count,
+    get_open_gaps_count,      # <-- Added import
+    get_resolved_gaps_count   # <-- Added import
+)
 from charon.cli.librarian.tui.prompts import prompt_quarantine_selection
 from charon.cli.librarian.tui.views import view_catalog
 from charon.core.skills import SkillLibrarian
@@ -307,7 +313,22 @@ class LibrarianTUI:
         while True:
             skills = discover_skills()
             self.agents = self._fetch_registered_agents()
-            render_header(len(skills), len(self.agents))
+
+            # Calculate metrics for the header natively in the main loop
+            broken_deps_count = sum(1 for s in skills if s.get("missing_requirements"))
+            quarantined_count = get_quarantined_orphans_count()
+            open_gaps = get_open_gaps_count()             # <-- Added fetching
+            resolved_gaps = get_resolved_gaps_count()     # <-- Added fetching
+
+            # Wire the metrics into the main menu render
+            render_header(
+                skill_count=len(skills),
+                agent_count=len(self.agents),
+                broken_deps_count=broken_deps_count,
+                orphan_count=quarantined_count,
+                open_gaps=open_gaps,                      # <-- Passed to component
+                resolved_gaps=resolved_gaps               # <-- Passed to component
+            )
 
             console.print("\n[bold white]Main Menu:[/bold white]")
             console.print("  [1] 📚 Browse Skill Catalog (Interactive Views)")
@@ -336,3 +357,11 @@ class LibrarianTUI:
             elif choice.lower() == "q":
                 console.print("[bold cyan]Librarian session closed.[/bold cyan]")
                 break
+
+if __name__ == "__main__":
+    try:
+        app = LibrarianTUI()
+        app.start()
+    except KeyboardInterrupt:
+        console.print("\n[bold cyan]Librarian session forcefully closed.[/bold cyan]")
+        sys.exit(0)

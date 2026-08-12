@@ -14,13 +14,33 @@ from collections import defaultdict
 from pathlib import Path
 
 DB_PATH = Path("~/.local/share/charon/charon_state.db").expanduser()
-CHARON_ROOT = Path("/charon").expanduser()
-LEGACY_AGENTS_DIR = CHARON_ROOT / "agents_delete"
+
+# Dynamically resolve the project root based on this script's location
+# (Works whether the script is in /scripts or /scripts/save)
+current_dir = Path(__file__).resolve().parent
+CHARON_ROOT = current_dir
+while CHARON_ROOT.name != 'Charon' and CHARON_ROOT.parent != CHARON_ROOT:
+    CHARON_ROOT = CHARON_ROOT.parent
+
+# Fallback just in case the dynamic resolution misses
+if CHARON_ROOT.name != 'Charon':
+    CHARON_ROOT = Path("~/Projects/Tools/Charon").expanduser()
+
+# Fixed path: pointing into the inner 'charon' module directory
+LEGACY_AGENTS_DIR = CHARON_ROOT / "charon" / "agents_delete"
+
+# Path migration variables
+OLD_STORAGE_DIR = "charon/skill_registry"
+NEW_STORAGE_DIR = "charon/cli/librarian/storage"
 
 
 def populate():
     if not DB_PATH.exists():
         print(f"❌ DB not found at: {DB_PATH}")
+        sys.exit(1)
+
+    if not LEGACY_AGENTS_DIR.exists():
+        print(f"❌ Legacy agents directory not found at: {LEGACY_AGENTS_DIR}")
         sys.exit(1)
 
     conn = sqlite3.connect(str(DB_PATH))
@@ -29,6 +49,22 @@ def populate():
     print("\n" + "=" * 70)
     print(" 🛠️ POPULATING `agent_skill_map` (EXACT MATCH)")
     print("=" * 70)
+
+    # 0. Self-Healing: Migrate legacy paths in the database if any remain
+    cursor.execute(
+        "UPDATE skill_registry "
+        "SET entry_file_path = REPLACE(entry_file_path, ?, ?) "
+        "WHERE entry_file_path LIKE ?;",
+        (OLD_STORAGE_DIR, NEW_STORAGE_DIR, f"%{OLD_STORAGE_DIR}%")
+    )
+    if cursor.rowcount > 0:
+        print(f" 🩹 Migrated {cursor.rowcount} legacy skill paths to new librarian storage.")
+        conn.commit()
+
+    # 0.5. Clean Slate: Purge the old junk mappings
+    print(" 🧹 Purging existing 'junk' mappings to start fresh...")
+    cursor.execute("DELETE FROM agent_skill_map;")
+    conn.commit()
 
     # 1. Load exact valid agent IDs from agent_registry
     cursor.execute("SELECT agent_id FROM agent_registry;")
@@ -42,7 +78,7 @@ def populate():
             folder_name = Path(entry_path).parent.name
             folder_to_skills[folder_name].append(skill_id)
 
-    # 3. Load existing mappings to prevent duplication
+    # 3. Load existing mappings (This will be empty now, but kept for script integrity)
     cursor.execute("SELECT agent_id, skill_id FROM agent_skill_map;")
     existing_mappings = set(cursor.fetchall())
 
@@ -78,7 +114,8 @@ def populate():
                     new_mappings.add(mapping_pair)
                     agent_count += 1
 
-        print(f"  • Agent [{agent_id}]: Queued {agent_count} new skill mapping(s)")
+        if agent_count > 0:
+            print(f"  • Agent [{agent_id}]: Queued {agent_count} new skill mapping(s)")
 
     # 5. Insert new unique mappings
     if new_mappings:

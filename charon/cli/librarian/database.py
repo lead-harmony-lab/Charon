@@ -1,15 +1,15 @@
 """
 charon/cli/librarian/database.py
-System Version: v0.3.1 | File Revision: 2.1.0
+System Version: v0.4.0 | File Revision: 3.0.0
 
-Module: SQLite registry synchronization, agent_skill_map verification, and drift auditing.
-Updated to support flexible db_path parameters across sync and audit entrypoints.
+Module: SQLite registry synchronization, agent_skill_map verification, drift auditing,
+and direct DDL skill registration. Serves as the canonical data layer for the Librarian.
 """
 
 import json
 import logging
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from rich.console import Console
@@ -32,6 +32,128 @@ def _slugify(text: str) -> str:
     """Converts display names/categories to clean snake_case identifiers."""
     text = re.sub(r"[^\w\s-]", "", text.lower())
     return re.sub(r"[-\s]+", "_", text).strip("_")
+
+
+def flag_quarantined_orphans(db_path: Optional[Union[str, Path]] = None) -> int:
+    """
+    Scans skill_registry for records whose entry_file_path no longer exists
+    on disk and marks their status as 'QUARANTINED' with an explicit reason.
+    Returns the count of newly flagged skills.
+    """
+    target_db = Path(db_path) if db_path else STATE_DB_PATH
+    try:
+        with get_connection(target_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT skill_id, entry_file_path, status FROM skill_registry")
+            rows = cursor.fetchall()
+
+            flagged_count = 0
+            for sid, entry_path_str, status in rows:
+                if entry_path_str:
+                    entry_path = Path(entry_path_str)
+                    if not entry_path.exists() and (status or "").upper() != "QUARANTINED":
+                        cursor.execute(
+                            """
+                            UPDATE skill_registry
+                            SET status = 'QUARANTINED',
+                                quarantine_reason = 'MISSING_ENTRY_FILE: Path on disk not found',
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE skill_id = ?
+                            """,
+                            (sid,),
+                        )
+                        flagged_count += 1
+
+            if flagged_count > 0:
+                conn.commit()
+
+        return flagged_count
+    except Exception as e:
+        logger.warning(f"Failed to flag quarantine orphans in SQLite: {e}")
+        return 0
+
+
+def register_skill_in_db(
+    skill_id: str,
+    action_name: str,
+    version: str,
+    category: str,
+    description: str,
+    parameters: dict,
+    system_requirements: list,
+    consumed_artifacts: list,
+    produced_artifacts: list,
+    entry_file_path: Path,
+    handler_name: str = "execute_action",
+    is_global: int = 0,
+    status: str = "STAGED",
+    quarantine_reason: Optional[str] = None,
+    db_path: Optional[Union[str, Path]] = None,
+) -> Tuple[bool, str]:
+    """
+    Directly registers or updates a skill in skill_registry using
+    explicit database DDL column mappings.
+    """
+    target_db = Path(db_path) if db_path else STATE_DB_PATH
+    abs_entry_path = str(entry_file_path.resolve())
+
+    try:
+        with get_connection(target_db) as conn:
+            cursor = conn.cursor()
+
+            # Enforce 1:1 action_name uniqueness check across registry
+            cursor.execute(
+                "SELECT skill_id FROM skill_registry WHERE action_name = ? AND skill_id != ?",
+                (action_name, skill_id),
+            )
+            collision = cursor.fetchone()
+            if collision:
+                return False, f"Action name collision: '{action_name}' is already assigned to skill '{collision[0]}'."
+
+            cursor.execute(
+                """
+                INSERT INTO skill_registry (
+                    skill_id, action_name, version, category, description,
+                    parameters, system_requirements, consumed_artifacts, produced_artifacts,
+                    entry_file_path, handler_name, status, quarantine_reason, is_global, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(skill_id) DO UPDATE SET
+                    action_name = excluded.action_name,
+                    version = excluded.version,
+                    category = excluded.category,
+                    description = excluded.description,
+                    parameters = excluded.parameters,
+                    system_requirements = excluded.system_requirements,
+                    consumed_artifacts = excluded.consumed_artifacts,
+                    produced_artifacts = excluded.produced_artifacts,
+                    entry_file_path = excluded.entry_file_path,
+                    handler_name = excluded.handler_name,
+                    status = excluded.status,
+                    quarantine_reason = excluded.quarantine_reason,
+                    is_global = excluded.is_global,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    skill_id,
+                    action_name,
+                    version,
+                    category,
+                    description,
+                    json.dumps(parameters),
+                    json.dumps(system_requirements),
+                    json.dumps(consumed_artifacts),
+                    json.dumps(produced_artifacts),
+                    abs_entry_path,
+                    handler_name,
+                    status,
+                    quarantine_reason,
+                    is_global,
+                ),
+            )
+            conn.commit()
+        return True, ""
+    except Exception as e:
+        return False, f"Database Registration Error: {str(e)}"
 
 
 def run_sync(db_path: Optional[Union[str, Path]] = None) -> int:

@@ -494,7 +494,10 @@ def get_quarantined_orphans_count() -> int:
     try:
         with get_connection(STATE_DB_PATH, read_only=True) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM skill_registry WHERE status = 'quarantined'")
+
+            # FIXED: Changed 'quarantined' to 'QUARANTINED' to pass the case-sensitive check
+            cursor.execute("SELECT COUNT(*) FROM skill_registry WHERE status = 'QUARANTINED'")
+
             row = cursor.fetchone()
             return row[0] if row else 0
     except Exception as e:

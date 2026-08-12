@@ -1,9 +1,6 @@
 """
 charon/cli/librarian/tui/views.py
-System Version: v0.2.0 | File Revision: 3.1.0
-
-Module: Catalog menu dispatching & navigation controller.
-Imports presentation and inspection components to maintain lightweight orchestrating views.
+System Version: v0.2.0 | File Revision: 3.3.0
 """
 
 import sys
@@ -21,13 +18,14 @@ from charon.cli.librarian.tui.components import (
 from charon.cli.librarian.tui.discovery import (
     discover_skills,
     get_quarantined_orphans_count,
+    get_open_gaps_count,
+    get_resolved_gaps_count,
 )
 from charon.cli.librarian.tui.inspector import inspect_skill_list
 from charon.core.skills import SkillLibrarian
 
 console = Console()
 
-# Re-export components for backwards-compatibility across the package
 __all__ = [
     "render_header",
     "render_staged_skills_preview",
@@ -39,11 +37,22 @@ __all__ = [
 def view_catalog(agents: List[str], librarian: SkillLibrarian, initial_filter: Optional[str] = None):
     """Displays interactive catalog navigation menu and handles filtered views."""
     while True:
-        run_sync()  # Ensure staged/quarantine directories and DB mappings are aligned before discovery
+        run_sync()
         skills = discover_skills()
+
         broken_deps_count = sum(1 for s in skills if s.get("missing_requirements"))
         quarantined_count = get_quarantined_orphans_count()
-        render_header(len(skills), len(agents), broken_deps_count, quarantined_count)
+        open_gaps = get_open_gaps_count()
+        resolved_gaps = get_resolved_gaps_count()
+
+        render_header(
+            skill_count=len(skills),
+            agent_count=len(agents),
+            broken_deps_count=broken_deps_count,
+            orphan_count=quarantined_count,
+            open_gaps=open_gaps,
+            resolved_gaps=resolved_gaps
+        )
 
         if initial_filter == "agent":
             choice = "3"
@@ -123,9 +132,43 @@ def view_catalog(agents: List[str], librarian: SkillLibrarian, initial_filter: O
             title = "Unassigned Skills (No Agent Permissions in DB)"
 
         elif choice == "5":
-            render_staged_skills_preview()
-            Prompt.ask("Press Enter to return to catalog menu")
-            continue
+            # Modified to receive the list and trigger an interactive selection loop
+            staged_items = render_staged_skills_preview()
+
+            if not staged_items:
+                Prompt.ask("Press Enter to return to catalog menu")
+                continue
+
+            console.print("  [B] Back to Catalog Menu\n")
+            sel_choices = [str(i) for i in range(1, len(staged_items) + 1)] + ["b", "B"]
+            sel = Prompt.ask("Select a package to inspect", choices=sel_choices, default="B")
+
+            if sel.lower() == "b":
+                continue
+
+            selected_item = staged_items[int(sel) - 1]
+            target_name = selected_item.get("name", "Unknown")
+
+            # First, check if discover_skills() managed to pull a partial record for it
+            matched_skill = next((s for s in skills if s.get("skill_id") == target_name), None)
+
+            if matched_skill:
+                inspect_skill_list([matched_skill], f"Inspecting Staged Package: {target_name}", agents, librarian)
+            else:
+                # If it's completely unindexed, we synthesize a shell dictionary
+                # so the inspector menu doesn't blow up trying to read non-existent keys.
+                synthetic_skill = {
+                    "skill_id": target_name,
+                    "category": "Unindexed / Staged",
+                    "stage": selected_item.get("status", "UNINDEXED"),
+                    "authorized_agents": [],
+                    "supported_actions": {},
+                    "system_requirements": [],
+                    "missing_requirements": []
+                }
+                inspect_skill_list([synthetic_skill], f"Previewing Unindexed Package: {target_name}", agents, librarian)
+
+            continue # Bypass the bottom catch-all inspector
 
         elif choice.lower() == "b":
             break

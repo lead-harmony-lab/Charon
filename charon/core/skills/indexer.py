@@ -1,6 +1,6 @@
 """
 charon/core/skills/indexer.py
-System Version: v0.6.3 | File Revision: 7.0.0
+System Version: v0.6.3 | File Revision: 7.0.1
 
 Module: Dynamic discovery, skill promotion, route syncing, and database re-indexing mixin.
 Maintains clean separation between immutable code identifiers (skill_id) and prompt contracts (action_name).
@@ -82,11 +82,12 @@ class SkillIndexerMixin:
         Establishes skill_registry entries and maps agent capability FKs via agent_skill_map.
         Saves CBAC Schema V2 required permissions and preserves active quarantine states.
         Fails fast if any manifest references an invalid role or agent not present in SQLite.
+        NON-DESTRUCTIVE: Will not drop existing agent_skill_map assignments.
         """
         if not self.db_path.parent.exists():
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        logger.info("[LIBRARIAN] Executing skill reindexing pipeline...")
+        logger.info("[LIBRARIAN] Executing non-destructive skill reindexing pipeline...")
 
         try:
             # Ensure schema state across repositories safely
@@ -103,8 +104,9 @@ class SkillIndexerMixin:
             ):
                 self.permission_repo.ensure_schema()
 
-            # Clear existing agent-skill mappings via repository abstraction
-            self.repo.clear_all_agent_skill_mappings()
+            # 🚨 v0.3.0 ARCHITECTURAL FIX:
+            # We explicitly DO NOT clear_all_agent_skill_mappings() here anymore.
+            # The database is now the SSOT for agent permission bindings.
 
             raw_manifests = self._discover_manifests(extra_paths=extra_paths)
             logger.info(f"[LIBRARIAN] Discovered {len(raw_manifests)} manifest(s).")
@@ -122,7 +124,7 @@ class SkillIndexerMixin:
                         f"[LIBRARIAN] Failed to process manifest {m_path}: {e}"
                     )
 
-            # Pass 1: Index skills into skill_registry and populate agent_skill_map
+            # Pass 1: Index skills into skill_registry and dynamically append to agent_skill_map
             for manifest_path in processed_manifests:
                 try:
                     raw_text = manifest_path.read_text(encoding="utf-8")
@@ -132,7 +134,7 @@ class SkillIndexerMixin:
 
                     if not entry_file.exists():
                         logger.warning(
-                            f"[LIBRARIAN] Plugin implementation file missing at '{entry_file}' for manifest '{manifest.skill_id}'."
+                            f"[LIBRARIAN] Plugin implementation missing at '{entry_file}' for '{manifest.skill_id}'."
                         )
                         continue
 
@@ -145,13 +147,11 @@ class SkillIndexerMixin:
                     is_global = 1 if ("*" in allowed_agents_list or getattr(manifest, "is_global", False)) else 0
                     total_actions = len(manifest.supported_actions)
 
-                    # CBAC Schema V2 fields
                     status = getattr(manifest, "status", "ACTIVE") or raw_json.get("status", "ACTIVE")
                     quarantine_reason = getattr(manifest, "quarantine_reason", None) or raw_json.get("quarantine_reason", None)
                     required_permissions = getattr(manifest, "required_permissions", []) or raw_json.get("required_permissions", [])
 
                     for action_name, action_def in manifest.supported_actions.items():
-                        # Derive unique primary key skill_id per action contract entry
                         if total_actions > 1 and not manifest.skill_id.endswith(f"_{action_name}"):
                             action_skill_id = f"{manifest.skill_id}_{action_name}"
                         else:
@@ -172,7 +172,7 @@ class SkillIndexerMixin:
                             handler_name = str(action_def)
                             params = manifest.action_parameters.get(action_name, {})
 
-                        # Upsert skill contract record through SkillRepository
+                        # Upsert skill contract record
                         self.repo.upsert_skill(
                             skill_id=action_skill_id,
                             action_name=action_name,
@@ -191,7 +191,7 @@ class SkillIndexerMixin:
                             required_permissions=required_permissions,
                         )
 
-                        # Link active agents to agent_skill_map using (agent_id, skill_id)
+                        # Link agents additively (will ignore if already linked via SQL INSERT OR IGNORE)
                         if is_global:
                             active_agents = self.agent_repo.get_active_agent_ids()
                             for agent_id in active_agents:
@@ -200,7 +200,6 @@ class SkillIndexerMixin:
                             for raw_agent_id in allowed_agents_list:
                                 if raw_agent_id == "*":
                                     continue
-                                # Strict DB lookup: Fails immediately if raw_agent_id/role is unmapped in SQLite
                                 canonical_id = self.resolve_agent_id_for_role(raw_agent_id)
                                 self.repo.link_agent_to_skill(canonical_id, action_skill_id)
 
