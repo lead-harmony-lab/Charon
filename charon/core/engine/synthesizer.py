@@ -1,9 +1,9 @@
 """
 charon/core/engine/synthesizer.py
-System Version: v0.4.0 | File Revision: 3.0.0
+System Version: v0.6.5 | File Revision: 4.0.0
 
-Module: Response synthesis module via dynamic agent routing.
-Updated to route synthesis directly through the 'synthesize' DB action SSOT.
+Module: Response synthesis module via dynamic system action contracts.
+Updated to route synthesis through the 'sys_synthesis' reserved system action key SSOT.
 """
 
 import inspect
@@ -17,7 +17,7 @@ logger = logging.getLogger("Charon.Engine.Synthesizer")
 
 
 class OutputSynthesizer:
-    """Formulates specialist agent outputs into user-facing responses using dynamic agents."""
+    """Formulates specialist agent outputs into user-facing responses using dynamic system actions."""
 
     def __init__(
         self,
@@ -28,21 +28,29 @@ class OutputSynthesizer:
         self.librarian = librarian or SkillLibrarian.get_instance()
 
     def _get_synthesis_agent_id(self) -> str:
-        """Queries the Librarian SSOT to determine the synthesis agent ID."""
-        # 1. Look for explicit candidates authorized for the 'synthesize' action
-        if hasattr(self.librarian, "get_agents_for_action"):
-            agents = self.librarian.get_agents_for_action("synthesize")
-            if agents:
-                return agents[0]
+        """Queries the Librarian SSOT to determine the synthesis agent ID via 'sys_synthesis' system action."""
+        # 1. Look for explicit candidates authorized for the resolved 'sys_synthesis' action
+        try:
+            synthesis_action = self.librarian.resolve_system_action("sys_synthesis")
+            if hasattr(self.librarian, "get_agents_for_action"):
+                agents = self.librarian.get_agents_for_action(synthesis_action)
+                if agents:
+                    return agents[0]
+        except Exception as err:
+            logger.debug(f"[Synthesizer] Could not resolve agent directly from 'sys_synthesis': {err}")
 
-        # 2. System generalist / planner fallback resolution
-        generalist_id = self.librarian.resolve_agent_id_for_role("system_generalist")
-        if generalist_id:
-            return generalist_id
+        # 2. System role fallback resolution ('planner' -> 'system_generalist')
+        for role in ("planner", "system_generalist"):
+            try:
+                agent_id = self.librarian.resolve_agent_id_for_role(role)
+                if agent_id:
+                    return agent_id
+            except Exception:
+                continue
 
         # Fail Fast: Enforce database bootstrap integrity
         raise RuntimeError(
-            "[FAIL-FAST] Mandatory 'synthesize' action or 'system_generalist' role not registered in database."
+            "[FAIL-FAST] Mandatory 'sys_synthesis' system action or fallback system roles ('planner', 'system_generalist') not registered in database."
         )
 
     def _truncate_raw_output_for_context(self, text: str, max_chars: int = 6000) -> str:
@@ -81,15 +89,18 @@ class OutputSynthesizer:
         sanitized_context = self._truncate_raw_output_for_context(raw_str, max_chars=6000)
 
         try:
-            # 1. Resolve agent authorized for action 'synthesize'
+            # 1. Resolve active database action_name bound to reserved key 'sys_synthesis'
+            synthesis_action = self.librarian.resolve_system_action("sys_synthesis")
+
+            # 2. Resolve agent authorized for system synthesis
             synth_agent_id = self._get_synthesis_agent_id()
 
-            # 2. Retrieve agent instance from dispatcher
+            # 3. Retrieve agent instance from dispatcher
             synth_agent = self.orchestrator.dispatcher._resolve_agent(synth_agent_id)
 
-            # 3. Construct parameters targeting strict DB action 'synthesize'
+            # 4. Construct parameters targeting dynamically resolved skill action
             exec_kwargs = {
-                "action": "synthesize",
+                "action": synthesis_action,
                 "parameters": {
                     "user_query": user_query,
                     "raw_output": raw_str,

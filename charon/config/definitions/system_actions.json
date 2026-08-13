@@ -1,0 +1,9 @@
+[
+  {
+    "reserved_key": "sys_synthesis",
+    "action_name": "execution_plan_synthesize",
+    "required_role": "system_planner",
+    "is_mandatory": 1,
+    "description": "Core capability for synthesizing execution outputs and context into blackboard payload responses."
+  }
+]

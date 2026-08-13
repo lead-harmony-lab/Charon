@@ -4,10 +4,19 @@
   "description": "Home Assistant REST API bridge for entity control, state polling, and network device discovery.",
   "category": "Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["iot", "home-assistant", "smart-home", "sensors", "automation"],
-  "system_requirements": ["python3", "requests"],
+  "shelf_tags": [
+    "iot",
+    "home-assistant",
+    "smart-home",
+    "sensors",
+    "automation"
+  ],
+  "system_requirements": [
+    "python3",
+    "requests"
+  ],
   "supported_actions": {
-    "control_appliance": {
+    "execution_iot_control": {
       "description": "Controls a Home Assistant entity (switch, light, climate, relay, etc.) via REST API.",
       "parameters": {
         "target_device": {
@@ -35,9 +44,10 @@
           "description": "Long-lived access token (defaults to HOMEASSISTANT_TOKEN env var).",
           "required": false
         }
-      }
+      },
+      "handler": "handle_control_appliance"
     },
-    "read_sensor_net": {
+    "execution_iot_read": {
       "description": "Queries state and attributes for a specific entity or reads full sensor network.",
       "parameters": {
         "target_device": {
@@ -55,9 +65,10 @@
           "description": "Long-lived access token.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_read_sensor_net"
     },
-    "discover_devices": {
+    "execution_iot_discover": {
       "description": "Fetches all active entities and state objects registered in Home Assistant.",
       "parameters": {
         "ha_url": {
@@ -70,7 +81,11 @@
           "description": "Long-lived access token.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_discover_devices"
     }
-  }
+  },
+  "allowed_agents": [
+    "steward"
+  ]
 }

@@ -4,10 +4,17 @@
   "description": "Locates versioned CAD files (e.g., bracket_v1.step) in workspace CAD directories and archives deprecated iterations.",
   "category": "Data",
   "author": "Charon Librarian",
-  "shelf_tags": ["cad", "archive", "sweep", "versions"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "cad",
+    "archive",
+    "sweep",
+    "versions"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "sweep_cad_iterations": {
+    "data_cleaner_sweep": {
       "description": "Scans project CAD directories for iterative files and moves non-latest versions into an archive subfolder.",
       "parameters": {
         "project_name": {
@@ -20,7 +27,11 @@
           "description": "Root path or directory location containing the CAD files or project folder.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_sweep_cad_iterations"
     }
-  }
+  },
+  "allowed_agents": [
+    "cleaner"
+  ]
 }

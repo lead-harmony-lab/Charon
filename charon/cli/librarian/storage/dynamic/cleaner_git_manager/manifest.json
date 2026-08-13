@@ -4,10 +4,18 @@
   "description": "Stages and commits workspace changes to local Git repositories.",
   "category": "System",
   "author": "Charon Librarian",
-  "shelf_tags": ["git", "commit", "version_control", "workspace"],
-  "system_requirements": ["python3", "git"],
+  "shelf_tags": [
+    "git",
+    "commit",
+    "version_control",
+    "workspace"
+  ],
+  "system_requirements": [
+    "python3",
+    "git"
+  ],
   "supported_actions": {
-    "commit_workspace": {
+    "system_cleaner_commit": {
       "description": "Stages all workspace changes and commits them to the local repository.",
       "parameters": {
         "project_name": {
@@ -25,7 +33,11 @@
           "description": "Custom commit message. Defaults to 'Automated routine commit by Charon.'",
           "required": false
         }
-      }
+      },
+      "handler": "handle_commit_workspace"
     }
-  }
+  },
+  "allowed_agents": [
+    "cleaner"
+  ]
 }

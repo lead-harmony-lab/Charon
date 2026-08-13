@@ -4,10 +4,19 @@
   "description": "Handles general conversational and informational queries using local LLM inference engines with discreet concierge persona framing.",
   "category": "Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["query", "chat", "llm", "generalist", "concierge"],
-  "system_requirements": ["python3", "ollama"],
+  "shelf_tags": [
+    "query",
+    "chat",
+    "llm",
+    "generalist",
+    "concierge"
+  ],
+  "system_requirements": [
+    "python3",
+    "ollama"
+  ],
   "supported_actions": {
-    "answer_query": {
+    "execution_generalist_answer": {
       "description": "Processes conversational or general knowledge questions via local LLM stream generation.",
       "parameters": {
         "prompt": {
@@ -25,9 +34,10 @@
           "description": "Model tag to execute inference with (defaults to llama3.1).",
           "required": false
         }
-      }
+      },
+      "handler": "handle_answer_query"
     },
-    "acknowledge": {
+    "execution_generalist_acknowledge": {
       "description": "Generates a brief formal concierge acknowledgment for user directives.",
       "parameters": {
         "prompt": {
@@ -35,7 +45,11 @@
           "description": "The user directive to acknowledge.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_acknowledge"
     }
-  }
+  },
+  "allowed_agents": [
+    "generalist"
+  ]
 }

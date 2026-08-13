@@ -4,10 +4,15 @@
   "description": "LLM-driven Python script authoring and drafting tool.",
   "category": "Drafting",
   "author": "Charon Librarian",
-  "shelf_tags": ["python", "generator", "drafting", "llm"],
+  "shelf_tags": [
+    "python",
+    "generator",
+    "drafting",
+    "llm"
+  ],
   "system_requirements": [],
   "supported_actions": {
-    "generate_script": {
+    "drafting_code_generate": {
       "description": "Drafts production-ready python script blocks without executing them.",
       "parameters": {
         "prompt": {
@@ -20,7 +25,11 @@
           "description": "Workspace context directory.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_generate_script"
     }
-  }
+  },
+  "allowed_agents": [
+    "engineer"
+  ]
 }

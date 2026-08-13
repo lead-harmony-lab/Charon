@@ -1,6 +1,6 @@
 """
 charon/cli/librarian/tui/discovery.py
-System Version: v0.1.0 | File Revision: 2.4.0
+System Version: v0.1.0 | File Revision: 2.5.0
 
 Module: V3-aligned skill discovery, manifest parsing, database permission queries,
 agent default skill bindings, and decoupled dual-pathway integrity auditing.
@@ -167,8 +167,34 @@ def get_skill_defaults() -> Dict[str, Set[str]]:
     return default_map
 
 
+def _sync_manifest_allowed_agents(skill_id: str, allowed_agents: List[str]) -> None:
+    """Locates manifest.json on disk for skill_id and updates its allowed_agents key."""
+    roots = [PKG_DYNAMIC_SKILLS_DIR, DYNAMIC_SKILLS_DIR, PKG_STAGED_SKILLS_DIR]
+    norm_id = skill_id.lower().replace("sk_", "")
+
+    for root in roots:
+        if not root.exists():
+            continue
+        for manifest_path in root.rglob("manifest.json"):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                sid = data.get("skill_id", manifest_path.parent.name)
+                sid_norm = sid.lower().replace("sk_", "")
+
+                if sid == skill_id or sid_norm == norm_id or manifest_path.parent.name == skill_id:
+                    data["allowed_agents"] = allowed_agents
+                    with open(manifest_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+                    logger.debug(f"Updated allowed_agents for '{skill_id}' in {manifest_path}")
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to sync manifest allowed_agents at {manifest_path}: {e}")
+
+
 def grant_agent_permission(agent_id: str, skill_id: str) -> None:
-    """Grants an agent permission for a skill in agent_skill_map using registry resolution."""
+    """Grants an agent permission for a skill in agent_skill_map and updates manifest.json."""
     if not STATE_DB_PATH.exists() or not skill_id:
         return
     try:
@@ -195,18 +221,27 @@ def grant_agent_permission(agent_id: str, skill_id: str) -> None:
                 (agent_id, target_sk_id),
             )
             conn.commit()
+
+            # Sync updated permissions to disk manifest
+            cursor.execute(
+                "SELECT DISTINCT agent_id FROM agent_skill_map WHERE skill_id = ?",
+                (target_sk_id,),
+            )
+            authorized_agents = sorted([row[0] for row in cursor.fetchall()])
+            _sync_manifest_allowed_agents(target_sk_id, authorized_agents)
     except Exception as e:
         logger.error(f"Failed to grant agent permission: {e}")
 
 
 def revoke_agent_permission(agent_id: str, skill_id: str) -> None:
-    """Revokes an agent's permission for a skill in agent_skill_map."""
+    """Revokes an agent's permission for a skill in agent_skill_map and updates manifest.json."""
     if not STATE_DB_PATH.exists() or not skill_id:
         return
     try:
         with get_connection(STATE_DB_PATH) as conn:
             cursor = conn.cursor()
             _, matched_skill_id = resolve_skill_contract(cursor, skill_id)
+            target_sk_id = matched_skill_id or skill_id
             norm_id = skill_id.replace("sk_", "")
 
             cursor.execute(
@@ -217,6 +252,14 @@ def revoke_agent_permission(agent_id: str, skill_id: str) -> None:
                 (agent_id, skill_id, matched_skill_id or "", f"sk_{norm_id}"),
             )
             conn.commit()
+
+            # Sync remaining permissions to disk manifest
+            cursor.execute(
+                "SELECT DISTINCT agent_id FROM agent_skill_map WHERE skill_id = ?",
+                (target_sk_id,),
+            )
+            remaining_agents = sorted([row[0] for row in cursor.fetchall()])
+            _sync_manifest_allowed_agents(target_sk_id, remaining_agents)
     except Exception as e:
         logger.error(f"Failed to revoke agent permission: {e}")
 
@@ -336,6 +379,16 @@ def discover_skills() -> List[Dict[str, Any]]:
 
                 authorized_agents = sorted(list(auth_set))
 
+                # Auto-upgrade prototype manifests missing the standard 'allowed_agents' field
+                if "allowed_agents" not in data:
+                    data["allowed_agents"] = authorized_agents
+                    try:
+                        with open(manifest_path, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=2)
+                        logger.info(f"Upgraded prototype manifest standard at {manifest_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to save upgraded manifest at {manifest_path}: {e}")
+
                 def_set = (
                     skill_defaults.get(skill_id, set())
                     | skill_defaults.get(norm_id, set())
@@ -355,6 +408,7 @@ def discover_skills() -> List[Dict[str, Any]]:
                     "manifest_path": manifest_path,
                     "stage": data.get("stage", stage),
                     "category": category,
+                    "allowed_agents": data.get("allowed_agents", []),
                     "authorized_agents": authorized_agents,
                     "default_for_agents": default_for_agents,
                     "system_requirements": sys_reqs,
@@ -494,10 +548,7 @@ def get_quarantined_orphans_count() -> int:
     try:
         with get_connection(STATE_DB_PATH, read_only=True) as conn:
             cursor = conn.cursor()
-
-            # FIXED: Changed 'quarantined' to 'QUARANTINED' to pass the case-sensitive check
             cursor.execute("SELECT COUNT(*) FROM skill_registry WHERE status = 'QUARANTINED'")
-
             row = cursor.fetchone()
             return row[0] if row else 0
     except Exception as e:
@@ -544,6 +595,9 @@ def save_manifest(skill: Dict[str, Any], librarian: SkillLibrarian) -> None:
     data["category"] = skill["category"]
     data["version"] = skill.get("version", "1.0.0")
     data["description"] = skill.get("description", "")
+
+    if "allowed_agents" not in data:
+        data["allowed_agents"] = skill.get("authorized_agents", [])
 
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)

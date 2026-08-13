@@ -4,10 +4,19 @@
   "description": "CAM toolpath generation and 3D mesh slicing using CLI engines (PrusaSlicer, OrcaSlicer, Cura).",
   "category": "Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["cam", "slicing", "gcode", "prusa-slicer", "orca-slicer", "3d-printing"],
-  "system_requirements": ["prusa-slicer"],
+  "shelf_tags": [
+    "cam",
+    "slicing",
+    "gcode",
+    "prusa-slicer",
+    "orca-slicer",
+    "3d-printing"
+  ],
+  "system_requirements": [
+    "prusa-slicer"
+  ],
   "supported_actions": {
-    "generate_gcode": {
+    "execution_fab_generate": {
       "description": "Invokes local CAM slicer CLI to generate G-Code toolpaths from 3D geometry.",
       "parameters": {
         "stl_file": {
@@ -40,7 +49,11 @@
           "description": "Simulate slicing without writing output files.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_generate_gcode"
     }
-  }
+  },
+  "allowed_agents": [
+    "machinist"
+  ]
 }

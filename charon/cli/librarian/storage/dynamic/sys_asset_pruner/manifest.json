@@ -4,35 +4,17 @@
   "description": "System maintenance capability for sweeping and pruning logs, stale workspaces, broken symlinks, and orphaned assets.",
   "category": "System",
   "author": "Charon Librarian",
-  "shelf_tags": ["maintenance", "cleanup", "pruning", "filesystem"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "maintenance",
+    "cleanup",
+    "pruning",
+    "filesystem"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "prune_orphaned_assets": {
-      "description": "Sweeps workspace directories for broken symlinks or unlinked assets.",
-      "parameters": {
-        "datasheets_dir": {
-          "type": "string",
-          "description": "Optional target directory for datasheets. Defaults to system configuration.",
-          "required": false
-        }
-      }
-    },
-    "prune_stale_workspaces": {
-      "description": "Prunes stale task sandboxes and workspace artifacts.",
-      "parameters": {
-        "prune_days": {
-          "type": "integer",
-          "description": "Number of days before a workspace is considered stale. Defaults to 7.",
-          "required": false
-        },
-        "workspaces_dir": {
-          "type": "string",
-          "description": "Optional target directory for workspaces.",
-          "required": false
-        }
-      }
-    },
-    "prune_logs_and_cache": {
+    "system_sys_prune": {
       "description": "Prunes old logs and cache files.",
       "parameters": {
         "prune_days": {
@@ -40,7 +22,11 @@
           "description": "Number of days before logs/cache are considered stale. Defaults to 7.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_prune_logs_and_cache"
     }
-  }
+  },
+  "allowed_agents": [
+    "overseer"
+  ]
 }

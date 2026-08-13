@@ -4,10 +4,19 @@
   "description": "Networked transmission of G-Code binaries to 3D printer and CNC endpoints (OctoPrint, Moonraker/Klipper).",
   "category": "Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["3d-printer", "cnc", "octoprint", "moonraker", "klipper", "transmission"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "3d-printer",
+    "cnc",
+    "octoprint",
+    "moonraker",
+    "klipper",
+    "transmission"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "transmit_to_printer": {
+    "execution_fab_transmit": {
       "description": "Transmits G-Code files over HTTP to networked 3D printer endpoints.",
       "parameters": {
         "gcode_file": {
@@ -35,7 +44,11 @@
           "description": "Simulate network upload without transmitting payload.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_transmit_to_printer"
     }
-  }
+  },
+  "allowed_agents": [
+    "machinist"
+  ]
 }

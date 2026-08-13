@@ -4,10 +4,19 @@
   "description": "MQTT messaging interface for publishing operational commands and telemetric data payloads.",
   "category": "Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["iot", "mqtt", "broker", "telemetry", "pubsub"],
-  "system_requirements": ["python3", "paho-mqtt"],
+  "shelf_tags": [
+    "iot",
+    "mqtt",
+    "broker",
+    "telemetry",
+    "pubsub"
+  ],
+  "system_requirements": [
+    "python3",
+    "paho-mqtt"
+  ],
   "supported_actions": {
-    "publish_mqtt": {
+    "execution_iot_publish": {
       "description": "Publishes a text or structured JSON payload to a specified MQTT topic.",
       "parameters": {
         "topic": {
@@ -40,7 +49,11 @@
           "description": "Broker password for authentication.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_publish_mqtt"
     }
-  }
+  },
+  "allowed_agents": [
+    "steward"
+  ]
 }

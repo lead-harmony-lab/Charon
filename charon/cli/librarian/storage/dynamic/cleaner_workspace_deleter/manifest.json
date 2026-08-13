@@ -4,10 +4,17 @@
   "description": "Safely purges project workspace directories with confirmation and path authorization checks.",
   "category": "System",
   "author": "Charon Librarian",
-  "shelf_tags": ["workspace", "delete", "purge", "safety"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "workspace",
+    "delete",
+    "purge",
+    "safety"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "delete_project_workspace": {
+    "system_cleaner_delete": {
       "description": "Permanently purges a project workspace directory after verifying authorization and safety limits.",
       "parameters": {
         "project_name": {
@@ -25,7 +32,11 @@
           "description": "Confirmation flag authorizing permanent deletion.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_delete_project_workspace"
     }
-  }
+  },
+  "allowed_agents": [
+    "cleaner"
+  ]
 }

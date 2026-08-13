@@ -4,10 +4,20 @@
   "description": "HTML web page scraper and clean text/markdown extraction module.",
   "category": "Web",
   "author": "Charon Librarian",
-  "shelf_tags": ["web", "scraping", "html", "markdown", "parser"],
-  "system_requirements": ["python3", "requests", "beautifulsoup4"],
+  "shelf_tags": [
+    "web",
+    "scraping",
+    "html",
+    "markdown",
+    "parser"
+  ],
+  "system_requirements": [
+    "python3",
+    "requests",
+    "beautifulsoup4"
+  ],
   "supported_actions": {
-    "scrape_page_content": {
+    "web_scraper_execute": {
       "description": "Fetches target URL content and returns sanitized formatted Markdown text.",
       "parameters": {
         "url": {
@@ -25,7 +35,11 @@
           "description": "Optional HTTP headers dictionary (e.g. custom User-Agent).",
           "required": false
         }
-      }
+      },
+      "handler": "handle_scrape_page_content"
     }
-  }
+  },
+  "allowed_agents": [
+    "scout"
+  ]
 }

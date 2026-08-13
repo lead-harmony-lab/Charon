@@ -4,10 +4,19 @@
   "description": "Handles PDF datasheet indexing, SHA-256 deduplication, text chunking, vector embedding in ChromaDB, and synchronized SQLite PartVault storage.",
   "category": "Autonomous Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["rag", "datasheet", "pdf", "chromadb", "partvault", "inventory"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "rag",
+    "datasheet",
+    "pdf",
+    "chromadb",
+    "partvault",
+    "inventory"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "index_datasheet": {
+    "autonomous_archivist_index": {
       "description": "Parses, deduplicates, and embeds PDF datasheets into ChromaDB while linking metadata to SQLite PartVault.",
       "parameters": {
         "file_path": {
@@ -30,9 +39,10 @@
           "description": "Precomputed SHA-256 hash for deduplication check.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_index_datasheet"
     },
-    "search_datasheets": {
+    "autonomous_archivist_search": {
       "description": "Performs vector RAG query across indexed datasheet chunks with optional MPN filtering.",
       "parameters": {
         "query": {
@@ -50,7 +60,11 @@
           "description": "Maximum number of vector text chunks to retrieve.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_search_datasheets"
     }
-  }
+  },
+  "allowed_agents": [
+    "archivist"
+  ]
 }

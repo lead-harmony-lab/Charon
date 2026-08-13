@@ -4,10 +4,20 @@
   "description": "Provides PartVault SQLite inventory logging, stock queries, bin location management, and KiCad unified part view integration.",
   "category": "Data",
   "author": "Charon Librarian",
-  "shelf_tags": ["inventory", "sqlite3", "partvault", "kicad", "bin_location", "stock"],
-  "system_requirements": ["python3", "sqlite3"],
+  "shelf_tags": [
+    "inventory",
+    "sqlite3",
+    "partvault",
+    "kicad",
+    "bin_location",
+    "stock"
+  ],
+  "system_requirements": [
+    "python3",
+    "sqlite3"
+  ],
   "supported_actions": {
-    "check_inventory": {
+    "data_quartermaster_check": {
       "description": "Queries PartVault SQLite database for component stock levels, bin locations, datasheets, and metadata.",
       "parameters": {
         "mpn": {
@@ -20,9 +30,10 @@
           "description": "Alternative query parameter for component search.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_check_inventory"
     },
-    "log_inventory": {
+    "data_quartermaster_log": {
       "description": "Logs incoming component stock, bin assignments, categories, and footprints into PartVault SQLite.",
       "parameters": {
         "mpn": {
@@ -60,7 +71,11 @@
           "description": "PCB footprint identifier (e.g., 0805, SOIC-8).",
           "required": false
         }
-      }
+      },
+      "handler": "handle_log_inventory"
     }
-  }
+  },
+  "allowed_agents": [
+    "quartermaster"
+  ]
 }

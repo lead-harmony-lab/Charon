@@ -4,10 +4,19 @@
   "description": "CAD workspace inspection and geometry file translation (STEP/FCStd/SCAD to STL).",
   "category": "Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["cad", "stl", "step", "freecad", "openscad", "inspection"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "cad",
+    "stl",
+    "step",
+    "freecad",
+    "openscad",
+    "inspection"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "export_cad_to_stl": {
+    "execution_fab_export": {
       "description": "Translates parametric CAD source files (STEP, FCStd, SCAD) into STL geometry files.",
       "parameters": {
         "source_file": {
@@ -25,9 +34,10 @@
           "description": "Simulate CAD conversion without writing files.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_export_cad_to_stl"
     },
-    "inspect_cad_files": {
+    "execution_fab_inspect": {
       "description": "Indexes and reports CAD, STL, 3MF, and G-Code artifacts within a target workspace or project directory.",
       "parameters": {
         "project_name": {
@@ -35,7 +45,11 @@
           "description": "Target project directory or name to scan for fabrication assets.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_inspect_cad_files"
     }
-  }
+  },
+  "allowed_agents": [
+    "machinist"
+  ]
 }

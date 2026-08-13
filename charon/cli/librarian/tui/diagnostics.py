@@ -1,14 +1,12 @@
 """
 charon/cli/librarian/tui/diagnostics.py
-System Version: v0.2.0 | File Revision: 1.8.0
+System Version: v0.2.0 | File Revision: 3.0.0
 
-Module: Diagnostic health audits, dependency resolutions, state drift checks,
-registry maintenance interface, and quarantine management.
+Module: Diagnostic UI View. Handles presentation layer and user prompting.
+All business logic is delegated to diagnostics_core.py.
 """
 
-import subprocess
 import sys
-from pathlib import Path
 from typing import Dict, List
 
 from rich.console import Console, Group
@@ -16,33 +14,39 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from charon.cli.librarian.database import get_connection, STATE_DB_PATH, run_audit, run_sync
-from charon.cli.librarian.ingestion import flag_quarantined_orphans
+from charon.cli.librarian.database import (
+    flag_quarantined_orphans,
+    run_audit,
+    run_sync,
+)
+from charon.cli.librarian.ingestion import flag_quarantined_orphans as sync_orphans
 from charon.cli.librarian.purge_gaps import purge_resolved_gaps
 from charon.cli.librarian.tui.discovery import (
     discover_skills,
+    get_quarantined_orphans_count,
     get_resolved_gaps_count,
-    get_quarantined_orphans_count
 )
 from charon.core.skills import SkillLibrarian
 
+from charon.cli.librarian.diagnostics_core import (
+    PACKAGE_MAP,
+    build_apt_command,
+    cleanup_orphaned_agent_mappings,
+    delete_quarantined_skill,
+    execute_apt_command,
+    get_deficient_skills,
+    get_quarantined_skills,
+    normalize_manifest_action_contracts,
+    process_ast_healing,
+    repair_quarantined_skill,
+)
+
 console = Console()
-
-PACKAGE_MAP = {
-    "tesseract": "tesseract-ocr",
-    "kicad-cli": "kicad",
-    "node": "nodejs",
-    "python": "python3",
-    "ffmpeg": "ffmpeg",
-    "pdftoppm": "poppler-utils",
-}
-
 
 def run_diagnostics_suite(librarian: SkillLibrarian) -> None:
     """Main interactive entry point for Option [3]: Diagnostics & Maintenance."""
     while True:
-        # Re-check and flag orphaned skills in DB prior to discovery
-        flag_quarantined_orphans()
+        sync_orphans()
 
         skills = discover_skills()
         broken_skills = [s for s in skills if s.get("missing_requirements")]
@@ -104,11 +108,7 @@ def run_diagnostics_suite(librarian: SkillLibrarian) -> None:
 
         console.print("  [3] 🔄 Re-index Database & Re-sync Manifests")
 
-        purge_status = (
-            f"[bold yellow]({resolved_gaps} pending purge)[/bold yellow]"
-            if resolved_gaps > 0
-            else "[dim](Clean)[/dim]"
-        )
+        purge_status = f"[bold yellow]({resolved_gaps} pending purge)[/bold yellow]" if resolved_gaps > 0 else "[dim](Clean)[/dim]"
         console.print(f"  [4] 📋 Audit SQLite State Drift & Vacuum DB {purge_status}")
 
         if quarantine_count > 0:
@@ -116,10 +116,11 @@ def run_diagnostics_suite(librarian: SkillLibrarian) -> None:
         else:
             console.print("  [5] 🔬 Review & Manage Quarantined Skills")
 
+        console.print("  [6] 🩹 Heal Manifest Parameters & Artifacts via AST")
         console.print("  [B] Back to Main Menu")
         console.print("  [Q] Exit Librarian TUI\n")
 
-        choices = ["1", "2", "3", "4", "5", "b", "B", "q", "Q"]
+        choices = ["1", "2", "3", "4", "5", "6", "b", "B", "q", "Q"]
         choice = Prompt.ask("Select operation", choices=choices, default="1")
 
         if choice.lower() == "q":
@@ -128,42 +129,25 @@ def run_diagnostics_suite(librarian: SkillLibrarian) -> None:
         elif choice.lower() == "b":
             break
         elif choice == "1":
-            audit_report(skills)
+            _render_audit_report(skills)
         elif choice == "2":
             if broken_skills:
-                resolve_all_dependencies(broken_skills)
+                _ui_resolve_dependencies(broken_skills)
             else:
                 console.print("\n[bold green]✓ All registered skills have healthy dependencies![/bold green]")
                 Prompt.ask("Press Enter to continue")
         elif choice == "3":
-            console.print("\n[bold cyan]Syncing SQLite database with filesystem manifests...[/bold cyan]")
-            flag_quarantined_orphans()
-            run_sync()
-            if hasattr(librarian, "reindex_skills"):
-                librarian.reindex_skills()
-            console.print("[bold green]✓ Re-index and synchronization complete.[/bold green]")
+            _ui_maintenance_routine(librarian)
             Prompt.ask("\nPress Enter to continue")
         elif choice == "4":
-            console.clear()
-            console.print("[bold cyan]📋 SQLite vs Filesystem State Drift Audit[/bold cyan]\n")
-            flag_quarantined_orphans()
-            run_audit()
-
-            if resolved_gaps > 0:
-                console.print(
-                    f"\n[bold yellow]⚠️ State Drift Detected: {resolved_gaps} resolved gap(s) pending purge.[/bold yellow]"
-                )
-                confirm = Prompt.ask("Purge resolved gaps and vacuum database?", choices=["y", "n"], default="y")
-                if confirm.lower() == "y":
-                    purged = purge_resolved_gaps()
-                    console.print(f"[bold green]✓ Purged {purged} record(s).[/bold green]")
-            Prompt.ask("\nPress Enter to continue")
+            _ui_drift_audit(resolved_gaps)
         elif choice == "5":
-            review_quarantined_skills()
+            _ui_review_quarantine()
+        elif choice == "6":
+            _ui_heal_manifests()
 
 
-def audit_report(skills: List[Dict]) -> None:
-    """Displays a detailed diagnostic health matrix across all skills."""
+def _render_audit_report(skills: List[Dict]) -> None:
     console.clear()
     table = Table(title="Diagnostic System Audit", show_header=True, header_style="bold cyan")
     table.add_column("Skill ID", style="bold white")
@@ -175,128 +159,137 @@ def audit_report(skills: List[Dict]) -> None:
     for s in skills:
         missing = s.get("missing_requirements", [])
         if missing:
-            status = "[bold red]CRITICAL[/bold red]"
             packages = [PACKAGE_MAP.get(m, m) for m in missing]
             table.add_row(
-                s.get("skill_id", "N/A"),
-                s.get("stage", "Unknown"),
-                status,
-                ", ".join(missing),
-                ", ".join(packages),
+                s.get("skill_id", "N/A"), s.get("stage", "Unknown"),
+                "[bold red]CRITICAL[/bold red]", ", ".join(missing), ", ".join(packages)
             )
         else:
             table.add_row(
-                s.get("skill_id", "N/A"),
-                s.get("stage", "Unknown"),
-                "[bold green]HEALTHY[/bold green]",
-                "[dim]None[/dim]",
-                "[dim]N/A[/dim]",
+                s.get("skill_id", "N/A"), s.get("stage", "Unknown"),
+                "[bold green]HEALTHY[/bold green]", "[dim]None[/dim]", "[dim]N/A[/dim]"
             )
-
     console.print(table)
     Prompt.ask("\nPress Enter to return to Diagnostics Menu")
 
 
-def resolve_all_dependencies(broken_skills: List[Dict]) -> None:
-    """Collects missing requirements, applies package mapping, and triggers apt-get."""
+def _ui_resolve_dependencies(broken_skills: List[Dict]) -> None:
     console.clear()
-
-    missing_binaries = set()
-    for s in broken_skills:
-        missing_binaries.update(s.get("missing_requirements", []))
-
-    apt_packages = [PACKAGE_MAP.get(b, b) for b in missing_binaries]
-    pkg_str = " ".join(apt_packages)
-
-    cmd = f"sudo apt-get update && sudo apt-get install -y {pkg_str}"
+    missing_binaries, pkg_str, cmd = build_apt_command(broken_skills)
 
     console.print("[bold red]⚠️  DEPENDENCY RESOLUTION TARGETS DETECTED[/bold red]\n")
     console.print(f"  [bold]Missing Binaries ($PATH):[/bold] {', '.join(missing_binaries)}")
     console.print(f"  [bold]Target APT Packages:[/bold]      [cyan]{pkg_str}[/cyan]")
     console.print(f"  [bold]Execution Command:[/bold]        [dim]{cmd}[/dim]\n")
 
-    confirm = Prompt.ask("Execute package installation with elevated privileges?", choices=["y", "n"], default="y")
-
-    if confirm.lower() == "y":
-        subprocess.run(cmd, shell=True)
+    if Prompt.ask("Execute package installation with elevated privileges?", choices=["y", "n"], default="y").lower() == "y":
+        execute_apt_command(cmd)
         Prompt.ask("\nPress Enter to return and refresh diagnostic health state")
 
 
-def review_quarantined_skills() -> None:
-    """Interactive prompt to review, recheck, or delete quarantined skills."""
-    if not STATE_DB_PATH.exists():
-        console.print("[bold red]Database not found.[/bold red]")
+def _ui_maintenance_routine(librarian: SkillLibrarian) -> None:
+    console.print("\n[bold cyan]🔧 Executing Full Database & Contract Maintenance...[/bold cyan]\n")
+
+    flagged = flag_quarantined_orphans()
+    console.print(f"  • Filesystem entry check: [bold yellow]{flagged} flagged[/bold yellow]" if flagged else "  • Filesystem entry check: [green]OK[/green]")
+
+    updated_manifests = normalize_manifest_action_contracts(librarian)
+    console.print(f"  • Contract Normalization: [bold green]{updated_manifests} rewritten[/bold green]" if updated_manifests else "  • 3-node action contract formatting: [green]IN SYNC[/green]")
+
+    purged_maps = cleanup_orphaned_agent_mappings()
+    console.print(f"  • Agent mapping integrity: [bold yellow]{purged_maps} purged[/bold yellow]" if purged_maps else "  • Agent mapping integrity: [green]OK[/green]")
+
+    run_sync()
+    if hasattr(librarian, "reindex_skills"):
+        librarian.reindex_skills()
+        console.print("  • SkillLibrarian AST contract re-index: [green]COMPLETE[/green]")
+
+    console.print("\n[bold green]✅ Database and action contract maintenance complete.[/bold green]")
+
+
+def _ui_drift_audit(resolved_gaps: int) -> None:
+    console.clear()
+    console.print("[bold cyan]📋 SQLite vs Filesystem State Drift Audit[/bold cyan]\n")
+    flag_quarantined_orphans()
+    run_audit()
+
+    purged_maps = cleanup_orphaned_agent_mappings()
+    if purged_maps > 0:
+        console.print(f"[bold yellow]✓ Cleaned {purged_maps} orphaned agent_skill_map row(s).[/bold yellow]")
+
+    if resolved_gaps > 0:
+        console.print(f"\n[bold yellow]⚠️ State Drift Detected: {resolved_gaps} resolved gap(s) pending purge.[/bold yellow]")
+        if Prompt.ask("Purge resolved gaps and vacuum database?", choices=["y", "n"], default="y").lower() == "y":
+            purged = purge_resolved_gaps()
+            console.print(f"[bold green]✓ Purged {purged} gap record(s) and vacuumed database.[/bold green]")
+    Prompt.ask("\nPress Enter to continue")
+
+
+def _ui_review_quarantine() -> None:
+    orphans = get_quarantined_skills()
+    if not orphans:
+        console.print("\n[bold green]✅ No quarantined skills found. Everything is clean.[/bold green]")
         Prompt.ask("\nPress Enter to return")
         return
 
-    with get_connection(STATE_DB_PATH) as conn:
-        cursor = conn.cursor()
+    console.clear()
+    console.print(f"[bold yellow]⚠️  Found {len(orphans)} Quarantined Skill(s):[/bold yellow]\n")
 
-        cursor.execute(
-            """
-            SELECT skill_id, entry_file_path, quarantine_reason 
-            FROM skill_registry 
-            WHERE status = 'QUARANTINED'
-            """
-        )
-        orphans = cursor.fetchall()
+    for skill_id, path_str, reason in orphans:
+        console.print("-" * 60)
+        console.print(f"[bold]Skill ID :[/bold] {skill_id}\n[bold]Path     :[/bold] {path_str}\n[bold]Reason   :[/bold] [red]{reason}[/red]")
+        console.print("-" * 60)
 
-        if not orphans:
-            console.print("\n[bold green]✅ No quarantined skills found. Everything is clean.[/bold green]")
-            Prompt.ask("\nPress Enter to return")
+        choice = Prompt.ask(
+            f"Action for '{skill_id}' ([bold cyan]R[/bold cyan]echeck, [bold red]D[/bold red]elete, [dim]S[/dim]kip, [dim]B[/dim]ack, [dim]Q[/dim]uit)",
+            choices=["r", "d", "s", "b", "q"], default="s", show_choices=False, show_default=True,
+        ).lower()
+
+        if choice == "q":
+            sys.exit(0)
+        elif choice == "b":
             return
+        elif choice == "d":
+            delete_quarantined_skill(skill_id)
+            console.print(f"[bold green]🗑️  Deleted '{skill_id}' from registry.[/bold green]\n")
+        elif choice == "r":
+            if repair_quarantined_skill(skill_id, path_str):
+                console.print(f"[bold green]✅ Repaired! '{skill_id}' is now ACTIVE.[/bold green]\n")
+            else:
+                console.print(f"[bold red]❌ Failed: Files for '{skill_id}' are still missing or invalid.[/bold red]\n")
 
-        console.clear()
-        console.print(f"[bold yellow]⚠️  Found {len(orphans)} Quarantined Skill(s):[/bold yellow]\n")
+    Prompt.ask("\nPress Enter to return to Diagnostics Menu")
 
-        for skill_id, path_str, reason in orphans:
-            console.print("-" * 60)
-            console.print(f"[bold]Skill ID :[/bold] {skill_id}")
-            console.print(f"[bold]Path     :[/bold] {path_str}")
-            console.print(f"[bold]Reason   :[/bold] [red]{reason}[/red]")
-            console.print("-" * 60)
 
-            choice = Prompt.ask(
-                f"Action for '{skill_id}' ([bold cyan]R[/bold cyan]echeck, [bold red]D[/bold red]elete, [dim]S[/dim]kip, [dim]B[/dim]ack, [dim]Q[/dim]uit)",
-                choices=["r", "d", "s", "b", "q"],
-                default="s",
-                show_choices=False,
-                show_default=True
-            ).lower()
+def _ui_heal_manifests() -> None:
+    console.clear()
+    console.print("[bold cyan]🩹 Manifest Parameter & Artifact Auto-Healer[/bold cyan]\n")
 
-            if choice == 'q':
-                console.print("[bold cyan]Librarian session closed.[/bold cyan]")
-                sys.exit(0)
+    deficient_skills = get_deficient_skills()
+    if not deficient_skills:
+        console.print("[bold green]✅ All skill manifests are fully populated. Audit complete.[/bold green]")
+        Prompt.ask("\nPress Enter to return")
+        return
 
-            elif choice == 'b':
-                console.print("[dim]Aborting review. Returning to Diagnostics Menu...[/dim]\n")
-                return  # Breaks out of the function entirely
+    console.print(
+        f"Found [bold yellow]{len(deficient_skills)}[/bold yellow] skill action(s) missing metadata in the DB. Starting AST extraction...\n")
 
-            elif choice == 's':
-                console.print(f"[dim]Skipping {skill_id}...[/dim]\n")
+    # Unpack the new robust metrics
+    healed, verified, not_found = process_ast_healing(deficient_skills)
 
-            elif choice == 'd':
-                cursor.execute("DELETE FROM skill_registry WHERE skill_id = ?", (skill_id,))
-                conn.commit()
-                console.print(f"[bold green]🗑️  Deleted '{skill_id}' from registry.[/bold green]\n")
+    if healed > 0:
+        console.print(f"  [bold green]✓ Successfully healed {healed} manifest(s).[/bold green]")
+        console.print("  [dim]Note: You should now run a database re-index (Option 3) to sync these changes.[/dim]")
 
-            elif choice == 'r':
-                entry_path = Path(path_str) if path_str else None
-                if entry_path and entry_path.exists():
-                    cursor.execute(
-                        """
-                        UPDATE skill_registry 
-                        SET status = 'ACTIVE', 
-                            quarantine_reason = NULL,
-                            updated_at = CURRENT_TIMESTAMP 
-                        WHERE skill_id = ?
-                        """,
-                        (skill_id,)
-                    )
-                    conn.commit()
-                    console.print(f"[bold green]✅ Repaired! '{skill_id}' is now ACTIVE.[/bold green]\n")
-                else:
-                    console.print(
-                        f"[bold red]❌ Failed: Files for '{skill_id}' are still missing or invalid.[/bold red]\n")
+    if verified > 0:
+        console.print(
+            f"  [bold cyan]ℹ {verified} handler(s) verified as legitimately taking no parameters.[/bold cyan]")
 
-        Prompt.ask("\nPress Enter to return to Diagnostics Menu")
+    if not_found > 0:
+        console.print(
+            f"  [bold yellow]⚠️ {not_found} handler(s) could not be located in their respective Python files.[/bold yellow]")
+
+    if healed == 0 and verified == 0 and not_found == 0:
+        console.print("\n[dim]No manifests were updated (signatures might be unparseable).[/dim]")
+
+    Prompt.ask("\nPress Enter to return")

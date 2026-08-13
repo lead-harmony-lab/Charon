@@ -19,7 +19,7 @@
   "consumed_artifacts": [],
   "produced_artifacts": [],
   "supported_actions": {
-    "extract_pdf_ocr": {
+    "document_extract_pdf": {
       "description": "Executes OCR text extraction on target PDF file.",
       "handler": "execute",
       "parameters": {

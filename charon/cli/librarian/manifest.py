@@ -1,16 +1,16 @@
 """
 charon/cli/librarian/manifest.py
-System Version: v0.2.0 | File Revision: 2.0.0
+System Version: v0.3.0 | File Revision: 2.1.0
 
-Module: Dynamic, schema-driven manifest validation and auto-migration engine.
+Module: Dynamic, schema-driven manifest validation, disk persistence, and auto-migration engine.
 Leverages Pydantic SkillManifest model directly to eliminate hardcoded format constraints.
-Refactored for multi-action unrolling, robust schema fallback, and clean CLI diagnostics.
+Refactored for multi-action unrolling, robust schema fallback, allowed_agents updates, and CLI diagnostics.
 """
 
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import ValidationError
 from rich.console import Console
@@ -25,6 +25,34 @@ from charon.core.skills import SkillManifest
 
 console = Console()
 logger = logging.getLogger("charon.cli.librarian.manifest")
+
+
+def update_manifest_allowed_agents(
+    manifest_path: Union[str, Path],
+    agents: List[str],
+) -> bool:
+    """
+    Persists updated allowed_agents array to manifest.json on disk while
+    preserving formatting and sorting deduplicated agent identifiers.
+    """
+    p = Path(manifest_path)
+    if not p.exists():
+        console.print(f"[bold red]❌ Manifest file not found at {manifest_path}[/bold red]")
+        return False
+
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        data["allowed_agents"] = sorted(list(set(agents)))
+
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        return True
+    except Exception as e:
+        console.print(f"[bold red]❌ Failed to update manifest on disk: {e}[/bold red]")
+        return False
 
 
 def _migrate_raw_dict(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:

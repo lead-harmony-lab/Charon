@@ -1,156 +1,110 @@
-#!/usr/bin/env python3
-import json
-import logging
 import sqlite3
+import sys
 from pathlib import Path
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-logger = logging.getLogger("Charon.Migration")
-
+# Resolve path based on your environment
 DB_PATH = Path.home() / ".local" / "share" / "charon" / "charon_state.db"
 
-
-def migrate_database():
+def run_fix():
     if not DB_PATH.exists():
-        logger.error(f"Database not found at {DB_PATH}")
-        return
+        print(f"❌ Database not found at {DB_PATH}")
+        sys.exit(1)
 
-    logger.info(f"Connecting to database at {DB_PATH}")
+    print("🛡️  Starting agent_registry schema fix...")
 
-    # Connect with dictionary-like row access
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect(DB_PATH, isolation_level=None)
     cursor = conn.cursor()
 
     try:
-        # Enable foreign keys (though we will turn them off briefly for the table swap)
+        # Step 1: Disable foreign keys
         cursor.execute("PRAGMA foreign_keys = OFF;")
+        cursor.execute("BEGIN TRANSACTION;")
 
-        # ---------------------------------------------------------
-        # 1. Clean Up Redundant Tables
-        # ---------------------------------------------------------
-        logger.info("Dropping redundant 'agents' table...")
-        cursor.execute("DROP TABLE IF EXISTS agents;")
-
-        # ---------------------------------------------------------
-        # 2. Rebuild skill_registry & Populate agent_skill_map
-        # ---------------------------------------------------------
-        logger.info("Rebuilding 'skill_registry' and extracting manifest data...")
-
+        # Step 2: Create the correct agent_registry table (No default_skill_id)
+        print("🏗️  Building corrected agent_registry table...")
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS skill_registry_new (
-                action_name TEXT PRIMARY KEY,
-                skill_id TEXT NOT NULL,
-                version TEXT NOT NULL DEFAULT '1.0.0',
-                category TEXT DEFAULT 'General',
-                description TEXT NOT NULL DEFAULT '',
-                parameters TEXT DEFAULT '{}',
-                system_requirements TEXT NOT NULL DEFAULT '[]',
-                consumed_artifacts TEXT NOT NULL DEFAULT '[]',
-                produced_artifacts TEXT NOT NULL DEFAULT '[]',
-                entry_file_path TEXT NOT NULL,
-                handler_name TEXT NOT NULL,
+            CREATE TABLE agent_registry_new (
+                agent_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                default_action TEXT,    -- Sole link to skill_registry
+                system_prompt TEXT DEFAULT '',
+                priority_weight REAL DEFAULT 1.0,
+                override_triggers TEXT DEFAULT '[]',
                 is_active INTEGER DEFAULT 1,
-                is_global INTEGER DEFAULT 0,
-                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+
+                -- Single correct Foreign Key mapping to the action
+                FOREIGN KEY(default_action) REFERENCES skill_registry(action_name) 
+                    ON UPDATE CASCADE ON DELETE SET NULL
             );
         """)
 
-        # Fetch all existing skills
-        cursor.execute("SELECT * FROM skill_registry;")
-        existing_skills = cursor.fetchall()
+        # Step 3: Migrate data and drop the hallucinated column
+        print("🧬 Migrating data and purging 'default_skill_id'...")
+        cursor.execute("""
+            INSERT INTO agent_registry_new (
+                agent_id, display_name, description, default_action,
+                system_prompt, priority_weight, override_triggers, is_active, created_at, updated_at
+            )
+            SELECT 
+                agent_id, display_name, description, default_action, 
+                system_prompt, priority_weight, override_triggers, is_active, created_at, updated_at
+            FROM agent_registry;
+        """)
 
-        for skill in existing_skills:
-            action_name = skill["action_name"]
-            manifest_raw = skill["manifest_json"]
+        # Step 4: Temporarily drop triggers attached to OTHER tables that reference agent_registry
+        print("🔪 Unhooking dependent triggers...")
+        cursor.execute("DROP TRIGGER IF EXISTS prevent_inactive_agent_role_assignment;")
+        cursor.execute("DROP TRIGGER IF EXISTS prevent_mandatory_role_agent_deactivation;")
 
-            # Parse manifest_json to determine global status and specific shelf tags
-            is_global = 0
-            shelf_tags = []
+        # Step 5: Swap the tables
+        print("🔄 Swapping tables...")
+        cursor.execute("DROP TABLE agent_registry;")
+        cursor.execute("ALTER TABLE agent_registry_new RENAME TO agent_registry;")
 
-            if manifest_raw:
-                try:
-                    manifest_data = json.loads(manifest_raw)
-                    shelf_tags = manifest_data.get("shelf_tags", [])
-                    primary_agent = manifest_data.get("primary_agent_id")
-
-                    if primary_agent and primary_agent not in shelf_tags:
-                        shelf_tags.append(primary_agent)
-
-                    if "*" in shelf_tags:
-                        is_global = 1
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse manifest JSON for action '{action_name}'. Defaulting to global.")
-                    is_global = 1
-
-            # Insert into the new refined table
-            cursor.execute("""
-                INSERT INTO skill_registry_new (
-                    action_name, skill_id, version, category, description, 
-                    parameters, system_requirements, consumed_artifacts, 
-                    produced_artifacts, entry_file_path, handler_name, 
-                    is_active, is_global, indexed_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                action_name, skill["skill_id"], skill["version"], skill["category"],
-                skill["description"], skill["parameters"], skill["system_requirements"],
-                skill["consumed_artifacts"], skill["produced_artifacts"],
-                skill["entry_file_path"], skill["handler_name"], skill["is_active"],
-                is_global, skill["indexed_at"], skill["updated_at"]
-            ))
-
-            # Populate agent_skill_map for non-global agents explicitly listed
-            if not is_global:
-                for tag in shelf_tags:
-                    if tag != "*":
-                        cursor.execute("""
-                            INSERT OR IGNORE INTO agent_skill_map (agent_id, action_name) 
-                            VALUES (?, ?)
-                        """, (tag, action_name))
-
-        # Swap the skills tables
-        cursor.execute("DROP TABLE skill_registry;")
-        cursor.execute("ALTER TABLE skill_registry_new RENAME TO skill_registry;")
-        cursor.execute("CREATE INDEX idx_skill_registry_action ON skill_registry(action_name);")
-
-        # ---------------------------------------------------------
-        # 3. Upgrade system_roles to use RESTRICT
-        # ---------------------------------------------------------
-        logger.info("Upgrading 'system_roles' table constraints...")
+        # Step 6: Recreate dropped indexes and triggers
+        print("⚡ Re-attaching triggers and indexes...")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_registry_is_active ON agent_registry(is_active);")
 
         cursor.execute("""
-            CREATE TABLE system_roles_new (
-                role_name TEXT PRIMARY KEY,
-                agent_id TEXT NOT NULL,
-                description TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(agent_id) REFERENCES agent_registry(agent_id) ON DELETE RESTRICT
-            );
+            CREATE TRIGGER prevent_mandatory_role_agent_deactivation
+            BEFORE UPDATE OF is_active ON agent_registry
+            WHEN NEW.is_active = 0
+            BEGIN
+              SELECT CASE
+                WHEN EXISTS (
+                  SELECT 1 FROM system_roles
+                  WHERE agent_id = NEW.agent_id AND is_mandatory = 1
+                )
+                THEN RAISE(ABORT, 'Operation blocked: Cannot deactivate an agent bound to a mandatory system role.')
+              END;
+            END;
         """)
 
-        # Copy existing roles
-        cursor.execute("INSERT INTO system_roles_new SELECT * FROM system_roles;")
+        cursor.execute("""
+            CREATE TRIGGER prevent_inactive_agent_role_assignment
+            BEFORE UPDATE OF agent_id ON system_roles
+            WHEN NEW.agent_id IS NOT NULL
+            BEGIN
+              SELECT CASE
+                WHEN (SELECT is_active FROM agent_registry WHERE agent_id = NEW.agent_id) = 0
+                THEN RAISE(ABORT, 'Operation blocked: Cannot assign an inactive agent to a system role.')
+              END;
+            END;
+        """)
 
-        # Swap the roles tables
-        cursor.execute("DROP TABLE system_roles;")
-        cursor.execute("ALTER TABLE system_roles_new RENAME TO system_roles;")
-        cursor.execute("CREATE INDEX idx_system_roles_agent ON system_roles(agent_id);")
-
-        # ---------------------------------------------------------
-        # Commit & Re-enable Pragmas
-        # ---------------------------------------------------------
-        conn.commit()
-        cursor.execute("PRAGMA foreign_keys = ON;")
-        logger.info("Migration completed successfully. The database schema is now unified.")
+        # Step 7: Commit transaction
+        cursor.execute("COMMIT;")
+        print("✅ Schema fix complete! 'default_skill_id' is gone and the codebase constraints are restored.")
 
     except Exception as e:
-        conn.rollback()
-        logger.error(f"Migration failed: {e}. Changes rolled back.")
+        cursor.execute("ROLLBACK;")
+        print(f"❌ Fix failed. Rolling back all changes. Error: {e}")
     finally:
+        cursor.execute("PRAGMA foreign_keys = ON;")
         conn.close()
 
-
 if __name__ == "__main__":
-    migrate_database()
+    run_fix()

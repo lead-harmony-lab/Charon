@@ -4,10 +4,17 @@
   "description": "Iterative, self-healing code generator and runtime error resolution engine.",
   "category": "Autonomous Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["python", "repair", "self-healing", "solver"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "python",
+    "repair",
+    "self-healing",
+    "solver"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "solve_edge_case": {
+    "autonomous_code_solve": {
       "description": "Generates, executes, and iteratively repairs code in a closed loop until verification passes.",
       "parameters": {
         "problem": {
@@ -30,7 +37,11 @@
           "description": "Target workspace directory path.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_solve_edge_case"
     }
-  }
+  },
+  "allowed_agents": [
+    "engineer"
+  ]
 }

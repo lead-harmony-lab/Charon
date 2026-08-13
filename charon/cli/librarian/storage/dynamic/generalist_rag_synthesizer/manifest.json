@@ -4,10 +4,18 @@
   "description": "Synthesizes raw retrieved context and memory ledger entries into structured, grounded responses.",
   "category": "Data",
   "author": "Charon Librarian",
-  "shelf_tags": ["rag", "synthesis", "retrieval", "grounding"],
-  "system_requirements": ["python3", "ollama"],
+  "shelf_tags": [
+    "rag",
+    "synthesis",
+    "retrieval",
+    "grounding"
+  ],
+  "system_requirements": [
+    "python3",
+    "ollama"
+  ],
   "supported_actions": {
-    "synthesize_rag": {
+    "data_generalist_synthesize": {
       "description": "Synthesizes raw RAG technical context against a user query using strict grounding directives.",
       "parameters": {
         "query": {
@@ -25,7 +33,11 @@
           "description": "Inference model identifier (defaults to llama3.1).",
           "required": false
         }
-      }
+      },
+      "handler": "handle_synthesize_rag"
     }
-  }
+  },
+  "allowed_agents": [
+    "generalist"
+  ]
 }

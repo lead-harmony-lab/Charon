@@ -1,6 +1,6 @@
 """
 charon/db/repositories/skill.py
-System Version: v0.6.0 | File Revision: 6.3.7
+System Version: v0.6.0 | File Revision: 6.4.0
 
 Module: Data Access Layer repository for skill dynamic indexing, quarantine lifecycle management,
 agent-capability authorization bindings, and CBAC skill permission assignments.
@@ -44,7 +44,6 @@ class SkillRepository:
                     produced_artifacts TEXT NOT NULL DEFAULT '[]',
                     entry_file_path TEXT NOT NULL,
                     handler_name TEXT NOT NULL,
-                    -- v0.3.x ARCHITECTURAL FIX: Added 'STAGED' to allowed status constraints
                     status TEXT NOT NULL DEFAULT 'QUARANTINED' CHECK(status IN ('ACTIVE', 'QUARANTINED', 'DISABLED', 'ARCHIVED', 'STAGED')),
                     quarantine_reason TEXT DEFAULT NULL,
                     is_global INTEGER DEFAULT 0,
@@ -70,14 +69,6 @@ class SkillRepository:
                     FOREIGN KEY (skill_id) REFERENCES skill_registry(skill_id) ON DELETE CASCADE
                 );
 
-                -- Persistent backup table to preserve mappings across connection/indexing sweeps
-                CREATE TABLE IF NOT EXISTS _bkp_agent_skill_map (
-                    agent_id TEXT NOT NULL,
-                    skill_id TEXT NOT NULL,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (agent_id, skill_id)
-                );
-
                 CREATE INDEX IF NOT EXISTS idx_skill_registry_status ON skill_registry(status);
                 CREATE INDEX IF NOT EXISTS idx_skill_permissions_skill ON skill_permissions(skill_id);
                 CREATE INDEX IF NOT EXISTS idx_agent_skill_map_agent ON agent_skill_map(agent_id);
@@ -93,12 +84,14 @@ class SkillRepository:
         with get_connection(self.db_path) as conn:
             if clear_agent_mappings:
                 conn.execute("DELETE FROM agent_skill_map;")
-                conn.execute("DELETE FROM _bkp_agent_skill_map;")
                 conn.execute("DELETE FROM skill_permissions;")
                 conn.execute("DELETE FROM skill_registry;")
             else:
-                conn.execute("DELETE FROM _bkp_agent_skill_map;")
-                conn.execute("INSERT INTO _bkp_agent_skill_map SELECT * FROM agent_skill_map;")
+                # Stash mappings in a session-level TEMP TABLE before clearing
+                conn.execute("""
+                    CREATE TEMP TABLE IF NOT EXISTS temp_agent_skill_map AS 
+                    SELECT * FROM agent_skill_map;
+                """)
                 conn.execute("DELETE FROM skill_permissions;")
                 conn.execute("DELETE FROM skill_registry;")
 
@@ -111,10 +104,8 @@ class SkillRepository:
         with get_connection(self.db_path) as conn:
             if agent_id:
                 conn.execute("DELETE FROM agent_skill_map WHERE agent_id = ?;", (agent_id,))
-                conn.execute("DELETE FROM _bkp_agent_skill_map WHERE agent_id = ?;", (agent_id,))
             else:
                 conn.execute("DELETE FROM agent_skill_map;")
-                conn.execute("DELETE FROM _bkp_agent_skill_map;")
 
     def _get_permissions_map_for_skills(
         self, conn: Any, skill_ids: List[str]
@@ -245,6 +236,7 @@ class SkillRepository:
                 updated_at=CURRENT_TIMESTAMP;
         """
         with get_connection(self.db_path) as conn:
+            # Handle skill action name collisions / skill_id updates
             cursor = conn.execute(
                 "SELECT skill_id FROM skill_registry WHERE action_name = ? AND skill_id != ?;",
                 (rec["action_name"], rec["skill_id"]),
@@ -253,36 +245,22 @@ class SkillRepository:
 
             if old_row:
                 old_skill_id = old_row[0] if isinstance(old_row, (tuple, list)) else old_row["skill_id"]
-                conn.execute(
-                    "DELETE FROM agent_skill_map WHERE skill_id = ? AND agent_id IN ("
-                    "  SELECT agent_id FROM agent_skill_map WHERE skill_id = ?"
-                    ");",
-                    (old_skill_id, rec["skill_id"]),
-                )
-                conn.execute(
-                    "UPDATE agent_skill_map SET skill_id = ? WHERE skill_id = ?;",
-                    (rec["skill_id"], old_skill_id),
-                )
-                conn.execute(
-                    "DELETE FROM skill_permissions WHERE skill_id = ? AND perm_id IN ("
-                    "  SELECT perm_id FROM skill_permissions WHERE skill_id = ?"
-                    ");",
-                    (old_skill_id, rec["skill_id"]),
-                )
-                conn.execute(
-                    "UPDATE skill_permissions SET skill_id = ? WHERE skill_id = ?;",
-                    (rec["skill_id"], old_skill_id),
-                )
+                conn.execute("DELETE FROM agent_skill_map WHERE skill_id = ?;", (old_skill_id,))
+                conn.execute("DELETE FROM skill_permissions WHERE skill_id = ?;", (old_skill_id,))
                 conn.execute("DELETE FROM skill_registry WHERE skill_id = ?;", (old_skill_id,))
 
+            # Insert/Update Skill Record
             conn.execute(query, rec)
 
+            # Restore agent mappings safely from session TEMP TABLE (verifying agent existence)
             try:
                 conn.execute(
                     """
                     INSERT INTO agent_skill_map (agent_id, skill_id, created_at)
-                    SELECT agent_id, skill_id, created_at FROM _bkp_agent_skill_map
-                    WHERE skill_id = ?
+                    SELECT b.agent_id, b.skill_id, b.created_at 
+                    FROM temp_agent_skill_map b
+                    WHERE b.skill_id = ?
+                      AND (b.agent_id = '*' OR EXISTS (SELECT 1 FROM agent_registry a WHERE a.agent_id = b.agent_id))
                     ON CONFLICT(agent_id, skill_id) DO NOTHING;
                     """,
                     (rec["skill_id"],),
@@ -290,11 +268,24 @@ class SkillRepository:
             except Exception as e:
                 logger.debug("Skip agent_skill_map backup restore: %s", e)
 
+            # Bind permissions with auto-seeding in permission_registry to guarantee FK integrity
             if req_perms:
                 for perm_id in req_perms:
                     try:
                         conn.execute(
-                            "INSERT OR IGNORE INTO skill_permissions (skill_id, perm_id) VALUES (?, ?);",
+                            """
+                            INSERT INTO permission_registry (perm_id, description, created_at)
+                            VALUES (?, ?, CURRENT_TIMESTAMP)
+                            ON CONFLICT(perm_id) DO NOTHING;
+                            """,
+                            (perm_id, f"Auto-registered permission for skill {rec['skill_id']}"),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO skill_permissions (skill_id, perm_id)
+                            VALUES (?, ?)
+                            ON CONFLICT(skill_id, perm_id) DO NOTHING;
+                            """,
                             (rec["skill_id"], perm_id),
                         )
                     except Exception as pe:

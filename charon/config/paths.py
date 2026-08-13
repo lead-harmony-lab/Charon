@@ -1,6 +1,6 @@
 """
 charon/config/paths.py
-System Version: v0.2.0 | File Revision: 1.5.0
+System Version: v0.2.0 | File Revision: 1.6.0
 
 Module: Application & Ecosystem XDG Path Resolver
 Defines canonical XDG-compliant storage paths for Charon background daemon runtime,
@@ -19,6 +19,8 @@ CHARON_PKG_DIR = Path(__file__).resolve().parent.parent  # .../Charon/charon
 BASE_DIR = CHARON_PKG_DIR.parent                          # .../Charon
 
 # Internal Module Directories
+CONFIG_DIR = CHARON_PKG_DIR / "config"
+DEFINITIONS_DIR = CONFIG_DIR / "definitions"
 CLI_DIR = CHARON_PKG_DIR / "cli"
 LIBRARIAN_DIR = CLI_DIR / "librarian"
 STORAGE_DIR = LIBRARIAN_DIR / "storage"
@@ -45,10 +47,11 @@ XDG_CACHE_HOME = Path(
 # =============================================================================
 # 2. Application-Specific XDG Directories & Databases
 # =============================================================================
-# System Configuration
+# System Configuration & Core Blueprint Files
 USER_CONFIG_DIR = XDG_CONFIG_HOME / "charon"
 CHARON_ENV_FILE = USER_CONFIG_DIR / "env"
 KICAD_DBL_PATH = USER_CONFIG_DIR / "partvault.kicad_dbl"
+SYSTEM_ACTIONS_FILE = DEFINITIONS_DIR / "system_actions.json"
 
 # Charon Runtime Data & Memory Storage
 CHARON_DATA_DIR = XDG_DATA_HOME / "charon"
@@ -101,7 +104,8 @@ def ensure_ecosystem_directories() -> None:
     DYNAMIC_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Internal Storage Tier Directories
+    # Internal Package Directories
+    DEFINITIONS_DIR.mkdir(parents=True, exist_ok=True)
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     QUARANTINE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     PKG_STAGED_SKILLS_DIR.mkdir(parents=True, exist_ok=True)

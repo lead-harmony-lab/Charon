@@ -4,10 +4,20 @@
   "description": "Retrieves component PDF datasheets via local cache search, direct download, or web search fallback, verifying PDF integrity and syncing records with PartVault SQLite.",
   "category": "Web",
   "author": "Charon Librarian",
-  "shelf_tags": ["datasheet", "pdf", "download", "web_search", "sha256", "partvault"],
-  "system_requirements": ["python3", "sqlite3"],
+  "shelf_tags": [
+    "datasheet",
+    "pdf",
+    "download",
+    "web_search",
+    "sha256",
+    "partvault"
+  ],
+  "system_requirements": [
+    "python3",
+    "sqlite3"
+  ],
   "supported_actions": {
-    "fetch_datasheet": {
+    "web_quartermaster_fetch": {
       "description": "Locates or downloads component PDF datasheets and links records in PartVault.",
       "parameters": {
         "part_number": {
@@ -30,7 +40,11 @@
           "description": "Subfolder category for datasheet storage.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_fetch_datasheet"
     }
-  }
+  },
+  "allowed_agents": [
+    "quartermaster"
+  ]
 }

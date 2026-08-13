@@ -20,7 +20,7 @@
     ".csv"
   ],
   "supported_actions": {
-    "export_kicad_bom": {
+    "cad_kicad_export": {
       "description": "Parses KiCad schematic files (.kicad_sch) and exports a formatted Bill of Materials (BOM) to CSV.",
       "handler": "export_bom",
       "parameters": {}

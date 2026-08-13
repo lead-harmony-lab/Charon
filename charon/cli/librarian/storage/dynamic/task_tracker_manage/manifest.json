@@ -17,17 +17,17 @@
   ],
   "system_requirements": [],
   "supported_actions": {
-    "add_task": {
+    "task_tracker_add": {
       "description": "Add or pin a new task (title, priority, task_id) to the top bar ticker loop.",
       "handler": "add_task",
       "parameters": {}
     },
-    "complete_task": {
+    "task_tracker_complete": {
       "description": "Mark an existing task_id as completed to remove it from ticker rotation.",
       "handler": "complete_task",
       "parameters": {}
     },
-    "list_tasks": {
+    "task_tracker_list": {
       "description": "Query all currently active/pinned tasks from the top bar ticker loop.",
       "handler": "list_tasks",
       "parameters": {}

@@ -4,10 +4,18 @@
   "description": "Operating system command runner and GUI viewer integration tool.",
   "category": "System",
   "author": "Charon Librarian",
-  "shelf_tags": ["system", "os", "bash", "gui", "xdg"],
-  "system_requirements": ["bash"],
+  "shelf_tags": [
+    "system",
+    "os",
+    "bash",
+    "gui",
+    "xdg"
+  ],
+  "system_requirements": [
+    "bash"
+  ],
   "supported_actions": {
-    "execute_system_command": {
+    "system_sys_execute": {
       "description": "Executes lightweight synchronous system shell commands directly.",
       "parameters": {
         "command": {
@@ -25,9 +33,10 @@
           "description": "Execution timeout in seconds (defaults to 30.0).",
           "required": false
         }
-      }
+      },
+      "handler": "handle_execute_system_command"
     },
-    "launch_gui_viewer": {
+    "system_sys_launch": {
       "description": "Spawns the default desktop application to open target files.",
       "parameters": {
         "file_path": {
@@ -35,7 +44,11 @@
           "description": "Path to file to open.",
           "required": true
         }
-      }
+      },
+      "handler": "handle_launch_gui_viewer"
     }
-  }
+  },
+  "allowed_agents": [
+    "engineer"
+  ]
 }

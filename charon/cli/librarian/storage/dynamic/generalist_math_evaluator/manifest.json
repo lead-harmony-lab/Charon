@@ -4,10 +4,18 @@
   "description": "Evaluates mathematical expressions deterministically via AST with LLM fallback assistance.",
   "category": "Execution",
   "author": "Charon Librarian",
-  "shelf_tags": ["math", "calculator", "evaluation", "ast", "generalist"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "math",
+    "calculator",
+    "evaluation",
+    "ast",
+    "generalist"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "calculate_math": {
+    "execution_generalist_calculate": {
       "description": "Evaluates mathematical expressions deterministically via safe AST evaluation or LLM computation.",
       "parameters": {
         "expression": {
@@ -20,7 +28,11 @@
           "description": "Inference model name for fallback processing.",
           "required": false
         }
-      }
+      },
+      "handler": "handle_calculate_math"
     }
-  }
+  },
+  "allowed_agents": [
+    "generalist"
+  ]
 }

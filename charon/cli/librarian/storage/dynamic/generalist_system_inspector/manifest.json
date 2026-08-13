@@ -4,12 +4,24 @@
   "description": "Retrieves system diagnostic information, specs, and host environment state.",
   "category": "System",
   "author": "Charon Librarian",
-  "shelf_tags": ["system_info", "specs", "host", "diagnostics", "generalist"],
-  "system_requirements": ["python3"],
+  "shelf_tags": [
+    "system_info",
+    "specs",
+    "host",
+    "diagnostics",
+    "generalist"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
   "supported_actions": {
-    "system_info": {
+    "system_generalist_info": {
       "description": "Gathers hardware and host system information.",
-      "parameters": {}
+      "parameters": {},
+      "handler": "handle_system_info"
     }
-  }
+  },
+  "allowed_agents": [
+    "generalist"
+  ]
 }

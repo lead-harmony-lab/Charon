@@ -1,15 +1,16 @@
 """
 charon/core/skills/librarian.py
-System Version: v0.6.5 | File Revision: 10.3.0
+System Version: v0.6.6 | File Revision: 10.4.0
 
 Module: Central registry, hybrid DB/disk discovery hub, dynamic query bus, and authorization desk.
 Combines RoleResolver, RouteManager, SkillIndexer, SkillQuery, and SkillExecutor mixins.
-Integrates CBAC Schema V2 authorization, PermissionRepository, and Quarantine State controls.
-Enforces strict fail-fast role resolution against database registry with dynamic defaults.
+Integrates CBAC Schema V2 authorization, PermissionRepository, system_actions lookups, and Quarantine State controls.
+Enforces strict fail-fast role and system action resolution against database registry with dynamic defaults.
 """
 
 import logging
 from pathlib import Path
+import sqlite3
 from typing import Any, Dict, List, Optional, Union
 
 from charon.config.paths import (
@@ -99,6 +100,34 @@ class SkillLibrarian(
     # =========================================================================
     # Skill Action Lookup & Authorization API
     # =========================================================================
+
+    def resolve_system_action(self, reserved_key: str) -> str:
+        """Resolves an abstract system action key (e.g., 'sys_synthesis') to its active database action_name SSOT.
+
+        Fails fast if the key is missing, unbound, or unmapped in the database.
+        """
+        if not reserved_key:
+            raise ValueError("[FAIL-FAST] System action key cannot be empty.")
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT action_name FROM system_actions WHERE reserved_key = ?;",
+                    (reserved_key,),
+                )
+                row = cursor.fetchone()
+
+            if not row or not row[0]:
+                raise RuntimeError(
+                    f"[FAIL-FAST] Mandatory system action key '{reserved_key}' is not mapped to an active skill in system_actions."
+                )
+
+            return str(row[0])
+
+        except Exception as err:
+            logger.error(f"[SkillLibrarian] Error resolving system action '{reserved_key}': {err}")
+            raise
 
     def get_action_manifest(
         self, action: str, agent_name: Optional[str] = None

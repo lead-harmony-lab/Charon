@@ -12,17 +12,17 @@
   ],
   "system_requirements": [],
   "supported_actions": {
-    "build_skill": {
+    "system_builder_execute": {
       "description": "Scaffold and write a new skill manifest and plugin.py implementation into staging.",
       "handler": "build_skill",
       "parameters": {}
     },
-    "authorize_agent": {
+    "system_builder_authorize": {
       "description": "Grant an agent access/permission to execute a target skill ID.",
       "handler": "authorize_agent",
       "parameters": {}
     },
-    "promote_skill": {
+    "system_builder_promote": {
       "description": "Promote a staged skill package into active dynamic production registry.",
       "handler": "promote_skill",
       "parameters": {}
