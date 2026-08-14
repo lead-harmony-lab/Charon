@@ -1,105 +1,67 @@
 """
 charon/core/session.py
-System Version: v0.3.0 | File Revision: 3.0.1
+System Version: v0.4.1 | File Revision: 4.1.0
 
 Module: Core session gateway for Charon.
-Manages manifest-driven triage routing, parameter extraction, and agent dispatch.
-Acts as a front controller between incoming requests and the lower-level DAG execution coordinator,
-handling identity resolution and short-term memory buffering.
+Manages session memory and serves as the declarative ingest boundary for the Core Engine.
+Adheres to the Work Contract paradigm by delegating routing and capability evaluation
+to the downstream Engine and SkillLibrarian.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
-import ollama
-from pydantic import BaseModel
-
-from charon.core.dispatcher import AgentDispatcher
-from charon.core.parser import IntentParser
-from charon.core.prompts import get_agent_ack
+from charon.core.coordinator.journal import CoordinatorJournal, JournalEntry
 from charon.core.skills import SkillLibrarian
-from charon.intent.manifests import get_agent_manifest
-from charon.intent.routing import RoutingPayload
 from charon.utils.memory import ConversationBuffer
 
-logger = logging.getLogger("Charon.SessionGateway")
+if TYPE_CHECKING:
+    from charon.core.engine import OrchestrationEngine
+
+logger = logging.getLogger("Charon.Core.Session")
 
 
 class SessionGateway:
-    """The front desk managing session memory, triage parsing, and request pass-through to execution chains."""
+    """The front desk managing session memory and ingest pass-through to execution chains."""
 
     def __init__(
         self,
-        heavy_model: str = "llama3.1",
-        triage_model: str = "llama3.1",
+        engine: Optional["OrchestrationEngine"] = None,
+        journal: Optional[CoordinatorJournal] = None,
         librarian: Optional[SkillLibrarian] = None,
     ):
-        self.heavy_model = heavy_model
-        self.triage_model = triage_model
-
         self.librarian = librarian or SkillLibrarian.get_instance()
-        self.ollama_client = ollama.AsyncClient()
+        self.journal = journal or CoordinatorJournal()
         self.memory = ConversationBuffer(max_turns=5)
 
-        self.parser = IntentParser(
-            ollama_client=self.ollama_client,
-            triage_model=self.triage_model,
-            heavy_model=self.heavy_model,
-            memory=self.memory,
-            librarian=self.librarian,
-        )
+        if engine is None:
+            # Lazy import to break the circular dependency at runtime
+            from charon.core.engine import OrchestrationEngine
+            self.engine = OrchestrationEngine(
+                librarian=self.librarian,
+            )
+        else:
+            self.engine = engine
 
-        self.dispatcher = AgentDispatcher(
-            heavy_model=self.heavy_model,
-        )
-
-    def _resolve_agent_id(self, agent_or_role: str) -> str:
-        """Resolves a system role name or agent identifier to a dynamic database ID via SkillLibrarian."""
+    def _resolve_role_id(self, role_name: str) -> str:
+        """Resolves a system role name to a dynamic database ID via SkillLibrarian."""
         if hasattr(self.librarian, "resolve_agent_id_for_role"):
-            resolved = self.librarian.resolve_agent_id_for_role(agent_or_role)
+            resolved = self.librarian.resolve_agent_id_for_role(role_name)
             if resolved:
                 return resolved
         if hasattr(self.librarian, "resolve_agent_id"):
-            resolved = self.librarian.resolve_agent_id(agent_or_role)
+            resolved = self.librarian.resolve_agent_id(role_name)
             if resolved:
                 return resolved
-        return agent_or_role
+        return role_name
 
-    def _get_agent_display_name(self, agent_or_role: str) -> str:
-        """Fetches presentation labels via SkillLibrarian accessor functions."""
-        resolved_id = self._resolve_agent_id(agent_or_role)
-        if hasattr(self.librarian, "get_display_name_for_agent"):
-            display_name = self.librarian.get_display_name_for_agent(resolved_id)
-            if display_name:
-                return display_name
-        if hasattr(self.librarian, "get_display_name_for_role"):
-            role_label = self.librarian.get_display_name_for_role(agent_or_role)
-            if role_label:
-                return role_label
-        return agent_or_role
-
-    def get_tool_schemas(self, agent: str) -> List[Dict[str, Any]]:
-        """Retrieves OpenAI/Ollama tool specifications for the target agent via SkillLibrarian."""
-        resolved_agent_id = self._resolve_agent_id(agent)
-        if hasattr(self.librarian, "get_agent_tool_schemas"):
-            return self.librarian.get_agent_tool_schemas(resolved_agent_id)
-        return []
-
-    def record_turn(self, user_input: str, agent_response: str) -> None:
+    def record_turn(self, user_input: str, system_response: str) -> None:
         """Saves a completed interaction turn into short-term conversation history memory."""
-        if not agent_response:
+        if not system_response:
             return
 
-        resp_str = str(agent_response).strip()
-        intercept_prefixes = (
-            "[Awaiting Authorization]",
-            "🛡️ GATEKEEPER",
-            "[Authorization Denied]",
-            "[Task Cancelled]",
-        )
-        if resp_str.startswith(intercept_prefixes):
-            logger.debug("Skipping memory recording for authorization intercept phrase.")
-            return
+        resp_str = str(system_response).strip()
 
         if hasattr(self.memory, "add_turn") and callable(getattr(self.memory, "add_turn")):
             self.memory.add_turn(user_input, resp_str)
@@ -108,62 +70,47 @@ class SessionGateway:
         else:
             logger.warning("ConversationBuffer lacks add_turn/append method. Turn not recorded.")
 
-    async def parse_routing(
+    async def submit_task(
         self,
         user_input: str,
-        rejected_agents: Optional[List[str]] = None,
-    ) -> Optional[RoutingPayload]:
-        """Pass 1: Analytical classification determining target agent."""
-        return await self.parser.parse_routing(user_input, rejected_agents)
+        target_role: Optional[str] = None,
+        client_id: Optional[str] = "session_gateway"
+    ) -> Any:
+        """
+        Ingests a high-level user objective, enqueues it via the CoordinatorJournal,
+        and kicks off the Engine execution loop.
+        """
+        task_id = f"task-{uuid.uuid4().hex[:8]}"
 
-    async def parse_extraction(
-        self, user_input: str, agent: str
-    ) -> BaseModel:
-        """Pass 2: Extract parameters using agent-specific Pydantic intent."""
-        resolved_agent_id = self._resolve_agent_id(agent)
-
-        # Context retrieval has been delegated to the lower-level execution coordinator.
-        # The parser only receives the raw user input and short-term memory to extract the schema.
-        return await self.parser.parse_extraction(user_input, resolved_agent_id)
-
-    async def execute_agent_task(
-        self,
-        agent: str,
-        extraction: Optional[BaseModel],
-        user_raw_input: str,
-        stream_cb: Any = None,
-    ) -> str:
-        """Dispatches extracted parameters to specialist agents and records turn context."""
-        resolved_agent_id = self._resolve_agent_id(agent)
-        display_name = self._get_agent_display_name(resolved_agent_id)
-
-        logger.info(f"Dispatching task to agent: '{display_name}' (ID: {resolved_agent_id})")
-
-        output_text = await self.dispatcher.dispatch(
-            agent_id=resolved_agent_id,
-            extraction=extraction,
-            user_raw_input=user_raw_input,
-            stream_cb=stream_cb,
+        # 1. Create a strictly typed payload for the Journal
+        entry = JournalEntry(
+            task_id=task_id,
+            prompt=user_input,
+            target_role=self._resolve_role_id(target_role) if target_role else None,
+            client_id=client_id,
+            context_history=self.memory.get_history() if hasattr(self.memory, "get_history") else []
         )
 
-        self.record_turn(user_raw_input, output_text)
-        return output_text
+        # 2. Enqueue the declarative task
+        await self.journal.enqueue(entry)
+        logger.info(f"Task ingested and journaled: {task_id}")
 
-    def get_acknowledgment(
-        self,
-        agent: str,
-        action: Optional[str] = None,
-        parameters: Optional[dict] = None,
-    ) -> str:
-        """Returns a thematic acknowledgment phrase for the routed agent."""
-        resolved_agent_id = self._resolve_agent_id(agent)
-        return get_agent_ack(
-            agent_id=resolved_agent_id,
-            action=action or "",
-            parameters=parameters,
+        # 3. Delegate execution entirely to the Coordinator Engine
+        final_result = await self.engine.process_request(
+            user_input=user_input,
+            agent_override=target_role,
+            task_id=task_id
         )
 
-    def get_agent_manifest_info(self, agent: str):
-        """Retrieves the capability manifest for a given agent name or system role."""
-        resolved_agent_id = self._resolve_agent_id(agent)
-        return get_agent_manifest(resolved_agent_id)
+        # 4. Record the turn for future context
+        self.record_turn(user_input, final_result)
+        return final_result
+
+    def get_role_manifest(self, role_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves the high-level capability manifest for a system role.
+        """
+        resolved_id = self._resolve_role_id(role_name)
+        if hasattr(self.librarian, "get_agent_manifest"):
+            return self.librarian.get_agent_manifest(resolved_id)
+        return None

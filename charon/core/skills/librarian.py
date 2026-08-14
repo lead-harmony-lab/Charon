@@ -1,9 +1,9 @@
 """
 charon/core/skills/librarian.py
-System Version: v0.6.6 | File Revision: 10.4.0
+System Version: v2.0.0
 
 Module: Central registry, hybrid DB/disk discovery hub, dynamic query bus, and authorization desk.
-Combines RoleResolver, RouteManager, SkillIndexer, SkillQuery, and SkillExecutor mixins.
+Combines RoleResolver, SkillIndexer, SkillQuery, and SkillExecutor mixins.
 Integrates CBAC Schema V2 authorization, PermissionRepository, system_actions lookups, and Quarantine State controls.
 Enforces strict fail-fast role and system action resolution against database registry with dynamic defaults.
 """
@@ -24,12 +24,10 @@ from charon.core.skills.executor import SkillExecutorMixin
 from charon.core.skills.indexer import SkillIndexerMixin
 from charon.core.skills.query import SkillQueryMixin
 from charon.core.skills.roles import RoleResolutionError, RoleResolverMixin
-from charon.core.skills.routes import RouteManagerMixin
 from charon.db.repositories import (
     AgentRepository,
     PermissionRepository,
     RoleRepository,
-    RouteRepository,
     SkillRepository,
 )
 
@@ -38,7 +36,6 @@ logger = logging.getLogger("Charon.Core.Skills")
 
 class SkillLibrarian(
     RoleResolverMixin,
-    RouteManagerMixin,
     SkillIndexerMixin,
     SkillQueryMixin,
     SkillExecutorMixin,
@@ -54,7 +51,6 @@ class SkillLibrarian(
         skill_repo: Optional[SkillRepository] = None,
         agent_repo: Optional[AgentRepository] = None,
         role_repo: Optional[RoleRepository] = None,
-        route_repo: Optional[RouteRepository] = None,
         permission_repo: Optional[PermissionRepository] = None,
     ) -> None:
         self._skills: Dict[str, BaseSkill] = {}
@@ -64,7 +60,6 @@ class SkillLibrarian(
         self.repo: SkillRepository = skill_repo or SkillRepository(self.db_path)
         self.agent_repo: AgentRepository = agent_repo or AgentRepository(self.db_path)
         self.role_repo: RoleRepository = role_repo or RoleRepository(self.db_path)
-        self.route_repo: RouteRepository = route_repo or RouteRepository(self.db_path)
         self.permission_repo: PermissionRepository = (
             permission_repo or PermissionRepository(self.db_path)
         )
@@ -84,7 +79,7 @@ class SkillLibrarian(
 
     @classmethod
     def get_instance(cls, db_path: Optional[Union[Path, str]] = None) -> "SkillLibrarian":
-        """Singleton accessor for global agent capability lookup and manifest resolution."""
+        """Singleton accessor for global role capability lookup and manifest resolution."""
         target_path = Path(db_path) if db_path else STATE_DB_PATH
         if cls._instance is None:
             cls._instance = SkillLibrarian(db_path=target_path)
@@ -130,7 +125,7 @@ class SkillLibrarian(
             raise
 
     def get_action_manifest(
-        self, action: str, agent_name: Optional[str] = None
+        self, action: str, role_name: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Retrieves action details/manifest for a given skill trigger after validating authorization.
 
@@ -139,14 +134,14 @@ class SkillLibrarian(
         if not action:
             return None
 
-        # Validate agent authorization if agent name/ID provided
-        if agent_name:
+        # Validate role authorization if role name/ID provided
+        if role_name:
             try:
-                canonical_agent = self.resolve_agent_id_for_role(agent_name)
-                if not self.is_skill_available(action, canonical_agent):
+                canonical_role = self.resolve_agent_id_for_role(role_name)
+                if not self.is_skill_available(action, canonical_role):
                     return None
             except RoleResolutionError:
-                logger.debug(f"[SkillLibrarian] Unmapped agent/role '{agent_name}' for action '{action}'.")
+                logger.debug(f"[SkillLibrarian] Unmapped role '{role_name}' for action '{action}'.")
                 return None
 
         # Resolve skill action metadata from query mixin or repository
@@ -156,8 +151,8 @@ class SkillLibrarian(
 
         return self.repo.get_skill_by_action(action)
 
-    def get_agents_for_action(self, action_name: str) -> List[str]:
-        """Resolves candidate agent IDs authorized to perform an ACTIVE action capability contract.
+    def get_roles_for_action(self, action_name: str) -> List[str]:
+        """Resolves candidate role IDs authorized to perform an ACTIVE action capability contract.
 
         Delegates directly to SkillRepository SSOT query.
         """
@@ -167,53 +162,53 @@ class SkillLibrarian(
             return self.repo.get_agents_for_action(action_name.strip())
         except Exception as err:
             logger.error(
-                f"[SkillLibrarian] Error resolving candidate agents for action '{action_name}': {err}"
+                f"[SkillLibrarian] Error resolving candidate roles for action '{action_name}': {err}"
             )
             return []
 
-    def list_available_actions(self, agent_or_role: str) -> List[str]:
-        """Retrieves all active action capability names granted to an agent or role alias.
+    def list_available_actions(self, role_name: str) -> List[str]:
+        """Retrieves all active action capability names granted to a role alias.
 
-        Resolves role aliases to canonical agent IDs before querying SSOT state.
+        Resolves role aliases to canonical IDs before querying SSOT state.
         """
-        if not agent_or_role:
+        if not role_name:
             return []
         try:
-            canonical_id = self.resolve_agent_id_for_role(agent_or_role)
+            canonical_id = self.resolve_agent_id_for_role(role_name)
             return self.repo.get_actions_for_agent(canonical_id)
         except RoleResolutionError as rre:
             logger.warning(
-                f"[SkillLibrarian] Could not resolve role '{agent_or_role}' for available actions: {rre}"
+                f"[SkillLibrarian] Could not resolve role '{role_name}' for available actions: {rre}"
             )
             return []
         except Exception as err:
             logger.error(
-                f"[SkillLibrarian] Error listing actions for target '{agent_or_role}': {err}"
+                f"[SkillLibrarian] Error listing actions for target '{role_name}': {err}"
             )
             return []
 
     # =========================================================================
-    # Dynamic Router & Manifest Control API
+    # Manifest Control API
     # =========================================================================
 
-    def get_agent_default_action(self, agent_id: str) -> Optional[str]:
-        """Retrieves the default interface action for an agent.
+    def get_role_default_action(self, role_id: str) -> Optional[str]:
+        """Retrieves the default interface action (Work Contract) for a role.
 
-        Resolves canonical agent ID via RoleResolverMixin and queries cached manifests.
+        Resolves canonical role ID via RoleResolverMixin and queries cached manifests.
         """
-        manifest = self.get_agent_manifest(agent_id)
+        manifest = self.get_agent_manifest(role_id)
         if manifest and "default_action" in manifest:
             return str(manifest["default_action"])
         return None
 
     def get_default_action_for_role(self, role_name: str) -> str:
-        """Resolves and returns the default action_name for a given system role.
+        """Resolves and returns the default action_name (Work Contract) for a given system role.
 
-        Fails fast if role_name cannot be resolved to an agent in SQLite.
+        Fails fast if role_name cannot be resolved to an active role in SQLite.
         """
-        agent_id = self.resolve_agent_id_for_role(role_name)
+        role_id = self.resolve_agent_id_for_role(role_name)
 
-        agent_manifest = self.get_agent_manifest(agent_id) or {}
+        agent_manifest = self.get_agent_manifest(role_id) or {}
         if isinstance(agent_manifest, dict):
             return agent_manifest.get("default_action") or ""
 
@@ -224,41 +219,41 @@ class SkillLibrarian(
         try:
             self._manifest_cache = self.agent_repo.get_all_manifests()
             logger.info(
-                f"[SkillLibrarian] Cached {len(self._manifest_cache)} agent manifest(s) in memory."
+                f"[SkillLibrarian] Cached {len(self._manifest_cache)} role manifest(s) in memory."
             )
         except Exception as e:
             logger.warning(
-                f"[SkillLibrarian] Could not load agent manifests on startup: {e}"
+                f"[SkillLibrarian] Could not load role manifests on startup: {e}"
             )
 
     def get_all_agent_manifests(self) -> Dict[str, Dict[str, Any]]:
-        """Returns all cached agent manifests."""
+        """Returns all cached role manifests."""
         return self._manifest_cache
 
-    def get_agent_manifest(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves a single manifest by resolving agent target via RoleResolverMixin.
+    def get_agent_manifest(self, role_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a single manifest by resolving target via RoleResolverMixin.
 
-        Fails fast if agent_id is an unmapped role/agent.
+        Fails fast if role_id is an unmapped role.
         """
-        if not agent_id:
+        if not role_id:
             return None
         try:
-            canonical_id = self.resolve_agent_id_for_role(agent_id)
-            return self._manifest_cache.get(canonical_id) or self._manifest_cache.get(agent_id)
+            canonical_id = self.resolve_agent_id_for_role(role_id)
+            return self._manifest_cache.get(canonical_id) or self._manifest_cache.get(role_id)
         except RoleResolutionError:
             return None
 
-    def update_agent_manifest(self, agent_id: str, update_data: Dict[str, Any]) -> bool:
-        """Delegates manifest persistence to AgentRepository via resolved agent ID and refreshes cache."""
-        canonical_id = self.resolve_agent_id_for_role(agent_id)
+    def update_agent_manifest(self, role_id: str, update_data: Dict[str, Any]) -> bool:
+        """Delegates manifest persistence to AgentRepository via resolved ID and refreshes cache."""
+        canonical_id = self.resolve_agent_id_for_role(role_id)
         success = self.agent_repo.update_manifest(canonical_id, update_data)
         if success:
             self.reload_agent_manifest(canonical_id)
         return success
 
-    def reload_agent_manifest(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Hot-reloads a single agent manifest from AgentRepository into memory cache."""
-        canonical_id = self.resolve_agent_id_for_role(agent_id)
+    def reload_agent_manifest(self, role_id: str) -> Optional[Dict[str, Any]]:
+        """Hot-reloads a single role manifest from AgentRepository into memory cache."""
+        canonical_id = self.resolve_agent_id_for_role(role_id)
         manifest = self.agent_repo.get_manifest(canonical_id)
         if manifest:
             self._manifest_cache[canonical_id] = manifest
@@ -266,9 +261,9 @@ class SkillLibrarian(
             self._manifest_cache.pop(canonical_id, None)
         return manifest
 
-    def set_tool_status(self, agent_id: str, tool_name: str, enabled: bool) -> bool:
-        """Toggles agent capability via AgentRepository and hot-reloads the manifest cache."""
-        canonical_id = self.resolve_agent_id_for_role(agent_id)
+    def set_tool_status(self, role_id: str, tool_name: str, enabled: bool) -> bool:
+        """Toggles role capability via AgentRepository and hot-reloads the manifest cache."""
+        canonical_id = self.resolve_agent_id_for_role(role_id)
         success = self.agent_repo.set_tool_status(canonical_id, tool_name, enabled)
 
         if success:

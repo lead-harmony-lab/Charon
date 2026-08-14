@@ -1,11 +1,11 @@
 """
 charon/core/coordinator/blackboard.py
-System Version: v0.8.0 | File Revision: 8.0.0
+System Version: v0.9.0 | File Revision: 9.0.0
 
 Module: Core state blackboard and execution TaskBlackboard models.
-Provides strongly-typed schemas for multi-step artifact propagation, unfulfilled task tracking,
-contract reflection, state mutation tracking, execution history, and DB state hydration.
-Strictly preserves canonical database identifiers across all state interactions.
+Refactored for the Active Execution Envelope (Work Contract) paradigm.
+Provides strongly-typed schemas for multi-step artifact propagation, task payloads,
+contract reflection, strict diagnostic gap tracing, and state hydration.
 """
 
 import json
@@ -14,11 +14,10 @@ from datetime import datetime, timezone
 from enum import Enum, IntEnum
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from charon.core.contracts import ContractResponse, ExecutionStatus
 from charon.core.skills.librarian import SkillLibrarian
-from charon.intent.base import StrictBaseModel
 
 
 class TaskStatus(str, Enum):
@@ -34,10 +33,10 @@ class TaskStatus(str, Enum):
 class EscalationLevel(IntEnum):
     """The 4-Level Self-Healing Escalation Hierarchy."""
 
-    L1_SPECIALIST = 1        # Domain specialist actions
+    L1_SPECIALIST = 1        # Domain specialist Work Contract execution
     L2_OS_AUTOMATION = 2     # OS automation and shell operations
     L3_DIAGNOSTIC = 3        # Diagnostic planning & environment analysis
-    L4_ENGINEER_FALLBACK = 4 # System engineer fallback & custom repair
+    L4_ENGINEER_FALLBACK = 4 # System engineer fallback & custom schema repair
 
 
 class ThoughtType(str, Enum):
@@ -50,8 +49,9 @@ class ThoughtType(str, Enum):
     ERROR = "ERROR"
 
 
-class ThoughtRecord(StrictBaseModel):
+class ThoughtRecord(BaseModel):
     """Granular CoT reasoning step emitted by the Coordinator or Specialist Roles."""
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     record_id: str = Field(
         default_factory=lambda: f"thg-{uuid.uuid4().hex[:6]}",
@@ -66,7 +66,7 @@ class ThoughtRecord(StrictBaseModel):
     message: str = Field(description="Internal CoT narrative payload.")
     context_data: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Optional telemetry payloads (e.g., partial tool inputs, query parameters).",
+        description="Optional telemetry payloads (e.g., partial payload contexts).",
     )
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
@@ -74,15 +74,16 @@ class ThoughtRecord(StrictBaseModel):
     )
 
 
-class UnfulfilledRequirement(StrictBaseModel):
-    """Represents a discrete goal or action that has not yet been satisfied."""
+class UnfulfilledRequirement(BaseModel):
+    """Represents a discrete goal delegated to an Agent's Work Contract."""
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     requirement_id: str = Field(
         default_factory=lambda: f"req-{uuid.uuid4().hex[:6]}",
         description="Unique identifier for the requirement.",
     )
     capability_required: str = Field(
-        description="The capability required to fulfill this step."
+        description="The target default action mapping to the agent's Work Contract envelope."
     )
     target_artifact_key: Optional[str] = Field(
         default=None,
@@ -90,7 +91,7 @@ class UnfulfilledRequirement(StrictBaseModel):
     )
     preferred_tool: Optional[str] = Field(
         default=None,
-        description="Optional preferred tool/app requested by the user.",
+        description="Optional preferred tool/app requested by the user, passed as context.",
     )
     escalation_level: EscalationLevel = Field(
         default=EscalationLevel.L1_SPECIALIST,
@@ -106,27 +107,28 @@ class UnfulfilledRequirement(StrictBaseModel):
     )
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Extracted target parameters bound to this specific requirement.",
+        description="The declarative payload bound to this requirement, consumed by the Work Contract.",
     )
 
 
-class ExecutionStepRecord(StrictBaseModel):
-    """Audit log entry representing a single role execution turn."""
+class ExecutionStepRecord(BaseModel):
+    """Audit log entry representing a single Work Contract execution turn."""
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     step_number: int = Field(description="1-based index of the step execution order.")
-    role: str = Field(description="The specialist role or agent_id that executed the step.")
-    action: str = Field(description="The specific domain action invoked.")
+    role: str = Field(description="The specialist role or agent_id that executed the envelope.")
+    action: str = Field(description="The assigned default action/capability.")
     status: str = Field(
         default="SUCCESS",
-        description="Outcome status of the step.",
+        description="Outcome status of the Work Contract step.",
     )
     output_summary: str = Field(
         default="",
-        description="Human-readable or LLM-friendly summary of the output generated.",
+        description="Summary of the Artifact produced or diagnostic gap returned.",
     )
     produced_artifacts: Dict[str, Any] = Field(
         default_factory=dict,
-        description="New artifacts added to the blackboard during this step.",
+        description="New canonical artifacts added to the blackboard during this step.",
     )
     unresolved_gaps: List[str] = Field(
         default_factory=list,
@@ -134,7 +136,11 @@ class ExecutionStepRecord(StrictBaseModel):
     )
     error_message: Optional[str] = Field(
         default=None,
-        description="Detailed diagnostic error output if execution failed.",
+        description="High-level error string if execution failed.",
+    )
+    diagnostic_context: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Serialized DiagnosticArtifact data detailing fast-fail schema or execution violations.",
     )
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
@@ -142,8 +148,9 @@ class ExecutionStepRecord(StrictBaseModel):
     )
 
 
-class TaskBlackboard(StrictBaseModel):
+class TaskBlackboard(BaseModel):
     """The shared state blackboard for Charon execution turns."""
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     task_id: str = Field(
         default_factory=lambda: f"task-{uuid.uuid4().hex[:8]}",
@@ -163,15 +170,15 @@ class TaskBlackboard(StrictBaseModel):
 
     artifacts: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Ground truth key-value store containing operational data.",
+        description="Ground truth key-value store containing validated operational Artifacts.",
     )
     unfulfilled_requirements: List[UnfulfilledRequirement] = Field(
         default_factory=list,
-        description="Queue of unsatisfied intents that the Coordinator must satisfy.",
+        description="Queue of unsatisfied intents that the Coordinator delegates to Work Contracts.",
     )
     active_gaps: List[str] = Field(
         default_factory=list,
-        description="Accumulated sub-task gaps that require re-routing or escalation.",
+        description="Accumulated diagnostic gaps requiring re-routing or escalation.",
     )
     execution_history: List[ExecutionStepRecord] = Field(
         default_factory=list,
@@ -305,6 +312,7 @@ class TaskBlackboard(StrictBaseModel):
         produced_artifacts: Optional[Dict[str, Any]] = None,
         unresolved_gaps: Optional[List[str]] = None,
         error_message: Optional[str] = None,
+        diagnostic_context: Optional[Dict[str, Any]] = None,
         agent: Any = None,  # Alias for role
     ) -> ExecutionStepRecord:
         """Appends an execution turn to history and updates blackboard artifacts."""
@@ -328,6 +336,7 @@ class TaskBlackboard(StrictBaseModel):
             produced_artifacts=produced,
             unresolved_gaps=gaps,
             error_message=error_message,
+            diagnostic_context=diagnostic_context,
         )
         self.execution_history.append(record)
 
@@ -353,13 +362,10 @@ class TaskBlackboard(StrictBaseModel):
             else (response.reason or "")
         )
 
-        resolved_role = getattr(
-            response,
-            "role_name",
-            getattr(response, "agent_name", "system_generalist"),
-        )
-
+        resolved_role = getattr(response, "agent_name", "system_generalist")
         is_success = response.status in (ExecutionStatus.SUCCESS, ExecutionStatus.SATISFIED)
+
+        diag_dict = response.diagnostics.model_dump() if response.diagnostics else None
 
         return self.record_step(
             role=resolved_role,
@@ -367,8 +373,9 @@ class TaskBlackboard(StrictBaseModel):
             status=response.status.value,
             output_summary=summary,
             produced_artifacts=produced,
-            unresolved_gaps=response.unresolved_gaps,
-            error_message=None if is_success else response.reason,
+            unresolved_gaps=getattr(response, "unresolved_gaps", []),
+            error_message=response.reason if not is_success else None,
+            diagnostic_context=diag_dict,
         )
 
     def pop_requirement(self, requirement_id: str) -> Optional[UnfulfilledRequirement]:

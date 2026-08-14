@@ -13,7 +13,8 @@ to the central OrchestrationEngine execution loop.
 import asyncio
 from contextlib import asynccontextmanager
 import logging
-
+import ollama
+from charon.config.settings import OLLAMA_HOST
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -22,7 +23,7 @@ import uvicorn
 from charon.config.logging import setup_logging
 from charon.config.paths import ensure_ecosystem_directories
 from charon.core.engine import OrchestrationEngine
-from charon.core.registry import SkillGapRegistry
+from charon.core.coordinator.registry import SkillGapRegistry
 from charon.gateway.core import CharonDaemon
 from charon.gateway.middleware import APIKeyMiddleware
 from charon.gateway.models import WSEvent
@@ -37,7 +38,10 @@ setup_logging()
 logger = logging.getLogger("Charon.Daemon")
 
 # 2. Initialize engine, gateway daemon wrapper, and central gap registry
-engine = OrchestrationEngine()
+llm_client = ollama.AsyncClient(host=OLLAMA_HOST)
+
+# Inject the client into the core engine
+engine = OrchestrationEngine(llm_client=llm_client)
 daemon = CharonDaemon(engine=engine)
 gap_registry = SkillGapRegistry.get_instance()
 
@@ -45,7 +49,7 @@ gap_registry = SkillGapRegistry.get_instance()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
-        "Initializing Charon FastAPI Gateway, Core Engine, Gap Registry, and Persistent Queue..."
+        "Initializing Charon FastAPI Gateway, Core Engine, Gap Registry, and Persistent Journal..."
     )
 
     # Expose runtime instances on FastAPI app.state for HTTP and WS route handlers
@@ -57,7 +61,7 @@ async def lifespan(app: FastAPI):
     app.state.state_mgr = daemon.state_mgr
     app.state.ledger = daemon.ledger
     app.state.workspace_mgr = daemon.workspace_mgr
-    app.state.queue = daemon.queue
+    app.state.queue = daemon.journal
     app.state.gap_registry = gap_registry
 
     # Bridge central TelemetryBus & Agent Progress Callbacks -> Daemon WebSocket Emitter

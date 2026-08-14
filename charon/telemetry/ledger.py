@@ -1,11 +1,14 @@
 """
-charon/core/ledger.py
-System Version: v0.1.0 | File Revision: 1.2.1
+charon/telemetry/ledger.py
+System Version: v2.0.0
 
 Module: Execution Audit Ledger
-Append-only operational event logger recording agent interactions,
+Append-only operational event logger recording role interactions,
 tool executions, gatekeeper decisions, and engine state transitions.
 Guarantees strict database separation using LEDGER_DB_PATH.
+The BaseWorkContract (which exposes a bind_telemetry method) and
+the Coordinator should import the ledger from the telemetry package,
+strictly decoupling I/O-bound logging from core state transitions.
 """
 
 import asyncio
@@ -17,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from charon.config.paths import LEDGER_DB_PATH
 from charon.db.connection import get_connection
 
-logger = logging.getLogger("Charon.Core.Ledger")
+logger = logging.getLogger("Charon.Telemetry.Ledger")
 
 
 class ExecutionLedger:
@@ -37,7 +40,7 @@ class ExecutionLedger:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT NOT NULL,
                     event_type TEXT NOT NULL,
-                    agent TEXT,
+                    role_name TEXT,
                     tool_name TEXT,
                     data_json TEXT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -61,7 +64,7 @@ class ExecutionLedger:
         task_id: str,
         event_type: str,
         data: Optional[Dict[str, Any]] = None,
-        agent: Optional[str] = None,
+        role_name: Optional[str] = None,
         tool_name: Optional[str] = None,
     ) -> int:
         """Append an event entry to the audit log."""
@@ -71,10 +74,10 @@ class ExecutionLedger:
             with get_connection(self.db_path) as conn:
                 cursor = conn.execute(
                     """
-                    INSERT INTO audit_ledger (task_id, event_type, agent, tool_name, data_json)
+                    INSERT INTO audit_ledger (task_id, event_type, role_name, tool_name, data_json)
                     VALUES (?, ?, ?, ?, ?);
                     """,
-                    (task_id, event_type, agent, tool_name, payload_str),
+                    (task_id, event_type, role_name, tool_name, payload_str),
                 )
                 return cursor.lastrowid or 0
 
@@ -87,7 +90,7 @@ class ExecutionLedger:
             with get_connection(self.db_path, read_only=True) as conn:
                 cursor = conn.execute(
                     """
-                    SELECT id, task_id, event_type, agent, tool_name, data_json, timestamp
+                    SELECT id, task_id, event_type, role_name, tool_name, data_json, timestamp
                     FROM audit_ledger
                     WHERE task_id = ?
                     ORDER BY id ASC;

@@ -1,8 +1,9 @@
 """
 charon/core/__init__.py
-System Version: v0.1.0 | File Revision: 1.1.0
+System Version: v0.9.1 | File Revision: 9.1.0
 
-Module: Core orchestration, parsing, dispatching, and utility primitives.
+Module: Core orchestration, execution envelopes, and utility primitives.
+Refactored for the Active Execution Envelope (Work Contract) paradigm.
 """
 
 from charon.core.coordinator.blackboard import (
@@ -11,9 +12,7 @@ from charon.core.coordinator.blackboard import (
     TaskStatus,
     UnfulfilledRequirement,
 )
-from charon.core.dispatcher import AgentDispatcher
 from charon.core.session import SessionGateway
-from charon.core.parser import IntentParser
 from charon.core.prompts import (
     CHARON_ROUTING_PROMPT,
     EXTRACTION_SYSTEM_PROMPT,
@@ -21,7 +20,6 @@ from charon.core.prompts import (
 from charon.core.utils import (
     clean_json_string,
     get_schema_json,
-    normalize_agent,
 )
 
 __all__ = [
@@ -29,12 +27,12 @@ __all__ = [
     "TaskBlackboard",
     "TaskStatus",
     "EscalationLevel",
-    # Main Orchestration Engine & Dispatcher
+    "UnfulfilledRequirement",
+
+    # Session Gateway (Single Entry Point)
     "SessionGateway",
-    "AgentDispatcher",
-    "IntentParser",
-    # Parsing & Schema Utilities
+
+    # Utility Primitives
     "clean_json_string",
-    "normalize_agent",
     "get_schema_json",
 ]

@@ -1,17 +1,17 @@
 """
 charon/core/coordinator/discovery.py
-System Version: v0.8.0 | File Revision: 8.1.0
+System Version: v0.9.0 | File Revision: 9.0.0
 
 Module: Coordinator Agent & Role Discovery & Probing Manager.
-Handles agent and role registration, candidate preplanning, live capability probing,
-host binary availability verification, and dynamic profile building.
-Enforces strict zero-fallback execution: raises fast RoleConfigurationError exceptions
-if skill metadata or agent capabilities cannot be resolved via SkillLibrarian.
+Refactored for the Active Execution Envelope (Work Contract) paradigm.
+Handles agent registration, envelope capability verification, and strict dynamic profile building.
+Enforces absolute zero-fallback execution: raises fast RoleConfigurationError exceptions
+if a Work Contract envelope cannot be resolved or is unequipped.
 """
 
 import logging
 import shutil
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from charon.agents.base import BaseAgent
 from charon.core.coordinator.blackboard import TaskBlackboard, UnfulfilledRequirement
@@ -32,11 +32,11 @@ logger = logging.getLogger("charon.core.coordinator.discovery")
 
 
 class RoleConfigurationError(RuntimeError):
-    """Raised when a required system role, agent capability, or action contract cannot be strictly resolved."""
+    """Raised when a required system role, Work Contract, or agent capability cannot be strictly resolved."""
 
 
 class AgentDiscoveryManager:
-    """Manages agent/role registration, health probing, and dynamic profile resolution without magic fallbacks."""
+    """Manages agent/role registration, health probing, and dynamic profile resolution. Zero fallbacks."""
 
     def __init__(self, librarian: Optional[SkillLibrarian] = None) -> None:
         self.librarian = librarian or SkillLibrarian.get_instance()
@@ -52,25 +52,14 @@ class AgentDiscoveryManager:
         if not role_str:
             return ""
 
-        if hasattr(self.librarian, "resolve_agent_id_for_role") and callable(
-            self.librarian.resolve_agent_id_for_role
-        ):
-            try:
-                resolved = self.librarian.resolve_agent_id_for_role(role_str)
-                if resolved:
-                    return str(resolved).strip()
-            except Exception as err:
-                logger.debug(f"[Discovery] SkillLibrarian failed to resolve role '{role_str}': {err}")
-
-        elif hasattr(self.librarian, "resolve_agent_id") and callable(
-            self.librarian.resolve_agent_id
-        ):
-            try:
-                resolved = self.librarian.resolve_agent_id(role_str)
-                if resolved:
-                    return str(resolved).strip()
-            except Exception as err:
-                logger.debug(f"[Discovery] SkillLibrarian failed to resolve agent ID for '{role_str}': {err}")
+        for method in ("resolve_agent_id_for_role", "resolve_agent_id"):
+            if hasattr(self.librarian, method) and callable(getattr(self.librarian, method)):
+                try:
+                    resolved = getattr(self.librarian, method)(role_str)
+                    if resolved:
+                        return str(resolved).strip()
+                except Exception as err:
+                    logger.debug(f"[Discovery] SkillLibrarian failed {method} for '{role_str}': {err}")
 
         return role_str
 
@@ -80,13 +69,19 @@ class AgentDiscoveryManager:
         if not agent_str:
             raise RoleConfigurationError("[Discovery] Cannot register agent instance with empty agent identifier.")
 
+        # Ensure the agent has the new Active Execution Envelope interface
+        if not hasattr(agent_instance, "execute_task"):
+            raise RoleConfigurationError(
+                f"[Discovery] FATAL: Agent '{agent_str}' lacks execute_task() Envelope interface."
+            )
+
         self.agents[agent_str] = agent_instance
         logger.info(
-            f"[Discovery] Registered live agent instance for '{agent_str}' ({getattr(agent_instance, 'name', 'unnamed')})"
+            f"[Discovery] Registered live envelope executor for '{agent_str}' ({getattr(agent_instance, 'name', 'unnamed')})"
         )
 
     def probe_agent(self, agent: Any, probe_type: str = "full") -> Dict[str, Any]:
-        """Probes a specific registered agent instance for runtime health and dynamic capabilities."""
+        """Probes a specific registered agent instance for runtime health and Work Contract schemas."""
         agent_str = self._resolve_agent_id(agent)
         agent_instance = self.agents.get(agent_str)
 
@@ -124,9 +119,7 @@ class AgentDiscoveryManager:
         if agent_str in self.active_profiles:
             return self.active_profiles[agent_str]
 
-        logger.info(
-            f"[Discovery] Performing on-demand hydration for unplanned agent/role '{agent_str}'."
-        )
+        logger.info(f"[Discovery] Performing on-demand hydration for unplanned envelope '{agent_str}'.")
         built = self._build_agent_profiles([agent_str])
         if agent_str in built:
             self.active_profiles[agent_str] = built[agent_str]
@@ -171,58 +164,27 @@ class AgentDiscoveryManager:
             try:
                 matched_results = self.librarian.search_skills(prompt)
                 if matched_results:
-                    matched_agents = [
-                        self._resolve_agent_id(res.get("role_id") or res.get("agent_id"))
-                        for res in matched_results
-                        if isinstance(res, dict) and (res.get("role_id") or res.get("agent_id"))
-                    ]
-                    matched_agents = [a for a in matched_agents if a]
-                    if matched_agents:
-                        logger.info(
-                            f"[Discovery] Fast-path DB hit for prompt: Matched agents -> {matched_agents}"
-                        )
-                        return matched_agents
+                    for res in matched_results:
+                        if isinstance(res, dict):
+                            resolved_id = self._resolve_agent_id(res.get("role_id") or res.get("agent_id"))
+                            if resolved_id:
+                                candidates.add(resolved_id)
             except Exception as err:
-                logger.warning(f"[Discovery] Skill matching probe failed gracefully: {err}")
+                logger.warning(f"[Discovery] Envelope matching probe failed gracefully: {err}")
 
-        # 4. Query registered DB roles
-        if not candidates and hasattr(self.librarian, "list_registered_roles") and callable(
-            self.librarian.list_registered_roles
-        ):
-            try:
-                registered = self.librarian.list_registered_roles()
-                if registered:
-                    candidates.update(
-                        resolved
-                        for resolved in (self._resolve_agent_id(r) for r in registered)
-                        if resolved
-                    )
-            except Exception as err:
-                logger.warning(f"[Discovery] Error querying registered roles from DB: {err}")
-
-        # 5. Check in-memory registered agents pool
+        # 4. Fallback: Check in-memory registered agents pool
         if not candidates:
             candidates.update(self.agents.keys())
 
         return list(candidates)
 
     def _details_to_contract(
-        self, details: Dict[str, Any], fallback_agent: Any
+        self, details: Dict[str, Any], target_agent: str
     ) -> Optional[CapabilityContract]:
-        """Converts raw librarian action details into a formal CapabilityContract object if ACTIVE."""
+        """Converts raw librarian Work Contract metadata into a formal CapabilityContract object if ACTIVE."""
         if details.get("status", "ACTIVE") != "ACTIVE":
-            logger.debug(f"[Discovery] Skipping inactive capability '{details.get('action_name')}'")
+            logger.debug(f"[Discovery] Skipping inactive Work Contract '{details.get('action_name')}'")
             return None
-
-        raw_agent = (
-            details.get("role")
-            or details.get("agent")
-            or details.get("primary_role_id")
-            or details.get("primary_agent_id")
-            or details.get("agent_id")
-        )
-        fallback_str = self._resolve_agent_id(fallback_agent)
-        target_agent = self._resolve_agent_id(raw_agent) if raw_agent else fallback_str
 
         esc_level = details.get("escalation_level")
         if esc_level is None:
@@ -244,7 +206,7 @@ class AgentDiscoveryManager:
     def _build_agent_profiles(
         self, candidate_agents: List[Any]
     ) -> Dict[str, AgentProfile]:
-        """Builds AgentProfiles populated strictly with capabilities resolved via SkillLibrarian."""
+        """Builds AgentProfiles focusing strictly on Work Contract envelopes via SkillLibrarian."""
         profiles: Dict[str, AgentProfile] = {}
 
         for agent in candidate_agents:
@@ -257,49 +219,30 @@ class AgentDiscoveryManager:
             except Exception:
                 manifest = None
 
+            manifest_name = agent_str
+            default_action = None
             if isinstance(manifest, dict):
                 manifest_name = manifest.get("name", agent_str)
                 default_action = manifest.get("default_action")
-            else:
+            elif manifest:
                 manifest_name = getattr(manifest, "name", agent_str)
                 default_action = getattr(manifest, "default_action", None)
 
-            action_names: List[str] = []
-            if hasattr(self.librarian, "list_available_actions") and callable(
-                self.librarian.list_available_actions
-            ):
-                try:
-                    action_names = self.librarian.list_available_actions(agent_str) or []
-                except Exception as err:
-                    logger.warning(f"[Discovery] DB Error listing actions for '{agent_str}': {err}")
-
             cap_dict: Dict[str, CapabilityContract] = {}
-            for name in action_names:
-                details = self.librarian.get_action_details(name)
-                if details:
-                    contract = self._details_to_contract(details, agent_str)
-                    if contract:
-                        cap_dict[contract.capability_name] = contract
-                        if details.get("action_name"):
-                            cap_dict[details["action_name"]] = contract
-                        if details.get("skill_id"):
-                            cap_dict[details["skill_id"]] = contract
 
+            # 1. Register the Default Action (The Work Contract Envelope)
             if default_action:
                 default_details = self.librarian.get_action_details(default_action)
                 if default_details:
                     default_contract = self._details_to_contract(default_details, agent_str)
                     if default_contract:
                         cap_dict[default_contract.capability_name] = default_contract
-                        if default_details.get("action_name"):
-                            cap_dict[default_details["action_name"]] = default_contract
-                        if default_details.get("skill_id"):
-                            cap_dict[default_details["skill_id"]] = default_contract
 
             is_healthy = True
             health_info: Dict[str, Any] = {"healthy": True, "status": "Operational"}
             agent_instance = self.agents.get(agent_str)
 
+            # 2. Probe actual instance state and dynamic schema capabilities
             if agent_instance and hasattr(agent_instance, "probe"):
                 try:
                     probe_data = agent_instance.probe(probe_type="full")
@@ -316,7 +259,7 @@ class AgentDiscoveryManager:
                                     if contract:
                                         cap_dict[cap_key] = contract
                 except Exception as e:
-                    logger.error(f"[Discovery] Runtime probe faulted for '{agent_str}': {e}")
+                    logger.error(f"[Discovery] Runtime envelope probe faulted for '{agent_str}': {e}")
                     is_healthy = False
                     health_info = {"healthy": False, "status": f"Probe Exception: {e}"}
 
@@ -347,109 +290,76 @@ class AgentDiscoveryManager:
         self, requirement: UnfulfilledRequirement, blackboard: TaskBlackboard
     ) -> Tuple[AgentProfile, CapabilityContract]:
         """
-        Finds an active agent profile equipped to handle the given requirement.
+        Finds an active agent profile equipped to handle the Work Contract requirement.
         Strict Zero-Fallback Policy: Raises a RoleConfigurationError immediately if
-        no equipped agent or valid skill data can be resolved through SkillLibrarian.
+        no agent can be resolved or if mandatory schema/artifacts are unmet.
         """
-        target_cap_name = requirement.capability_required
+        target_envelope = requirement.capability_required
         available_artifacts = blackboard.available_artifact_keys
 
-        target_details = self.librarian.get_action_details(target_cap_name)
-
-        # 1. Direct role/agent override lookup
-        override_agent = getattr(requirement, "assigned_role_override", None) or getattr(
+        # 1. Resolve Target Agent ID
+        resolved_agent_id = None
+        override = getattr(requirement, "assigned_role_override", None) or getattr(
             requirement, "assigned_agent_override", None
         )
-        if override_agent:
-            target_str = self._resolve_agent_id(override_agent)
-            profile = self._ensure_profile_active(target_str)
-            if profile:
-                cap_contract = profile.capabilities.get(target_cap_name) or (
-                    self._details_to_contract(target_details, target_str) if target_details else None
+
+        if override:
+            resolved_agent_id = self._resolve_agent_id(override)
+        else:
+            # Query Librarian to find which Agent owns this specific Work Contract Envelope
+            target_details = self.librarian.get_action_details(target_envelope)
+            if target_details:
+                raw_owner = (
+                    target_details.get("primary_agent_id")
+                    or target_details.get("agent_id")
+                    or target_details.get("role")
+                    or target_details.get("agent")
                 )
-                if cap_contract:
-                    if target_cap_name not in profile.capabilities:
-                        profile.capabilities[target_cap_name] = cap_contract
+                if raw_owner:
+                    resolved_agent_id = self._resolve_agent_id(raw_owner)
 
-                    equip_res = profile.is_equipped(target_cap_name, available_artifacts)
-                    equipped = equip_res[0] if isinstance(equip_res, tuple) else bool(equip_res)
-                    if equipped:
-                        return profile, cap_contract
+            if not resolved_agent_id:
+                for method in ("get_agents_for_action", "resolve_agents_for_action"):
+                    if hasattr(self.librarian, method) and callable(getattr(self.librarian, method)):
+                        res = getattr(self.librarian, method)(target_envelope)
+                        if res:
+                            resolved_agent_id = self._resolve_agent_id(res[0] if isinstance(res, list) else res)
+                            break
 
-        # 2. Direct action owner or mapped agent lookup via SkillLibrarian
-        candidate_agents: List[str] = []
-        if target_details:
-            raw_owners = (
-                target_details.get("agents")
-                or target_details.get("roles")
-                or [
-                    target_details.get(k)
-                    for k in ("role", "agent", "primary_role_id", "primary_agent_id", "agent_id")
-                    if target_details.get(k)
-                ]
-            )
-            if isinstance(raw_owners, (str, bytes)):
-                candidate_agents.append(str(raw_owners))
-            elif isinstance(raw_owners, list):
-                candidate_agents.extend([str(o) for o in raw_owners if o])
+        if not resolved_agent_id:
+            gap_msg = f"Orphaned Envelope: No registered agent maps to Work Contract '{target_envelope}'."
+            blackboard.log_gap(gap_msg)
+            raise RoleConfigurationError(f"[FATAL DISCOVERY FAULT] {gap_msg}")
 
-        for method_name in ("get_agents_for_action", "get_agents_for_skill", "resolve_agents_for_action"):
-            if hasattr(self.librarian, method_name) and callable(getattr(self.librarian, method_name)):
-                try:
-                    res = getattr(self.librarian, method_name)(target_cap_name)
-                    if res:
-                        if isinstance(res, list):
-                            candidate_agents.extend([str(x) for x in res if x])
-                        elif isinstance(res, str):
-                            candidate_agents.append(res)
-                        break
-                except Exception as err:
-                    logger.debug(f"[Discovery] SkillLibrarian.{method_name} query failed: {err}")
+        # 2. Ensure Profile is Active
+        profile = self._ensure_profile_active(resolved_agent_id)
+        if not profile:
+            gap_msg = f"Inactive Envelope: Resolved agent '{resolved_agent_id}' is not hydrated in active profiles."
+            blackboard.log_gap(gap_msg)
+            raise RoleConfigurationError(f"[FATAL DISCOVERY FAULT] {gap_msg}")
 
-        for c_agent in candidate_agents:
-            c_str = self._resolve_agent_id(c_agent)
-            if not c_str:
-                continue
-            profile = self._ensure_profile_active(c_str)
-            if profile:
-                contract = profile.capabilities.get(target_cap_name) or (
-                    self._details_to_contract(target_details, c_str) if target_details else None
-                )
+        # 3. Ensure Capability Contract Exists
+        contract = profile.capabilities.get(target_envelope)
+        if not contract:
+            # Attempt a final JIT lookup from DB
+            target_details = self.librarian.get_action_details(target_envelope)
+            if target_details:
+                contract = self._details_to_contract(target_details, resolved_agent_id)
                 if contract:
-                    if target_cap_name not in profile.capabilities:
-                        profile.capabilities[target_cap_name] = contract
+                    profile.capabilities[target_envelope] = contract
 
-                    equip_res = profile.is_equipped(target_cap_name, available_artifacts)
-                    equipped = equip_res[0] if isinstance(equip_res, tuple) else bool(equip_res)
-                    if equipped:
-                        return profile, contract
+        if not contract:
+            gap_msg = f"Contract Mismatch: Agent '{resolved_agent_id}' lacks mapped capability '{target_envelope}'."
+            blackboard.log_gap(gap_msg)
+            raise RoleConfigurationError(f"[FATAL DISCOVERY FAULT] {gap_msg}")
 
-        # 3. Check active profiles currently in memory (including manifest default actions)
-        for profile in self.active_profiles.values():
-            contract = profile.capabilities.get(target_cap_name)
-            if not contract and target_details:
-                manifest_default = None
-                if isinstance(profile.manifest, dict):
-                    manifest_default = profile.manifest.get("default_action")
-                elif profile.manifest:
-                    manifest_default = getattr(profile.manifest, "default_action", None)
+        # 4. Enforce Equipment & Artifact Readiness (Fast-Fail)
+        equip_res = profile.is_equipped(target_envelope, available_artifacts)
+        is_equipped = equip_res[0] if isinstance(equip_res, tuple) else bool(equip_res)
 
-                if manifest_default and str(manifest_default).lower() == str(target_cap_name).lower():
-                    contract = self._details_to_contract(target_details, profile.agent)
-                    if contract:
-                        profile.capabilities[target_cap_name] = contract
+        if not is_equipped:
+            gap_msg = f"Unmet Constraints: Agent '{resolved_agent_id}' cannot execute '{target_envelope}' due to missing artifacts or binaries."
+            blackboard.log_gap(gap_msg)
+            raise RoleConfigurationError(f"[FATAL DISCOVERY FAULT] {gap_msg}")
 
-            if contract:
-                equip_res = profile.is_equipped(target_cap_name, available_artifacts)
-                equipped = equip_res[0] if isinstance(equip_res, tuple) else bool(equip_res)
-                if equipped:
-                    return profile, contract
-
-        # 4. CAPABILITY GAP DETECTED -> Fail Fast
-        gap_msg = f"Capability Gap: No registered agent is equipped with action '{target_cap_name}'."
-        blackboard.log_gap(gap_msg)
-
-        raise RoleConfigurationError(
-            f"[FATAL DISCOVERY FAULT] Required capability '{target_cap_name}' cannot be resolved to an equipped, "
-            f"active agent. Ensure the skill is mapped in SkillLibrarian and that mandatory artifacts are available."
-        )
+        return profile, contract

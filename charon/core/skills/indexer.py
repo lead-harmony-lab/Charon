@@ -1,10 +1,10 @@
 """
 charon/core/skills/indexer.py
-System Version: v0.6.3 | File Revision: 7.4.1
+System Version: v2.0.0
 
-Module: Dynamic discovery, skill promotion, route syncing, database re-indexing,
+Module: Dynamic discovery, skill promotion, database re-indexing,
 and stale mapping purge mixin.
-Maintains clean separation between immutable code identifiers (skill_id) and prompt contracts (action_name).
+Maintains clean separation between immutable code identifiers (skill_id) and Work Contracts (action_name).
 Enforces deterministic 3-node canonical naming convention (<category>_<context>_<verb>) for database action_name contracts.
 Integrates AST-based plugin inspection to eliminate redundant/stuttering contract names.
 All direct SQL execution extracted to repository layer.
@@ -29,7 +29,7 @@ logger = logging.getLogger("Charon.Core.Skills.Indexer")
 
 
 class SkillIndexerMixin:
-    """Disk discovery, dynamic promotion, route syncing, and database re-indexing methods."""
+    """Disk discovery, dynamic promotion, and database re-indexing methods."""
 
     def register_skill(self, skill: BaseSkill) -> None:
         """Registers an in-memory skill instance keyed by its prompt action contract."""
@@ -154,14 +154,12 @@ class SkillIndexerMixin:
 
         Removes:
         1. skill_registry rows for missing plugin files/manifests not present in active_skill_ids.
-        2. agent_skill_map rows pointing to non-existent skills or inactive agents.
-        3. route_registry rows referencing unindexed skills.
+        2. agent_skill_map rows pointing to non-existent skills or inactive roles.
         """
         logger.info("[LIBRARIAN] Initiating stale mapping purge cycle...")
         purged_stats = {
             "purged_skills": 0,
-            "purged_agent_mappings": 0,
-            "purged_routes": 0,
+            "purged_role_mappings": 0,
         }
 
         try:
@@ -171,15 +169,11 @@ class SkillIndexerMixin:
             elif hasattr(self.repo, "purge_stale_skills"):
                 purged_stats["purged_skills"] = self.repo.purge_stale_skills(active_skill_ids)
 
-            # 2. Cleanup orphaned permission mappings in agent_skill_map
+            # 2. Cleanup orphaned permission mappings in agent_skill_map (soon to be role_skill_map)
             if hasattr(self.repo, "purge_orphaned_agent_skill_mappings"):
-                purged_stats["purged_agent_mappings"] = (
+                purged_stats["purged_role_mappings"] = (
                     self.repo.purge_orphaned_agent_skill_mappings()
                 )
-
-            # 3. Cleanup dangling route entries in route_registry
-            if hasattr(self.route_repo, "purge_stale_routes"):
-                purged_stats["purged_routes"] = self.route_repo.purge_stale_routes()
 
             logger.info(
                 f"[LIBRARIAN] Stale purge complete. Stats: {purged_stats}"
@@ -196,8 +190,8 @@ class SkillIndexerMixin:
         purge_stale: bool = True,
     ) -> None:
         """
-        Unified pipeline for skill indexing, route synchronization, and optional stale purging.
-        Establishes skill_registry entries and maps agent capability FKs via agent_skill_map.
+        Unified pipeline for skill indexing and optional stale purging.
+        Establishes skill_registry entries and maps role capability FKs.
         Transforms local manifest action verbs into deterministic 3-node canonical action names.
         Saves CBAC Schema V2 required permissions and preserves active quarantine states.
         Fails fast if any manifest references an invalid role or agent not present in SQLite.
@@ -213,8 +207,6 @@ class SkillIndexerMixin:
                 self.repo.ensure_schema()
             if hasattr(self.agent_repo, "ensure_schema"):
                 self.agent_repo.ensure_schema()
-            if hasattr(self.route_repo, "ensure_schema"):
-                self.route_repo.ensure_schema()
             if (
                 hasattr(self, "permission_repo")
                 and self.permission_repo is not None
@@ -254,13 +246,13 @@ class SkillIndexerMixin:
                         )
                         continue
 
-                    allowed_agents_list = getattr(manifest, "allowed_agents", []) or raw_json.get(
-                        "allowed_agents", []
+                    allowed_roles_list = getattr(manifest, "allowed_roles", []) or raw_json.get(
+                        "allowed_roles", raw_json.get("allowed_agents", [])
                     )
-                    if isinstance(allowed_agents_list, str):
-                        allowed_agents_list = [allowed_agents_list]
+                    if isinstance(allowed_roles_list, str):
+                        allowed_roles_list = [allowed_roles_list]
 
-                    is_global = 1 if ("*" in allowed_agents_list or getattr(manifest, "is_global", False)) else 0
+                    is_global = 1 if ("*" in allowed_roles_list or getattr(manifest, "is_global", False)) else 0
                     total_actions = len(manifest.supported_actions)
 
                     # --- Path-aware status check ---
@@ -340,16 +332,16 @@ class SkillIndexerMixin:
                             required_permissions=required_permissions,
                         )
 
-                        # Link agents additively
+                        # Link roles additively
                         if is_global:
-                            active_agents = self.agent_repo.get_active_agent_ids()
-                            for agent_id in active_agents:
-                                self.repo.link_agent_to_skill(agent_id, action_skill_id)
+                            active_roles = self.agent_repo.get_active_agent_ids()
+                            for role_id in active_roles:
+                                self.repo.link_agent_to_skill(role_id, action_skill_id)
                         else:
-                            for raw_agent_id in allowed_agents_list:
-                                if raw_agent_id == "*":
+                            for raw_role_id in allowed_roles_list:
+                                if raw_role_id == "*":
                                     continue
-                                canonical_id = self.resolve_agent_id_for_role(raw_agent_id)
+                                canonical_id = self.resolve_agent_id_for_role(raw_role_id)
                                 self.repo.link_agent_to_skill(canonical_id, action_skill_id)
 
                 except RoleResolutionError as rre:
@@ -365,14 +357,11 @@ class SkillIndexerMixin:
             if purge_stale:
                 self.purge_stale_mappings(discovered_skill_ids)
 
-            # Pass 3: Sync route_registry via RouteRepository
-            self.route_repo.sync_dynamic_routes()
-
-            # Pass 4: Invalidate and reload in-memory manifest cache
+            # Pass 3: Invalidate and reload in-memory manifest cache
             if hasattr(self, "reload_all_manifests"):
                 self.reload_all_manifests()
 
-            logger.info("[LIBRARIAN] Skill reindexing and routing sync complete.")
+            logger.info("[LIBRARIAN] Skill reindexing complete.")
         except Exception as e:
             logger.error(f"[LIBRARIAN] Reindexing pipeline failed: {e}", exc_info=True)
             raise

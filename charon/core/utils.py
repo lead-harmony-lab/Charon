@@ -1,23 +1,23 @@
 """
 charon/core/utils.py
-System Version: v0.3.3 | File Revision: 3.0.0
+System Version: v0.4.0 | File Revision: 4.0.0
 
-Module: Utility routines for JSON sanitization, dynamic agent ID normalization,
-and defensive Pydantic schema extraction adhering to the Janitorial Working Anchor.
+Module: Utility routines for payload sanitization, role normalization,
+and defensive Pydantic schema extraction for Work Contract execution envelopes.
 """
 
-import json
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 logger = logging.getLogger("Charon.Core.Utils")
 
 
 def clean_json_string(raw_str: str) -> str:
     """
-    Safely extracts and cleans raw JSON strings (objects or arrays) from LLM responses.
-    Handles markdown code blocks, greedy fence artifacts, and trailing commas.
+    Safely extracts and cleans raw JSON strings from LLM responses.
+    Utilized by the BaseWorkContract Diff Engine as a defensive fallback
+    for salvaging payloads prior to strict Pydantic validation.
     """
     if not raw_str:
         return ""
@@ -40,54 +40,54 @@ def clean_json_string(raw_str: str) -> str:
     return raw_str
 
 
-def normalize_agent_id(agent: Any) -> str:
+def normalize_role_name(role_name: Any) -> str:
     """
-    Sanitizes and normalizes raw agent/role identifier strings.
-    Strips surrounding quotes, markdown formatting, brackets, and LLM prefixes.
+    Sanitizes and normalizes raw system role identifiers.
+    Ensures safe SSOT resolution when querying the SkillLibrarian.
     """
-    if not agent:
+    if not role_name:
         return ""
 
-    agent_str = str(agent).strip()
+    role_str = str(role_name).strip()
 
     # Strip quotes, brackets, angle brackets, and markdown backticks
-    agent_str = re.sub(r"^[`'\"\[\(<]+|[`'\"\]\)>]+$", "", agent_str).strip()
+    role_str = re.sub(r"^[`'\"\[\(<]+|[`'\"\]\)>]+$", "", role_str).strip()
 
-    # Strip common LLM artifact prefixes (e.g., 'agent:', 'role:')
-    if agent_str.lower().startswith(("agent:", "role:")):
-        agent_str = agent_str.split(":", 1)[1].strip()
+    # Strip common LLM artifact prefixes (e.g., 'role:')
+    if role_str.lower().startswith(("role:", "agent:")):
+        role_str = role_str.split(":", 1)[1].strip()
 
-    return agent_str.lower()
-
-
-def normalize_agent(agent: Any) -> str:
-    """Backward-compatible function returning a sanitized string agent identifier."""
-    return normalize_agent_id(agent)
+    return role_str.lower()
 
 
 def get_schema_json(schema_class: type) -> Dict[str, Any]:
     """
-    Defensively retrieves JSON schema dict from payload classes across Pydantic versions.
-    Fallback chain: custom get_clean_schema() -> Pydantic v2 model_json_schema() -> Pydantic v1 schema().
+    Defensively retrieves JSON schema dict from payload classes.
+    Critical for dynamically injecting the BaseWorkContract's expected
+    artifact_schema into the LLM context window.
     """
     if not schema_class:
         return {}
 
     try:
-        if hasattr(schema_class, "get_clean_schema") and callable(
-            getattr(schema_class, "get_clean_schema")
-        ):
-            return schema_class.get_clean_schema()
-
+        # Prioritize Pydantic v2
         if hasattr(schema_class, "model_json_schema") and callable(
             getattr(schema_class, "model_json_schema")
         ):
             return schema_class.model_json_schema()
 
+        # Custom extraction override
+        if hasattr(schema_class, "get_clean_schema") and callable(
+            getattr(schema_class, "get_clean_schema")
+        ):
+            return schema_class.get_clean_schema()
+
+        # Fallback to Pydantic v1
         if hasattr(schema_class, "schema") and callable(
             getattr(schema_class, "schema")
         ):
             return schema_class.schema()
+
     except Exception as e:
         logger.warning(f"[UTILS] Failed to extract schema from {schema_class}: {e}")
 

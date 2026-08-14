@@ -1,6 +1,6 @@
 """
 charon/core/skills/base.py
-System Version: v0.7.0 | File Revision: 7.0.0
+System Version: v2.0.0
 
 Module: Abstract Base Class defining the contract for in-memory and dynamic skill plugins.
 Establishes clean separation between code identity (skill_id) and prompt contract (action_name),
@@ -17,7 +17,7 @@ class BaseSkill(ABC):
     # Unique code instance identifier (e.g., 'sk_slack_send_msg_v1')
     skill_id: str = "sk_unnamed_skill"
 
-    # Action contract trigger name invoked by LLMs / Routers (e.g., 'send_slack_message')
+    # Action contract trigger name invoked by LLMs / Work Contracts (e.g., 'send_slack_message')
     action_name: str = "unnamed_action"
 
     version: str = "1.0.0"
@@ -31,8 +31,8 @@ class BaseSkill(ABC):
     status: str = "ACTIVE"
     quarantine_reason: Optional[str] = None
 
-    # Restrict checkout to specific agent IDs, or ["*"] for global availability
-    allowed_agents: List[str] = ["*"]
+    # Restrict checkout to specific role IDs, or ["*"] for global availability
+    allowed_roles: List[str] = ["*"]
     is_global: bool = False
 
     # Primitive permissions required by CBAC Schema V2
@@ -44,9 +44,9 @@ class BaseSkill(ABC):
 
     @abstractmethod
     def execute(
-        self, agent_name: str, parameters: Dict[str, Any], raw_prompt: str = ""
+        self, role_name: str, parameters: Dict[str, Any], raw_prompt: str = ""
     ) -> Union[str, Dict[str, Any]]:
-        """Executes the skill logic given the agent identity and parameter payload."""
+        """Executes the skill logic given the role identity and parameter payload."""
         pass
 
     def to_dict(self) -> Dict[str, Any]:
@@ -60,7 +60,7 @@ class BaseSkill(ABC):
             "handler_name": self.handler_name,
             "status": self.status,
             "quarantine_reason": self.quarantine_reason,
-            "allowed_agents": self.allowed_agents,
+            "allowed_roles": self.allowed_roles,
             "is_global": 1 if self.is_global else 0,
             "required_permissions": self.required_permissions,
             "system_requirements": self.system_requirements,

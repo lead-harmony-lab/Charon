@@ -1,6 +1,6 @@
 """
 charon/agents/base.py
-System Version: v0.3.3 | File Revision: 2.8.0
+System Version: v0.4.1 | File Revision: 3.2.0
 
 Module: Core BaseAgent interface defining unified probing, health checks,
 declarative manifest capabilities, dynamic skill lookup via SkillLibrarian SSOT,
@@ -13,19 +13,15 @@ import json
 import logging
 import shutil
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union, Type
 from pydantic import BaseModel
 
-from charon.core.contracts import (
-    CapabilityNegotiation,
-    ContractResponse,
-    DiagnosticGap,
-    ExecutionStatus,
-    GapType,
-    ToolManifest,
-)
+# Native Core Imports (Aligned with actual codebase)
 from charon.core.coordinator.blackboard import TaskBlackboard, ThoughtType
 from charon.core.skills import SkillLibrarian
+from charon.gateway.gatekeeper import GatekeeperManager
+from charon.telemetry.ledger import ExecutionLedger
+
 
 logger = logging.getLogger("charon.agents.base")
 
@@ -44,12 +40,122 @@ class SkillContract(BaseModel):
     missing_prerequisites: List[str] = []
 
 
+class BaseWorkContract(ABC):
+    """
+    Abstract interface for Work Contracts (Default Actions).
+    Encapsulates the LLM loop, localized tool routing, payload sanitization,
+    and strict output schema enforcement.
+    """
+    artifact_schema: Type[BaseModel]
+
+    def __init__(
+        self,
+        agent_id: str,
+        gatekeeper: Optional[GatekeeperManager],
+        tool_executor: Callable[[str, Dict[str, Any], str], Any],
+        ledger: Optional[ExecutionLedger] = None
+    ):
+        """Constructor injection enforces strict dependencies."""
+        self.agent_id = agent_id
+        self.gatekeeper = gatekeeper
+        self._execute_tool = tool_executor  # Bound to RuntimeAgent.execute_sub_skill
+        self.ledger = ledger or ExecutionLedger()
+
+    async def _invoke_tool_with_guard(
+        self,
+        action: str,
+        parameters: Dict[str, Any],
+        raw_user_input: str,
+        task_id: str = "SYSTEM_TASK"
+    ) -> Any:
+        """
+        The global chokepoint. All tool invocations must pass through this.
+        Delegates CBAC (Capability-Based Access Control) to the Gatekeeper
+        and records state transitions to the ExecutionLedger.
+        """
+        # 1. Evaluate against the Gatekeeper risk matrix
+        if self.gatekeeper and self.gatekeeper.requires_approval_raw(self.agent_id, action, parameters):
+            manifest, action_name, approval_id = self.gatekeeper.intercept_task(
+                agent=self.agent_id,
+                extraction=None,
+                user_raw_input=raw_user_input
+            )
+
+            logger.info(f"[{self.agent_id}] Execution paused. Awaiting CBAC authorization: {approval_id}")
+            decision = await self.gatekeeper.wait_for_decision(approval_id)
+
+            if decision != "APPROVED":
+                await self.ledger.log_event(
+                    task_id=task_id,
+                    event_type="TOOL_EXECUTION_BLOCKED",
+                    role_name=self.agent_id,
+                    tool_name=action,
+                    data={"parameters": parameters, "decision": decision}
+                )
+                return (
+                    f"EXECUTION BLOCKED by User/Gatekeeper. Decision: {decision}. "
+                    "You do not have permission to execute this action."
+                )
+
+        # 2. If safe/approved, log the initiation and delegate back to execution bridge
+        await self.ledger.log_event(
+            task_id=task_id,
+            event_type="TOOL_EXECUTION_STARTED",
+            role_name=self.agent_id,
+            tool_name=action,
+            data={"parameters": parameters}
+        )
+
+        try:
+            result = self._execute_tool(action, parameters, raw_user_input)
+
+            await self.ledger.log_event(
+                task_id=task_id,
+                event_type="TOOL_EXECUTION_COMPLETED",
+                role_name=self.agent_id,
+                tool_name=action,
+                data={"status": "success"}
+            )
+            return result
+        except Exception as e:
+            await self.ledger.log_event(
+                task_id=task_id,
+                event_type="TOOL_EXECUTION_FAILED",
+                role_name=self.agent_id,
+                tool_name=action,
+                data={"error": str(e)}
+            )
+            logger.error(f"[{self.agent_id}] Tool {action} crashed: {e}")
+            raise e
+
+    @abstractmethod
+    def execute(
+        self,
+        task_payload: Dict[str, Any],
+        authorized_tools: List[Dict[str, Any]],  # Hydrated from SkillManifests
+        coordinator_constraints: Optional[Dict[str, Any]] = None
+    ) -> BaseModel:
+        """Executes the contract and returns a strict Artifact or Diagnostic."""
+        pass
+
+    @abstractmethod
+    def bind_telemetry(self, callback: Callable) -> None:
+        """Binds standard agent telemetry trace reporting."""
+        pass
+
+    @abstractmethod
+    def bind_cot(self, callback: Callable) -> None:
+        """Binds Chain of Thought (CoT) internal reasoning reporting."""
+        pass
+
+
 class BaseAgent(ABC):
     """Abstract Base Class for all Charon Specialist Agents.
 
     Provides standardized probing, action discovery, health inspection,
     dynamic skill checkout via SkillLibrarian SSOT, Chain-of-Thought (CoT)
     telemetry broadcasting, user response reporting, and diagnostic contract negotiation.
+    Delegates main execution flow to a bound BaseWorkContract.
     """
 
     name: str = "BaseAgent"
@@ -62,13 +168,18 @@ class BaseAgent(ABC):
     produced_artifacts: List[str] = []
     description: str = "Standard agent interface."
 
+    work_contract: Optional[BaseWorkContract] = None
+
     def __init__(
         self,
         librarian: Optional[SkillLibrarian] = None,
         agent_id: Optional[str] = None,
+        ledger: Optional[ExecutionLedger] = None,
     ) -> None:
         """Initializes the agent and binds the dynamic capability librarian."""
         self.librarian = librarian or SkillLibrarian.get_instance()
+        self.ledger = ledger or ExecutionLedger()
+
         if agent_id:
             self.agent_id = agent_id
         elif not hasattr(self, "agent_id") or self.agent_id == "base_agent":
@@ -170,35 +281,10 @@ class BaseAgent(ABC):
             },
         })
 
-    def report_action(self, action: str, details: Optional[Dict[str, Any]] = None) -> None:
-        """Emits a sub-action step specifically for execution drop-down logs."""
-        if self._telemetry_callback:
-            self._telemetry_callback({
-                "type": "agent_action",
-                "agent_name": getattr(self, "name", self.__class__.__name__),
-                "data": {"action": action, **(details or {})},
-            })
-
     def evaluate_capability(
         self, action: str, params: Optional[Dict[str, Any]] = None
     ) -> SkillContract:
-        """Evaluates whether the agent can handle the requested action natively or dynamically via DB SSOT."""
-        is_native = False
-        if isinstance(self.supported_actions, dict):
-            is_native = action in self.supported_actions or action in getattr(self, "ACTION_MAP", {})
-        elif isinstance(self.supported_actions, list):
-            is_native = action in self.supported_actions
-
-        if is_native:
-            missing_reqs = [req for req in self.system_requirements if shutil.which(req) is None]
-            if missing_reqs:
-                return SkillContract(
-                    status="CAPABILITY_GAP",
-                    capability_type=CapabilityType.NATIVE,
-                    missing_prerequisites=missing_reqs,
-                )
-            return SkillContract(status="READY", capability_type=CapabilityType.NATIVE)
-
+        """Evaluates whether the agent can handle the requested sub-action dynamically via DB SSOT."""
         if self.librarian:
             manifest = None
             if hasattr(self.librarian, "get_action_manifest"):
@@ -207,6 +293,7 @@ class BaseAgent(ABC):
                 manifest = self.librarian.get_action_details(action)
 
             if manifest:
+                # manifest could be a Pydantic SkillManifest model or a dict
                 if isinstance(manifest, dict):
                     sys_reqs = manifest.get("system_requirements", [])
                 else:
@@ -240,20 +327,21 @@ class BaseAgent(ABC):
         )
 
     @abstractmethod
-    def execute(
+    def execute_task(
         self,
-        action: str,
-        parameters: Dict[str, Any],
-        raw_prompt: str = "",
-        stream_callback: Optional[Callable[[str], None]] = None,
-    ) -> Union[str, Dict[str, Any]]:
-        """Primary routing switch for executing agent actions. Must fail fast if unsupported."""
+        task_payload: Dict[str, Any],
+        constraints: Optional[Dict[str, Any]] = None,
+    ) -> BaseModel:
+        """
+        Primary execution dispatch inverted for the Work Contract paradigm.
+        Takes a declarative task payload and delegates strictly to the work_contract.
+        """
         pass
 
-    def execute_dynamic(
+    def execute_sub_skill(
         self, action: str, parameters: Dict[str, Any], raw_prompt: str = ""
     ) -> Union[str, Dict[str, Any]]:
-        """Isolated dispatcher for executing dynamically loaded skill plugins bound in DB SSOT."""
+        """Isolated peripheral dispatcher used by Work Contracts to execute dynamically loaded skill plugins."""
         if not self.librarian:
             raise RuntimeError(f"[{self.name}] SkillLibrarian is not initialized. Cannot execute dynamic skills.")
 
@@ -263,21 +351,8 @@ class BaseAgent(ABC):
                 f"[FAIL-FAST] Dynamic skill '{action}' is not registered or unauthorized for agent_id '{self.agent_id}'."
             )
 
-        logger.info(f"[{self.name}] Dispatching dynamic skill execution for action: '{action}'")
+        logger.info(f"[{self.name}] Executing peripheral dynamic skill: '{action}'")
         result = handler(agent_name=self.name, parameters=parameters, raw_prompt=raw_prompt)
-
-        # Broadcast output via agent_response event if text content is produced
-        response_text = ""
-        if isinstance(result, str):
-            response_text = result
-        elif isinstance(result, dict):
-            response_text = str(
-                result.get("result") or result.get("content") or result.get("output") or ""
-            )
-
-        if response_text:
-            self.report_response(response_text)
-
         return result
 
     def health_check(self) -> Dict[str, Any]:
@@ -289,24 +364,34 @@ class BaseAgent(ABC):
             "agent": self.name,
             "agent_id": self.agent_id,
             "domain": self.domain,
-            "status": "degraded" if missing else "healthy",
+            "status": "degraded" if missing or not self.work_contract else "healthy",
             "missing_dependencies": missing,
+            "has_work_contract": self.work_contract is not None,
             "dynamic_skills_available": dynamic_actions,
-            "native_actions_supported": list(self.supported_actions.keys()) if isinstance(self.supported_actions, dict) else self.supported_actions,
         }
 
     def probe(self, probe_type: str = "full") -> Dict[str, Any]:
-        """Coordinator Probing Interface: Exposes health status, capability matrix, and domain metadata."""
+        """
+        Coordinator Probing Interface: Exposes Work Contract boundaries,
+        produced schemas, and peripheral capabilities.
+        """
         probe_type = str(probe_type).lower().strip()
         health_info = self.health_check()
+
+        # Schema output serialization safely handles None contracts
+        schema_json = {}
+        contract_name = "None"
+        if self.work_contract and hasattr(self.work_contract, "artifact_schema"):
+            schema_json = self.work_contract.artifact_schema.model_json_schema()
+            contract_name = self.work_contract.__class__.__name__
 
         capabilities_info = {
             "agent_name": self.name,
             "agent_id": self.agent_id,
             "domain": self.domain,
-            "native_actions": self.supported_actions,
-            "dynamic_skills": self.librarian.list_available_actions(self.agent_id) if self.librarian else [],
-            "manifest": self.get_manifest().model_dump(),
+            "work_contract_role": contract_name,
+            "produced_artifact_schema": schema_json,
+            "authorized_sub_skills": self.librarian.list_available_actions(self.agent_id) if self.librarian else [],
         }
 
         if probe_type == "health":
@@ -320,27 +405,3 @@ class BaseAgent(ABC):
             "health": health_info,
             "capabilities": capabilities_info,
         }
-
-    def get_manifest(self) -> ToolManifest:
-        """Returns declarative capability contract/manifest including native and dynamic skills from DB SSOT."""
-        actions_list: List[str] = []
-        if isinstance(self.supported_actions, dict):
-            for category, acts in self.supported_actions.items():
-                if isinstance(acts, list):
-                    actions_list.extend(acts)
-                else:
-                    actions_list.append(str(acts))
-        elif isinstance(self.supported_actions, list):
-            actions_list.extend(self.supported_actions)
-
-        dynamic_actions = self.librarian.list_available_actions(self.agent_id) if self.librarian else []
-        all_actions = sorted(list(set(actions_list + dynamic_actions)))
-
-        return ToolManifest(
-            agent_name=self.name,
-            supported_actions=all_actions,
-            system_requirements=self.system_requirements,
-            consumed_artifacts=self.consumed_artifacts,
-            produced_artifacts=self.produced_artifacts,
-            description=f"{self.domain}: {self.description}",
-        )

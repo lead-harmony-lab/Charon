@@ -1,24 +1,23 @@
 """
 charon/core/prompts.py
-System Version: v0.4.3 | File Revision: 4.3.0
+System Version: v0.5.0 | File Revision: 5.0.0
 
-Module: Pure DB-driven prompt generation and ACK formatting adhering strictly to
-dynamic routing tables (dynamic_routing_rules, route_registry, system_roles).
-Zero hardcoded string bias. Zero static fallbacks.
+Module: Pure DB-driven prompt generation adhering strictly to the new Work Contract
+routing paradigm (dynamic_routing_rules, route_registry, system_roles).
+Zero hardcoded string bias. Zero legacy UI string formatters.
 Includes lazy synchronization and skill reindexing triggers on unpopulated database
 state to prevent import-time routing crashes during daemon boot.
 """
 
 import logging
-import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Optional, Union
 
 from charon.config.paths import STATE_DB_PATH
 from charon.db.connection import get_connection
 from charon.db.repositories.prompts import PromptRepository
 
-logger = logging.getLogger("Charon.Core.Prompts")
+logger = logging.getLogger("charon.core.prompts")
 
 
 class DynamicRoutingError(RuntimeError):
@@ -29,6 +28,7 @@ class DynamicRoutingError(RuntimeError):
 def fetch_dynamic_routing_context(db_path: Union[str, Path] = STATE_DB_PATH) -> str:
     """
     Constructs the routing context strictly from dynamic_routing_rules.
+    Focuses on declarative routing to Roles rather than micro-capabilities.
     """
     query = """
         SELECT trigger, agent_id, description 
@@ -44,7 +44,7 @@ def fetch_dynamic_routing_context(db_path: Union[str, Path] = STATE_DB_PATH) -> 
             return ""
 
         rule_lines = [
-            f"- IF request matches '{r['trigger']}' -> ROUTE TO '{r['agent_id']}' ({r['description']})"
+            f"- IF request matches '{r['trigger']}' -> ROUTE TASK TO ROLE '{r['agent_id']}' ({r['description']})"
             for r in rules
         ]
         return "\n".join(rule_lines)
@@ -88,12 +88,15 @@ def build_routing_prompt(
         )
 
     roster_lines = [
-        f"- Role '{item['role_name']}': {item['description']}"
+        f"- Role '{item['role_name']}': {item['description']} (Managed by Work Contract)"
         for item in roster_items
         if isinstance(item, dict)
     ]
 
-    prompt_parts = []
+    prompt_parts = [
+        "You are an orchestration engine. Your job is to route declarative tasks to the appropriate specialized Role.",
+        "Do NOT attempt to execute micro-skills yourself. Assign high-level objectives to the roles below."
+    ]
 
     # Optional role-specific system prompt override from agent_registry
     if target_role_or_agent and hasattr(repo, "get_system_prompt_template"):
@@ -116,9 +119,10 @@ def build_extraction_prompt(
     db_path: Union[str, Path] = STATE_DB_PATH,
 ) -> str:
     """
-    Dynamically builds capability extraction schemas mapped across active roles
-    and skill registries directly from SQLite. Fails fast if no skill schemas exist.
-    Executes a lazy database sync and filesystem reindex if state is initially empty.
+    Dynamically builds task extraction context mapped across active roles.
+    Under the new Work Contract paradigm, this no longer exposes strict micro-tool schemas
+    to the LLM. Instead, it provides peripheral capabilities purely as context so the LLM
+    knows what a role CAN do when formulating the declarative Work Contract payload.
     """
     repo = repo or PromptRepository(db_path)
 
@@ -152,16 +156,14 @@ def build_extraction_prompt(
             continue
         role_name = row.get("role_name", "UNKNOWN")
         if role_name != current_role:
-            capability_lines.append(f"\nFOR ROLE {role_name.upper()}:")
+            capability_lines.append(f"\nROLE: {role_name.upper()} (Executes via specialized Work Contract)")
             current_role = role_name
 
         action = row.get("action_name", "")
         desc = row.get("description", "")
-        params = row.get("parameters") or "{}"
 
-        capability_lines.append(
-            f'    - {desc} -> Action: "{action}", Schema: {params}'
-        )
+        # We expose what the tool does, but hide the exact micro-schema to force declarative payloads
+        capability_lines.append(f"    - Peripheral Capability: {action} ({desc})")
 
     prompt_parts = []
 
@@ -170,52 +172,16 @@ def build_extraction_prompt(
         if custom_base:
             prompt_parts.append(custom_base)
 
-    prompt_parts.append("ACTIVE CAPABILITIES:\n" + "\n".join(capability_lines))
+    prompt_parts.append(
+        "ACTIVE ROLES & PERIPHERAL CAPABILITIES:\n"
+        "The following outlines the specialized roles and the internal tools they possess.\n"
+        "IMPORTANT: When extracting requirements, do NOT target these micro-tools directly. "
+        "Formulate a high-level, declarative task payload for the Role. The Role's Work Contract "
+        "will securely manage its own tool schemas and execution context.\n"
+        + "\n".join(capability_lines)
+    )
 
     return "\n\n".join(prompt_parts)
-
-
-def get_agent_ack(
-    agent_id_or_role: str,
-    action: str = "",
-    parameters: Optional[Dict[str, Any]] = None,
-    repo: Optional[PromptRepository] = None,
-    db_path: Union[str, Path] = STATE_DB_PATH,
-) -> str:
-    """
-    Formats a status acknowledgment using SkillLibrarian presentation accessors
-    to resolve human-readable display names dynamically from DB state.
-    """
-    params = parameters or {}
-    target = params.get("target_path") or params.get("query") or params.get("command") or ""
-
-    display_name = agent_id_or_role
-    try:
-        from charon.core.skills.librarian import SkillLibrarian
-        librarian = SkillLibrarian.get_instance()
-        if hasattr(librarian, "get_display_name_for_role"):
-            try:
-                display_name = librarian.get_display_name_for_role(agent_id_or_role)
-            except Exception:
-                display_name = librarian.get_display_name_for_agent(agent_id_or_role)
-        elif hasattr(librarian, "get_display_name_for_agent"):
-            display_name = librarian.get_display_name_for_agent(agent_id_or_role)
-    except Exception as err:
-        logger.debug(f"[Prompts] Could not resolve display name for '{agent_id_or_role}': {err}")
-
-    if target:
-        clean_target = str(target).replace(os.path.expanduser("~"), "~")
-        return f"[{display_name}: Executing {action} on '{clean_target}']"
-
-    repo = repo or PromptRepository(db_path)
-    fallback = "Processing request."
-    try:
-        if hasattr(repo, "get_default_action_for_identifier") and callable(repo.get_default_action_for_identifier):
-            fallback = repo.get_default_action_for_identifier(agent_id_or_role) or fallback
-    except Exception as err:
-        logger.debug(f"[Prompts] Failed to query default action for identifier '{agent_id_or_role}': {err}")
-
-    return f"[{display_name}: {fallback}]"
 
 
 def __getattr__(name: str) -> Any:

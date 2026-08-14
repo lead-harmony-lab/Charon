@@ -1,12 +1,11 @@
 """
 charon/core/coordinator/engine.py
-System Version: v0.8.0 | File Revision: 8.0.0
+System Version: v0.9.1 | File Revision: 9.1.0
 
 Module: Core Reflection Engine and Multi-Intent Coordinator Facade.
-Orchestrates prompt decomposition, contract negotiations, dynamic agent discovery,
-diagnostic gap dynamic re-routing, blueprint capturing, and stateful reflection loops
-aligned with Revision 3 CBAC database schema & trigger guardrails.
-Enforces canonical role & agent lookup via SkillLibrarian SSOT.
+Refactored for the Active Execution Envelope (Work Contract) paradigm.
+Enforces strict execution via BaseAgent.execute_task() and fast-fails on schema violations.
+Legacy routing, execution bridges, and negotiation ghosts have been entirely removed.
 """
 
 import asyncio
@@ -18,9 +17,8 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 from charon.agents.base import BaseAgent
 from charon.core.contracts import (
-    CapabilityNegotiation,
     ContractResponse,
-    DiagnosticGap,
+    DiagnosticArtifact,
     ExecutionStatus,
     GapType,
     SkillBlueprint,
@@ -55,15 +53,13 @@ def _resolve_agent_id(agent_or_role: Any) -> str:
         return ""
 
     librarian = SkillLibrarian.get_instance()
-    if hasattr(librarian, "resolve_agent_id_for_role") and callable(
-        librarian.resolve_agent_id_for_role
-    ):
+    if hasattr(librarian, "resolve_agent_id_for_role") and callable(librarian.resolve_agent_id_for_role):
         try:
             resolved = librarian.resolve_agent_id_for_role(role_str)
             if resolved:
                 return str(resolved).strip()
         except Exception as err:
-            logger.debug(f"[Engine] SkillLibrarian failed to resolve role '{role_str}': {err}")
+            logger.error(f"[Engine] SkillLibrarian failed to resolve role '{role_str}': {err}")
 
     elif hasattr(librarian, "resolve_agent_id") and callable(librarian.resolve_agent_id):
         try:
@@ -71,7 +67,7 @@ def _resolve_agent_id(agent_or_role: Any) -> str:
             if resolved:
                 return str(resolved).strip()
         except Exception as err:
-            logger.debug(f"[Engine] SkillLibrarian failed to resolve agent ID for '{role_str}': {err}")
+            logger.error(f"[Engine] SkillLibrarian failed to resolve agent ID for '{role_str}': {err}")
 
     return role_str
 
@@ -85,15 +81,13 @@ def get_capability(
     if not details:
         return None
 
-    # Schema Compliance: Verify skill status is ACTIVE
     skill_status = details.get("status", "ACTIVE")
     if skill_status != "ACTIVE":
         logger.warning(
-            f"[COORDINATOR] Skill '{capability_name}' requested but is currently in '{skill_status}' state."
+            f"[COORDINATOR] Skill '{capability_name}' requested but is currently in '{skill_status}' state. Rejecting."
         )
         return None
 
-    # Schema Compliance: Resolve system roles -> active agent_id
     default_agent = (
         librarian.resolve_agent_id_for_role("system_fallback")
         if hasattr(librarian, "resolve_agent_id_for_role")
@@ -103,9 +97,7 @@ def get_capability(
     target_agent = _resolve_agent_id(raw_agent)
 
     return CapabilityContract(
-        capability_name=details.get(
-            "capability_name", details.get("action_name", capability_name)
-        ),
+        capability_name=details.get("capability_name", details.get("action_name", capability_name)),
         agent=target_agent,
         description=details.get("description", ""),
         consumed_artifacts=details.get("consumed_artifacts", []),
@@ -197,11 +189,6 @@ class Coordinator:
         return "system_engineer"
 
     def _get_agent_default_action(self, agent_id: str) -> str:
-        """Dynamically resolves default interface action for an agent_id via SkillLibrarian.
-
-        Raises:
-            ValueError: If the target agent manifest does not define a default_action.
-        """
         canonical_agent = _resolve_agent_id(agent_id)
         librarian = SkillLibrarian.get_instance()
 
@@ -255,7 +242,6 @@ class Coordinator:
     def select_next_execution_step(
         self, blackboard: TaskBlackboard
     ) -> Optional[Tuple[UnfulfilledRequirement, CapabilityContract, Dict[str, Any]]]:
-        """Selects the next executable step using agent discovery and dependency resolution."""
         if not blackboard.unfulfilled_requirements:
             return None
 
@@ -292,17 +278,32 @@ class Coordinator:
     def negotiate_contract(
         self, agent: Union[str, Any], requirement: UnfulfilledRequirement, blackboard: TaskBlackboard
     ) -> ContractResponse:
-        """Conducts pre-turn contract negotiation with target agent and logs trace telemetry."""
+        """Simplified pre-turn negotiation. Validates agent existence and active status."""
         agent_key = _resolve_agent_id(agent)
         agent_instance = self.agents.get(agent_key) or self.agents.get(agent)
         agent_name = getattr(agent_instance, "name", agent_key)
 
-        if agent_instance and hasattr(agent_instance, "is_active") and not agent_instance.is_active:
+        if not agent_instance:
             engineer_agent_id = self._get_diagnostic_engineer()
+            logger.error(f"[COORDINATOR] Negotiation Failed: Agent '{agent_name}' not registered in memory.")
             return ContractResponse(
                 agent_name=agent_name,
                 status=ExecutionStatus.INCAPABLE,
-                reason=f"Agent '{agent_name}' is inactive (DB Guard Constraint).",
+                reason=f"Agent '{agent_name}' not registered.",
+                diagnostics=DiagnosticGap(
+                    gap_type=GapType.AGENT_INCAPABLE,
+                    description=f"Target agent '{agent_name}' is not registered in runtime.",
+                    suggested_remediation=f"Re-route task to fallback engineer ({engineer_agent_id}).",
+                ),
+            )
+
+        if hasattr(agent_instance, "is_active") and not agent_instance.is_active:
+            engineer_agent_id = self._get_diagnostic_engineer()
+            logger.error(f"[COORDINATOR] Negotiation Failed: Agent '{agent_name}' is disabled via DB Guard Constraint.")
+            return ContractResponse(
+                agent_name=agent_name,
+                status=ExecutionStatus.INCAPABLE,
+                reason=f"Agent '{agent_name}' is inactive.",
                 diagnostics=DiagnosticGap(
                     gap_type=GapType.AGENT_INCAPABLE,
                     description=f"Target agent '{agent_name}' is deactivated in agent_registry.",
@@ -310,56 +311,12 @@ class Coordinator:
                 ),
             )
 
-        negotiation = CapabilityNegotiation(
+        # In the new paradigm, if the agent exists and is active, we assume its Work Contract will handle execution.
+        return ContractResponse(
             agent_name=agent_name,
-            target_action=requirement.capability_required,
-            parameters=requirement.parameters,
-            context_keys_available=list(blackboard.available_artifact_keys),
+            status=ExecutionStatus.SATISFIED,
+            accomplishments=["Work Contract binding validated."],
         )
-
-        if not agent_instance:
-            engineer_agent_id = self._get_diagnostic_engineer()
-            response = ContractResponse(
-                agent_name=agent_name,
-                status=ExecutionStatus.INCAPABLE,
-                reason=f"Agent '{agent_name}' not registered.",
-                diagnostics=DiagnosticGap(
-                    gap_type=GapType.AGENT_INCAPABLE,
-                    description=f"Target agent '{agent_name}' is not registered in runtime.",
-                    suggested_remediation=f"Re-route task to fallback engineer ({engineer_agent_id}) or register target agent.",
-                ),
-            )
-        else:
-            if hasattr(agent_instance, "evaluate_capability"):
-                response = _exec_sync_or_async(agent_instance.evaluate_capability, negotiation)
-            else:
-                response = ContractResponse(
-                    agent_name=agent_instance.name,
-                    status=ExecutionStatus.SATISFIED,
-                    accomplishments=["Default capability negotiation validation passed."],
-                )
-
-        if response.status == ExecutionStatus.INCAPABLE and response.diagnostics:
-            logger.info(
-                f"[COORDINATOR] Negotiation Gap ({response.diagnostics.gap_type.value}): "
-                f"{response.diagnostics.description}"
-            )
-
-        telemetry_bus.emit(
-            TraceEvent(
-                event_type=TraceEventType.NEGOTIATION,
-                agent_name=agent_name,
-                action=requirement.capability_required,
-                details={
-                    "status": response.status.value,
-                    "reason": response.reason,
-                    "requirement_id": requirement.requirement_id,
-                    "escalation_level": requirement.escalation_level.value,
-                    "diagnostics": response.diagnostics.model_dump() if response.diagnostics else None,
-                },
-            )
-        )
-        return response
 
     def execute_contract_step(
         self,
@@ -368,19 +325,18 @@ class Coordinator:
         capability: CapabilityContract,
         parameters: Dict[str, Any],
     ) -> ContractResponse:
-        """Executes negotiated contract step, evaluates DiagnosticGap payloads, logs blueprints,
-        and triggers auto-rerouting or escalation as required.
+        """
+        Executes step via the new Agent Work Contract paradigm.
+        Fast-fails if legacy methods are encountered or schema validation breaks.
         """
         override_agent = getattr(requirement, "assigned_agent_override", None)
-        if override_agent:
-            target_agent_key = _resolve_agent_id(override_agent)
-        else:
-            target_agent_key = _resolve_agent_id(capability.agent)
+        target_agent_key = _resolve_agent_id(override_agent) if override_agent else _resolve_agent_id(capability.agent)
 
         agent_instance = self.agents.get(target_agent_key) or self.agents.get(override_agent or capability.agent)
         agent_name = getattr(agent_instance, "name", target_agent_key)
 
         if not agent_instance:
+            logger.critical(f"[COORDINATOR] Fatal step failure: No live agent for {target_agent_key}.")
             response = ContractResponse(
                 agent_name=agent_name,
                 status=ExecutionStatus.FAILED,
@@ -394,61 +350,65 @@ class Coordinator:
             self._handle_step_failure(blackboard, requirement, target_agent_key, response)
             return response
 
-        negotiation = CapabilityNegotiation(
-            agent_name=agent_name,
-            target_action=requirement.capability_required,
-            parameters=parameters,
-            context_keys_available=list(blackboard.available_artifact_keys),
-        )
+        # FAST-FAIL ENFORCEMENT: Reject legacy implementations immediately.
+        if not hasattr(agent_instance, "execute_task"):
+            logger.critical(f"[COORDINATOR] Incompatible Agent: '{agent_name}' missing execute_task() Work Contract binder.")
+            raise NotImplementedError(
+                f"Agent {agent_name} is using a legacy architecture. "
+                "Must implement execute_task(payload) bound to a BaseWorkContract."
+            )
 
         start_time = time.perf_counter()
+
         try:
-            if hasattr(agent_instance, "process_contract"):
-                response = _exec_sync_or_async(
-                    agent_instance.process_contract,
-                    negotiation=negotiation,
-                    raw_prompt=blackboard.original_prompt,
+            # New Paradigm Execution: Hand the entire declarative payload to the Work Contract Envelope
+            artifact_result = _exec_sync_or_async(
+                agent_instance.execute_task,
+                payload=parameters
+            )
+
+            # If the artifact returned is a DiagnosticArtifact, execution failed internally.
+            if hasattr(artifact_result, "gap_type"): # Duck typing to catch DiagnosticArtifacts
+                response = ContractResponse(
+                    agent_name=agent_name,
+                    status=ExecutionStatus.FAILED,
+                    reason=getattr(artifact_result, "description", "Internal Contract Failure"),
+                    diagnostics=artifact_result, # Feed the raw diagnostic back into the coordinator routing
                 )
             else:
-                res = _exec_sync_or_async(
-                    agent_instance.execute,
-                    action=requirement.capability_required,
-                    parameters=parameters,
-                    raw_prompt=blackboard.original_prompt,
-                )
                 response = ContractResponse(
                     agent_name=agent_name,
                     status=ExecutionStatus.SATISFIED,
-                    accomplishments=[str(res)[:300] if res else "Executed successfully."],
+                    accomplishments=[f"Successfully produced {type(artifact_result).__name__}"],
                 )
+
+                # Automatically map the resulting artifact properties to blackboard if they match capability definition
+                produced_map = {}
+                for art_key in capability.produced_artifacts:
+                    if hasattr(artifact_result, art_key):
+                        val = getattr(artifact_result, art_key)
+                        produced_map[art_key] = val
+                        blackboard.set_artifact(art_key, val)
+
         except Exception as exc:
             engineer_agent_id = self._get_diagnostic_engineer()
+            logger.error(f"[COORDINATOR] Execution Error in Work Contract loop for {agent_name}: {str(exc)}", exc_info=True)
             response = ContractResponse(
                 agent_name=agent_name,
                 status=ExecutionStatus.FAILED,
                 reason=str(exc),
                 diagnostics=DiagnosticGap(
                     gap_type=GapType.EXECUTION_ERROR,
-                    description=f"Unhandled exception during contract execution: {str(exc)}",
-                    suggested_remediation=f"Re-route to {engineer_agent_id} for ad-hoc repair.",
+                    description=f"Work Contract unhandled exception: {str(exc)}",
+                    suggested_remediation=f"Re-route to {engineer_agent_id} for ad-hoc schema repair.",
                 ),
             )
 
         duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
-        produced_map = {}
-
         is_success = response.status in (ExecutionStatus.SATISFIED, ExecutionStatus.SUCCESS)
 
-        if capability.produced_artifacts and is_success:
-            for art_key in capability.produced_artifacts:
-                if blackboard.has_artifact(art_key):
-                    produced_map[art_key] = blackboard.get_artifact(art_key)
-
         if response.skill_blueprint:
-            logger.info(
-                f"[COORDINATOR] Captured SkillBlueprint '{response.skill_blueprint.suggested_skill_name}' "
-                f"from {agent_name}."
-            )
+            logger.info(f"[COORDINATOR] Captured SkillBlueprint '{response.skill_blueprint.suggested_skill_name}' from {agent_name}.")
             blackboard.set_artifact(
                 f"blueprint_{response.skill_blueprint.action_name}",
                 response.skill_blueprint.model_dump(),
@@ -457,7 +417,7 @@ class Coordinator:
         blackboard.record_contract_response(
             response=response,
             action=requirement.capability_required,
-            produced_artifacts_map=produced_map,
+            produced_artifacts_map=locals().get("produced_map", {}),
         )
 
         telemetry_bus.emit(
@@ -468,11 +428,9 @@ class Coordinator:
                 duration_ms=duration_ms,
                 details={
                     "status": response.status.value,
-                    "produced_artifacts": list(produced_map.keys()),
+                    "produced_artifacts": list(locals().get("produced_map", {}).keys()),
                     "reason": response.reason,
-                    "accomplishments": response.accomplishments,
                     "diagnostics": response.diagnostics.model_dump() if response.diagnostics else None,
-                    "has_blueprint": response.skill_blueprint is not None,
                 },
             )
         )
@@ -491,7 +449,6 @@ class Coordinator:
         current_agent: Union[str, Any],
         response: ContractResponse,
     ) -> None:
-        """Evaluates step failure and DiagnosticGap to perform dynamic re-routing or escalation."""
         agent_str = _resolve_agent_id(current_agent)
         diag = response.diagnostics
         engineer_agent_id = self._get_diagnostic_engineer()
@@ -510,7 +467,7 @@ class Coordinator:
         ):
             logger.warning(
                 f"[COORDINATOR] Auto-rerouting requirement '{requirement.requirement_id}' "
-                f"from {agent_str} -> {engineer_agent_id} due to diagnostic gap: "
+                f"from {agent_str} -> {engineer_agent_id} due to DiagnosticArtifact flag: "
                 f"{diag.description if diag else response.reason}"
             )
 
@@ -525,11 +482,10 @@ class Coordinator:
         self.escalator.escalate(
             blackboard,
             requirement,
-            response.reason or "Contract step execution failed.",
+            response.reason or "Contract step execution failed (No Diagnostic Context).",
         )
 
     def run_turn(self, blackboard: TaskBlackboard) -> TaskBlackboard:
-        """Executes full reflection loop, dispatching steps and publishing telemetry events."""
         telemetry_bus.emit(
             TraceEvent(
                 event_type=TraceEventType.SYSTEM,
@@ -561,31 +517,27 @@ class Coordinator:
             req, cap, params = step_tuple
             step_count += 1
 
-            override_agent = getattr(req, "assigned_agent_override", None)
-            if override_agent:
-                target_agent = override_agent
-            else:
-                target_agent = cap.agent
+            target_agent = getattr(req, "assigned_agent_override", cap.agent)
 
             negotiation_resp = self.negotiate_contract(target_agent, req, blackboard)
             if negotiation_resp.status == ExecutionStatus.INCAPABLE:
                 target_str = _resolve_agent_id(target_agent)
                 if target_str != engineer_agent_id:
                     logger.warning(
-                        f"[COORDINATOR] Agent {target_str} incapable during negotiation. "
+                        f"[COORDINATOR] Contract Binding Failed for {target_str}. "
                         f"Overriding requirement target to {engineer_agent_id}."
                     )
 
                     if not hasattr(req, "parameters") or req.parameters is None:
                         req.parameters = {}
                     req.parameters["failed_action"] = req.capability_required
-                    req.parameters["failure_reason"] = negotiation_resp.reason or "Agent incapable of action."
+                    req.parameters["failure_reason"] = negotiation_resp.reason or "Agent incapable of binding."
                     req.capability_required = self._get_agent_default_action(engineer_agent_id)
                     req.assigned_agent_override = engineer_agent_id
                     continue
 
                 self.escalator.escalate(
-                    blackboard, req, negotiation_resp.reason or "Agent incapable of action."
+                    blackboard, req, negotiation_resp.reason or "Agent incapable of binding."
                 )
                 continue
 

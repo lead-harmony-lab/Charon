@@ -1,6 +1,6 @@
 """
 charon/gateway/core.py
-System Version: v0.1.0 | File Revision: 2.1.1
+System Version: v0.1.1 | File Revision: 2.1.2
 
 Module: Charon Core Daemon Orchestrator.
 
@@ -21,10 +21,10 @@ from charon.config import (
     PROJECT_MEMORY_DIR,
     ensure_ecosystem_directories,
 )
-from charon.core.concierge import ConciergeService
+from charon.ux.concierge import ConciergeService
 from charon.core.engine import OrchestrationEngine
-from charon.core.ledger import ExecutionLedger
-from charon.core.queue import PersistentTaskQueue
+from charon.telemetry.ledger import ExecutionLedger
+from charon.core.coordinator.journal import CoordinatorJournal
 from charon.core.session import SessionGateway
 from charon.core.state import StateManager, TaskStatus
 from charon.core.workspace import WorkspaceManager
@@ -114,15 +114,15 @@ class DaemonLogInterceptor(logging.Handler):
 
 
 class CharonDaemon:
-    """Central orchestrator daemon managing persistent queues, state tables, and dispatch execution."""
+    """Central orchestrator daemon managing persistent journals, state tables, and dispatch execution."""
 
     def __init__(
-        self,
-        engine: Optional[OrchestrationEngine] = None,
-        heavy_model: str = DEFAULT_HEAVY_MODEL,
-        triage_model: str = DEFAULT_TRIAGE_MODEL,
-        db_path: Optional[Union[str, Path]] = None,
-        concierge_min_confidence: float = DEFAULT_CONCIERGE_MIN_CONFIDENCE,
+            self,
+            engine: Optional[OrchestrationEngine] = None,
+            heavy_model: str = DEFAULT_HEAVY_MODEL,
+            triage_model: str = DEFAULT_TRIAGE_MODEL,
+            db_path: Optional[Union[str, Path]] = None,
+            concierge_min_confidence: float = DEFAULT_CONCIERGE_MIN_CONFIDENCE,
     ):
         ensure_ecosystem_directories()
         self.db_path: Path = Path(db_path) if db_path else PROJECT_MEMORY_DIR
@@ -131,34 +131,42 @@ class CharonDaemon:
         self.state_mgr = StateManager()
         self.ledger = ExecutionLedger()
         self.workspace_mgr = WorkspaceManager()
-        self.queue = PersistentTaskQueue(state_manager=self.state_mgr)
+
+        # Replaced PersistentTaskQueue with CoordinatorJournal
+        self.journal = CoordinatorJournal(state_manager=self.state_mgr)
 
         if engine:
             self.engine = engine
-            self.orchestrator = engine.orchestrator
+            self.orchestrator = SessionGateway(engine=self.engine, journal=self.journal)
         else:
-            self.orchestrator = SessionGateway(
-                db_path=self.db_path,
+            self.engine = OrchestrationEngine(
                 heavy_model=heavy_model,
                 triage_model=triage_model,
+                state_manager=self.state_mgr,
+                ledger=self.ledger,
             )
-            self.engine = OrchestrationEngine(orchestrator=self.orchestrator)
+            self.orchestrator = SessionGateway(engine=self.engine, journal=self.journal)
 
-        # Initialize Concierge with confidence threshold guardrails
-        self.concierge = ConciergeService(min_confidence=concierge_min_confidence)
+        # Initialize Concierge with confidence threshold guardrails and required LLM client
+        llm_instance = getattr(self.engine, "llm_client", getattr(self.engine, "llm", self.engine))
+        self.concierge = ConciergeService(
+            llm_client=llm_instance,
+            min_confidence=concierge_min_confidence
+        )
+
         self.emitter = EventEmitter()
         self.gatekeeper = GatekeeperManager()
 
         # Bind gateway components directly to engine context
         self.engine.bind_gateway_context(
-            gatekeeper=self.gatekeeper,
             emitter=self.emitter,
-            concierge=self.concierge,
+            state_manager=self.state_mgr,
+            ledger=self.ledger,
         )
 
-        # Updated TelemetryReporter instantiation passing state_manager for ticker provider
+        # Updated TelemetryReporter instantiation pointing to the new journal
         self.telemetry = TelemetryReporter(
-            queue_provider=self.queue.qsize,
+            queue_provider=self.journal.qsize if hasattr(self.journal, "qsize") else lambda: 0,
             gatekeeper_status_provider=lambda: self.gatekeeper.awaiting_approval,
             task_provider=lambda: self.emitter.current_task_id,
             state_manager=self.state_mgr,
@@ -269,25 +277,36 @@ class CharonDaemon:
             await asyncio.sleep(10)
 
         # Recover pending or interrupted tasks from SQLite state DB upon daemon startup
-        recovered_count = await self.queue.initialize_and_recover()
-        logger.info(
-            f"Charon daemon persistent queue processor operational. "
-            f"Recovered {recovered_count} task(s) from persistent state storage."
-        )
+        if hasattr(self.journal, "initialize_and_recover"):
+            recovered_count = await self.journal.initialize_and_recover()
+            logger.info(
+                f"Charon daemon persistent journal processor operational. "
+                f"Recovered {recovered_count} task(s) from persistent state storage."
+            )
 
         while True:
             try:
-                item = await self.queue.get()
+                item = await self.journal.get()
             except asyncio.CancelledError:
                 break
 
-            task_id = item.get("task_id")
-            client_id = item.get("client_id")
-            user_input = str(item.get("prompt", "")).strip()
-            agent_override_str = item.get("agent_override")
-            routing_hint_payload = item.get("routing_hint")
-            approval_id = item.get("approval_id")
-            decision = item.get("decision")
+            # Safely handle both legacy dictionary payloads and new typed JournalEntry objects
+            if isinstance(item, dict):
+                task_id = item.get("task_id")
+                client_id = item.get("client_id")
+                user_input = str(item.get("prompt", "")).strip()
+                agent_override_str = item.get("target_role", item.get("agent_override"))
+                routing_hint_payload = item.get("routing_hint")
+                approval_id = item.get("approval_id")
+                decision = item.get("decision")
+            else:
+                task_id = getattr(item, "task_id", None)
+                client_id = getattr(item, "client_id", None)
+                user_input = str(getattr(item, "prompt", "")).strip()
+                agent_override_str = getattr(item, "target_role", getattr(item, "agent_override", None))
+                routing_hint_payload = getattr(item, "routing_hint", None)
+                approval_id = getattr(item, "approval_id", None)
+                decision = getattr(item, "decision", None)
 
             try:
                 self.emitter.set_context(task_id=task_id, client_id=client_id)
@@ -393,7 +412,7 @@ class CharonDaemon:
                     routing_hint=routing_hint_payload,
                 )
 
-                if result and not result.startswith("[Awaiting Authorization]"):
+                if result and not str(result).startswith("[Awaiting Authorization]"):
                     if task_id:
                         await self.state_mgr.update_status(task_id, TaskStatus.COMPLETED)
                         await self.ledger.log_event(
@@ -409,12 +428,12 @@ class CharonDaemon:
                         user_input=user_input,
                         result_text=result,
                         completed_action=agent_override_str or "task_execution",
-                        params=item,
+                        params=item if isinstance(item, dict) else item.__dict__ if hasattr(item, "__dict__") else None,
                     )
 
                     await self.emitter.emit_completed(result)
 
-                elif result and result.startswith("[Awaiting Authorization]"):
+                elif result and str(result).startswith("[Awaiting Authorization]"):
                     if task_id:
                         await self.state_mgr.update_status(
                             task_id,
@@ -430,7 +449,7 @@ class CharonDaemon:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"Error processing queue item for task '{task_id}': {e}", exc_info=True)
+                logger.error(f"Error processing journal entry for task '{task_id}': {e}", exc_info=True)
                 if task_id:
                     await self.state_mgr.update_status(
                         task_id, TaskStatus.FAILED, error_message=str(e)
@@ -443,7 +462,8 @@ class CharonDaemon:
                 await self.emitter.emit_completed(f"[System Error]: {str(e)}")
             finally:
                 self.emitter.clear_context()
-                self.queue.task_done()
+                if hasattr(self.journal, "task_done"):
+                    self.journal.task_done()
 
     async def shutdown(self) -> None:
         """

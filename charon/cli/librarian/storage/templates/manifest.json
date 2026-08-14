@@ -5,7 +5,7 @@
   "category": "{{CATEGORY}}",
   "author": "Charon Librarian",
   "shelf_tags": ["search", "keywords", "here"],
-  "allowed_agents": ["*"],
+  "allowed_agents": [],
   "system_requirements": [],
   "supported_actions": {
     "example_action": {

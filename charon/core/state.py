@@ -1,11 +1,11 @@
 """
 charon/core/state.py
-System Version: v0.3.3 | File Revision: 1.4.0
+System Version: v0.5.0 | File Revision: 2.0.0
 
 Module: Persistent Task State Machine & Idle Ticker Feed Coordinator
-Tracks task execution status, execution plans, step outputs, Gatekeeper approval state,
+Tracks task execution status, execution plans, Work Contract artifact outputs, Gatekeeper approval state,
 and idle notification ticker items across daemon restarts via DAL Repositories.
-Adheres to the Janitorial Working Anchor by enforcing role-aware metadata & resilient state transitions.
+Fully aligned with the Work Contract paradigm, enforcing declarative role routing over legacy micro-skills.
 """
 
 import asyncio
@@ -20,10 +20,11 @@ import uuid
 from charon.config.paths import STATE_DB_PATH
 from charon.db.repositories import TaskRepository, TickerRepository
 
-logger = logging.getLogger("Charon.Core.State")
+logger = logging.getLogger("charon.core.state")
 
 
 class TaskStatus(str, Enum):
+    """Immutable state machine states for Coordinator task execution."""
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
@@ -39,7 +40,7 @@ class StateManager:
         # 1. Fallback to canonical STATE_DB_PATH if not provided
         target_path = Path(db_path) if db_path else STATE_DB_PATH
 
-        # 2. Janitorial Guard: Protect against directory paths passed by callers
+        # 2. Structural Guard: Protect against directory paths passed by callers
         if target_path.is_dir():
             logger.warning(
                 f"StateManager received directory path '{target_path}'. "
@@ -73,20 +74,18 @@ class StateManager:
         task_id: str,
         prompt: str,
         client_id: Optional[str] = None,
-        agent_override: Optional[str] = None,
         target_role: Optional[str] = None,
-        action_name: Optional[str] = None,
+        agent_override: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Insert new task entry into state ledger.
+        """Insert new declarative task entry into the state ledger.
 
-        Janitorial Working Anchor Compliance:
-        - Normalizes role-based abstractions (`target_role` vs `agent_override`).
-        - Captures `action_name` for dynamic route auditing.
+        Work Contract Paradigm Compliance:
+        - Drops legacy `action_name` micro-targeting.
+        - Strictly tracks high-level `target_role` assignments.
         """
-        # Preserve Janitorial Role Abstraction across parameter aliases
-        effective_role = agent_override or target_role or kwargs.get("action")
-        effective_action = action_name or kwargs.get("action_name") or kwargs.get("action")
+        # Resolve the definitive target role (supporting legacy kwargs from journal routing)
+        effective_role = target_role or agent_override
 
         await asyncio.to_thread(
             self.task_repo.create_task,
@@ -94,7 +93,7 @@ class StateManager:
             prompt=prompt,
             status=TaskStatus.PENDING.value,
             client_id=client_id,
-            agent_override=effective_role,
+            agent_override=effective_role,  # Maintained as column name in legacy SQLite schema
         )
 
         return {
@@ -102,9 +101,7 @@ class StateManager:
             "status": TaskStatus.PENDING.value,
             "prompt": prompt,
             "client_id": client_id,
-            "agent_override": effective_role,
-            "target_role": target_role or effective_role,
-            "action_name": effective_action,
+            "target_role": effective_role,
         }
 
     async def update_status(
@@ -114,7 +111,7 @@ class StateManager:
         error_message: Optional[str] = None,
         approval_id: Optional[str] = None,
     ) -> None:
-        """Update task status and associated error or approval metadata safely."""
+        """Update task status and associated diagnostic or approval metadata safely."""
         status_val = status.value if isinstance(status, Enum) else str(status)
 
         await asyncio.to_thread(
@@ -128,7 +125,7 @@ class StateManager:
     async def save_plan(
         self, task_id: str, plan_steps: List[Dict[str, Any]]
     ) -> None:
-        """Persist generated orchestration execution plan with resilient JSON encoding."""
+        """Persist generated Blackboard execution plan with resilient JSON encoding."""
         try:
             plan_str = json.dumps(plan_steps, default=str)
         except Exception as e:
@@ -148,11 +145,11 @@ class StateManager:
         step_index: int,
         step_results: Dict[str, Any],
     ) -> None:
-        """Update current step execution progress and store step output results."""
+        """Update current step execution progress and store Work Contract artifact results."""
         try:
             results_str = json.dumps(step_results, default=str)
         except Exception as e:
-            logger.error(f"Failed to serialize step results for task '{task_id}': {e}")
+            logger.error(f"Failed to serialize Work Contract artifact for task '{task_id}': {e}")
             results_str = json.dumps({"error": "Serialization failed", "details": str(e)})
 
         await asyncio.to_thread(
