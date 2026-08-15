@@ -1,4 +1,9 @@
-"""Data normalization and hydration helpers for skill inspection."""
+"""
+charon/cli/librarian/tui/inspector/helpers.py
+System Version: v0.2.0 | File Revision: 3.3.0
+
+Module: Data normalization and hydration helpers for skill inspection.
+"""
 
 import json
 from pathlib import Path

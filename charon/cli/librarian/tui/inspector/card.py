@@ -1,11 +1,16 @@
-"""Control flow and interaction loops for inspecting skills."""
+"""
+charon/cli/librarian/tui/inspector/card.py
+System Version: v0.2.0 | File Revision: 3.3.0
+
+Module: Control flow and interaction loops for inspecting skills.
+"""
 
 import sys
 from typing import Any, Dict, List
 from rich.console import Console
 from rich.prompt import Prompt
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.ingestion import run_edit
 from charon.cli.librarian.tui.components import display_skill_table
 from charon.cli.librarian.tui.inspector.actions import (

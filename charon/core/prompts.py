@@ -74,7 +74,7 @@ def build_routing_prompt(
     # Lazy synchronization pass if database context is missing
     if not roster_items and not routing_rules:
         try:
-            from charon.cli.librarian.database import run_sync
+            from charon.cli.database import run_sync
             run_sync()
             roster_items = repo.get_active_role_roster() if hasattr(repo, "get_active_role_roster") else []
             routing_rules = fetch_dynamic_routing_context(db_path)
@@ -131,7 +131,7 @@ def build_extraction_prompt(
     # Lazy synchronization pass & skill reindexing if skill schema state is missing
     if not capabilities:
         try:
-            from charon.cli.librarian.database import run_sync
+            from charon.cli.database import run_sync
             from charon.core.skills.librarian import SkillLibrarian
 
             run_sync()

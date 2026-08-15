@@ -1,9 +1,9 @@
 """
 charon/cli/librarian/cli.py
-System Version: v0.2.0 | File Revision: 2.0.0
+System Version: v0.2.0 | File Revision: 2.2.0
 
 Module: CLI subcommands dispatcher and TUI session launcher for Charon Librarian.
-Aligned with Schema V3.
+Aligned with Schema V3. Decoupled data execution from presentation rendering.
 """
 
 import argparse
@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from charon.cli.librarian.database import run_audit, run_sync
+from charon.cli.librarian.db import perform_state_audit, run_sync
 from charon.cli.librarian.ingestion import run_create, run_edit, run_ingest
 from charon.cli.librarian.lifecycle import (
     run_delete_skill,
@@ -26,6 +26,7 @@ from charon.cli.librarian.permissions import (
     set_default_action,
 )
 from charon.cli.librarian.purge_gaps import purge_resolved_gaps
+from charon.cli.librarian.tui.diagnostics import _render_drift_audit_report
 
 
 def main(args: Optional[List[str]] = None) -> int:
@@ -106,9 +107,14 @@ def main(args: Optional[List[str]] = None) -> int:
     elif parsed.subcommand == "check":
         return run_check(paths=parsed.paths, auto_fix=parsed.fix)
     elif parsed.subcommand == "sync":
-        return run_sync()
+        sync_results = run_sync()
+        synced_count = sync_results.get("registered_handlers", 0)
+        print(f"✓ Re-indexed filesystem manifests into SQLite registry ({synced_count} active handler(s)).")
+        return 0 if sync_results.get("success", False) else 1
     elif parsed.subcommand == "audit":
-        return run_audit()
+        audit_data = perform_state_audit()
+        _render_drift_audit_report(audit_data)
+        return 0 if audit_data.get("drift_count", 0) == 0 else 1
     elif parsed.subcommand in ("grant", "revoke"):
         return run_permission_change(
             skill_id=parsed.skill_id,

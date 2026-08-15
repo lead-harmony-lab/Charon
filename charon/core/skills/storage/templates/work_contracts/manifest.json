@@ -1,0 +1,16 @@
+{
+  "skill_id": "core_planner_contract",
+  "version": "2.0.0",
+  "skill_type": "work_contract",
+  "category": "metacognition",
+  "status": "ACTIVE",
+  "allowed_agents": ["planner"],
+  "actions": [
+    {
+      "action_name": "autonomous_plan_draft",
+      "handler_name": "PlannerWorkContract",
+      "description": "Primary ReAct loop for metacognitive task breakdown and DAG generation.",
+      "parameters": {}
+    }
+  ]
+}

@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from charon.cli.librarian.database import flag_quarantined_orphans, register_skill_in_db
+from charon.cli.librarian.db import flag_quarantined_orphans, register_skill_in_db
 from charon.cli.librarian.utils import (
     SKILLS_TEMPLATES_DIR,
     derive_action_name,
@@ -35,7 +35,6 @@ from charon.config.paths import (
 SKILLS_QUARANTINE_DIR = PKG_QUARANTINE_SKILLS_DIR
 SKILLS_STAGED_DIR = PKG_STAGED_SKILLS_DIR
 SKILLS_DYNAMIC_DIR = PKG_DYNAMIC_SKILLS_DIR
-SKILLS_TEMPLATES_DIR = SKILLS_TEMPLATES_DIR
 
 
 def get_quarantine_skills_summary() -> List[Dict[str, str]]:
@@ -57,14 +56,14 @@ def get_quarantine_skills_summary() -> List[Dict[str, str]]:
                 "name": item.name,
                 "type": "Directory Package",
                 "status": status,
-                "path": str(item)
+                "path": str(item),
             })
         elif item.suffix == ".py":
             summary.append({
                 "name": item.name,
                 "type": "Standalone Script",
                 "status": "Pending Sanitization",
-                "path": str(item)
+                "path": str(item),
             })
 
     return summary
@@ -99,14 +98,14 @@ def get_staged_skills_summary() -> List[Dict[str, str]]:
                 "name": item.name,
                 "type": "Directory Package",
                 "status": status,
-                "path": str(item)
+                "path": str(item),
             })
         elif item.suffix == ".py":
             summary.append({
                 "name": item.name,
                 "type": "Standalone Script",
                 "status": "Unmanifested",
-                "path": str(item)
+                "path": str(item),
             })
 
     return summary

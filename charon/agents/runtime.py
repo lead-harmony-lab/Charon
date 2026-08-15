@@ -1,13 +1,13 @@
 """
 charon/agents/runtime.py
-System Version: v0.5.3 | File Revision: 2.4.0
+System Version: v0.5.3 | File Revision: 2.5.0
 
 Universal Data-Driven Agent Runtime.
 Instantiated dynamically by the Router using metadata stored in SQLite agent_registry.
 Acts as the hardware container that executes an assigned Work Contract (Default Action).
 """
 
-import json
+import importlib
 import logging
 from typing import Any, Callable, Dict, List, Optional, Union
 from pydantic import BaseModel
@@ -24,7 +24,7 @@ class RuntimeAgent(BaseAgent):
     """
     Universal concrete implementation of BaseAgent.
     Hydrated with persona, default_action_contract, and database metadata.
-    Delegates all execution routing to its bound Work Contract.
+    Delegates all execution routing to its bound Work Contract via SkillLibrarian resolution.
     """
 
     def __init__(
@@ -45,7 +45,6 @@ class RuntimeAgent(BaseAgent):
             ledger=kwargs.get("ledger")
         )
 
-        # Safely utilize the sanitized self.agent_id for fallbacks
         self.name = display_name or self.agent_id.capitalize()
         self.description = description
         self.priority_weight = priority_weight
@@ -59,8 +58,7 @@ class RuntimeAgent(BaseAgent):
         # 2. Hydrate the Execution Envelope (Work Contract)
         self.work_contract = self._instantiate_contract(default_action_contract)
 
-        # We bind the agent's telemetry methods directly to the contract
-        # so the contract can broadcast its internal LLM state to the Coordinator.
+        # 3. Bind the agent's telemetry methods directly to the contract
         if self.work_contract:
             self.work_contract.bind_telemetry(self.report_trace)
             # self.work_contract.bind_cot(self.log_cot)  # Enable when CoT integration is ready
@@ -68,24 +66,55 @@ class RuntimeAgent(BaseAgent):
     def _instantiate_contract(self, contract_name: str) -> Optional[BaseWorkContract]:
         """
         Dynamically loads the Work Contract class required by this agent.
-
-        Injects the Gatekeeper and the `execute_sub_skill` bridge into the contract
-        so it can securely route dynamic skill requests through CBAC and the Librarian SSOT.
+        Queries the database via SkillLibrarian for the physical file location.
         """
         logger.info(f"[{self.agent_id}] Binding Work Contract envelope: {contract_name}")
 
-        # Note: Replace this block with your actual dynamic class registry loader.
-        # ContractClass = get_contract_class_from_registry(contract_name)
-        # if ContractClass:
-        #     return ContractClass(
-        #         agent_id=self.agent_id,
-        #         gatekeeper=self.gatekeeper,
-        #         tool_executor=self.execute_sub_skill
-        #     )
+        if not self.librarian:
+            logger.error(f"[{self.agent_id}] Librarian missing. Cannot resolve contract '{contract_name}'.")
+            return None
 
-        # Returning None here temporarily for architectural scaffolding;
-        # normally this raises an error if the contract doesn't exist.
-        return None
+        # 1. Fetch the raw metadata manifest for the default_action
+        # We don't pass role_name here because the default_action is structurally guaranteed
+        # via the agent_registry FK, regardless of peripheral agent_skill_map entries.
+        contract_manifest = self.librarian.get_action_manifest(contract_name)
+
+        if not contract_manifest:
+            logger.error(f"[{self.agent_id}] Contract '{contract_name}' not found in DB registry.")
+            return None
+
+        # Handle object or dict manifest access securely
+        get_val = lambda k: contract_manifest.get(k) if isinstance(contract_manifest, dict) else getattr(contract_manifest, k, None)
+
+        raw_path = get_val("entry_file_path")
+        class_name = get_val("handler_name")
+
+        if not raw_path or not class_name:
+            logger.error(f"[{self.agent_id}] Invalid registry entry for '{contract_name}'. Missing file/handler.")
+            return None
+
+        # 2. Normalize file paths to Python module notation (e.g. charon/contracts/planner.py -> charon.contracts.planner)
+        module_path = raw_path
+        if module_path.endswith('.py'):
+            module_path = module_path[:-3]
+        module_path = module_path.replace('/', '.').replace('\\', '.')
+
+        # 3. Dynamically import and hydrate the contract
+        try:
+            logger.debug(f"[{self.agent_id}] Importing {class_name} from {module_path}")
+            module = importlib.import_module(module_path)
+            ContractClass = getattr(module, class_name)
+
+            return ContractClass(
+                agent_id=self.agent_id,
+                gatekeeper=self.gatekeeper,
+                tool_executor=self.execute_sub_skill,
+                ledger=self.ledger
+            )
+
+        except (ImportError, AttributeError, Exception) as e:
+            logger.error(f"[{self.agent_id}] Critical failure instantiating contract {contract_name}: {e}")
+            return None
 
     def execute_task(
         self,
@@ -103,8 +132,7 @@ class RuntimeAgent(BaseAgent):
 
         if not self.work_contract:
             raise RuntimeError(
-                f"[FAIL-FAST] Agent '{self.agent_id}' has no bound Work Contract. "
-                "Execution aborted."
+                f"[FAIL-FAST] Agent '{self.agent_id}' has no bound Work Contract. Execution aborted."
             )
 
         if not self.librarian:
@@ -116,7 +144,6 @@ class RuntimeAgent(BaseAgent):
         authorized_tools_names = self.librarian.list_available_actions(self.agent_id)
 
         # Re-hydrate the full tool manifests so the Contract can natively translate them
-        # into function-calling schemas (action_parameters) for the LLM.
         authorized_tools = []
         for tool_name in authorized_tools_names:
             manifest = self.librarian.get_action_manifest(tool_name, self.agent_id)

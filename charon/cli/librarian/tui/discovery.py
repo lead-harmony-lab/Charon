@@ -1,9 +1,9 @@
 """
 charon/cli/librarian/tui/discovery.py
-System Version: v0.1.0 | File Revision: 2.5.0
+System Version: v0.2.0 | File Revision: 3.0.0
 
-Module: V3-aligned skill discovery, manifest parsing, database permission queries,
-agent default skill bindings, and decoupled dual-pathway integrity auditing.
+Module: Discovery, system dependency validation, and manifest inspection UI orchestrator.
+Database operations are fully decoupled and delegated to charon.cli.librarian.db.
 """
 
 import importlib.util
@@ -11,9 +11,19 @@ import json
 import logging
 from pathlib import Path
 import shutil
-import sqlite3
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Set
 
+from charon.cli.librarian.db import (
+    get_active_agent_ids,
+    get_open_gaps_count,
+    get_quarantined_orphans_count,
+    get_resolved_gaps_count,
+    get_skill_defaults,
+    get_skill_permissions,
+    grant_agent_permission_db,
+    revoke_agent_permission_db,
+    set_agent_default_skill_db,
+)
 from charon.config.paths import (
     DYNAMIC_SKILLS_DIR,
     PKG_DYNAMIC_SKILLS_DIR,
@@ -51,120 +61,8 @@ def is_requirement_installed(req: str) -> bool:
 
 
 def get_active_db_agent_ids() -> Set[str]:
-    """Queries active agent_ids from agent_registry in charon_state.db."""
-    if not STATE_DB_PATH.exists():
-        return set()
-    try:
-        with get_connection(STATE_DB_PATH, read_only=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT agent_id FROM agent_registry WHERE is_active = 1")
-            return {row[0] for row in cursor.fetchall()}
-    except Exception as e:
-        logger.debug(f"Failed to query active agents from state DB: {e}")
-        return set()
-
-
-def resolve_skill_contract(
-    cursor: sqlite3.Cursor, identifier: str
-) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Resolves any identifier (folder name, manifest ID, DB skill_id, or action_name)
-    against skill_registry. Returns (action_name, skill_id).
-    """
-    if not identifier:
-        return (None, None)
-
-    norm_id = identifier.replace("sk_", "").strip()
-
-    # 1. Exact match against action_name or skill_id variants
-    cursor.execute(
-        """
-        SELECT action_name, skill_id FROM skill_registry 
-        WHERE action_name = ? OR skill_id = ? OR skill_id = ? OR action_name = ?
-        """,
-        (identifier, identifier, f"sk_{norm_id}", norm_id),
-    )
-    row = cursor.fetchone()
-    if row:
-        return (row[0] or row[1], row[1])
-
-    # 2. Path-based resolution (handles Unix '/' and Windows '\' path separators)
-    cursor.execute(
-        """
-        SELECT action_name, skill_id FROM skill_registry 
-        WHERE entry_file_path LIKE ? OR entry_file_path LIKE ?
-           OR entry_file_path LIKE ? OR entry_file_path LIKE ?
-        """,
-        (f"%/{identifier}/%", f"%/{norm_id}/%", f"%\\{identifier}\\%", f"%\\{norm_id}\\%"),
-    )
-    row = cursor.fetchone()
-    if row:
-        return (row[0] or row[1], row[1])
-
-    return (None, None)
-
-
-def get_skill_permissions() -> Dict[str, Set[str]]:
-    """Queries DB agent_skill_map to map authorized agent_ids to skill_ids and action_names."""
-    skill_map: Dict[str, Set[str]] = {}
-
-    if not STATE_DB_PATH.exists():
-        return skill_map
-
-    try:
-        with get_connection(STATE_DB_PATH, read_only=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT asm.skill_id, asm.agent_id, sr.action_name
-                FROM agent_skill_map asm
-                LEFT JOIN skill_registry sr ON (asm.skill_id = sr.skill_id OR asm.skill_id = sr.action_name)
-                """
-            )
-            for db_skill_id, agent_id, action_name in cursor.fetchall():
-                if db_skill_id:
-                    skill_map.setdefault(db_skill_id, set()).add(agent_id)
-                    norm_id = db_skill_id.lower().replace("sk_", "")
-                    skill_map.setdefault(norm_id, set()).add(agent_id)
-                if action_name:
-                    skill_map.setdefault(action_name, set()).add(agent_id)
-    except Exception as e:
-        logger.debug(f"Failed to query permissions from agent_skill_map: {e}")
-
-    return skill_map
-
-
-def get_skill_defaults() -> Dict[str, Set[str]]:
-    """Queries state DB to map skill_ids and action_names to agent_ids using them as default actions."""
-    default_map: Dict[str, Set[str]] = {}
-
-    if not STATE_DB_PATH.exists():
-        return default_map
-
-    try:
-        with get_connection(STATE_DB_PATH, read_only=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT s.skill_id, s.action_name, a.agent_id, a.default_action
-                FROM agent_registry a
-                LEFT JOIN skill_registry s ON (a.default_action = s.action_name OR a.default_action = s.skill_id)
-                WHERE a.is_active = 1 AND a.default_action IS NOT NULL
-                """
-            )
-            for db_skill_id, action_name, agent_id, default_action in cursor.fetchall():
-                if db_skill_id:
-                    default_map.setdefault(db_skill_id, set()).add(agent_id)
-                    norm_id = db_skill_id.lower().replace("sk_", "")
-                    default_map.setdefault(norm_id, set()).add(agent_id)
-                if action_name:
-                    default_map.setdefault(action_name, set()).add(agent_id)
-                if default_action:
-                    default_map.setdefault(default_action, set()).add(agent_id)
-    except Exception as e:
-        logger.debug(f"Failed to query default action mappings: {e}")
-
-    return default_map
+    """Facade for active agent lookup."""
+    return get_active_agent_ids()
 
 
 def _sync_manifest_allowed_agents(skill_id: str, allowed_agents: List[str]) -> None:
@@ -195,135 +93,21 @@ def _sync_manifest_allowed_agents(skill_id: str, allowed_agents: List[str]) -> N
 
 def grant_agent_permission(agent_id: str, skill_id: str) -> None:
     """Grants an agent permission for a skill in agent_skill_map and updates manifest.json."""
-    if not STATE_DB_PATH.exists() or not skill_id:
-        return
-    try:
-        with get_connection(STATE_DB_PATH) as conn:
-            cursor = conn.cursor()
-            _, target_sk_id = resolve_skill_contract(cursor, skill_id)
-            if not target_sk_id:
-                target_sk_id = skill_id
-
-            # Validate skill existence in skill_registry to prevent foreign key violations
-            cursor.execute("SELECT 1 FROM skill_registry WHERE skill_id = ?", (target_sk_id,))
-            if not cursor.fetchone():
-                logger.warning(
-                    f"Cannot grant permission: skill '{target_sk_id}' is not yet indexed in skill_registry."
-                )
-                return
-
-            cursor.execute(
-                """
-                INSERT INTO agent_skill_map (agent_id, skill_id) 
-                VALUES (?, ?)
-                ON CONFLICT(agent_id, skill_id) DO NOTHING
-                """,
-                (agent_id, target_sk_id),
-            )
-            conn.commit()
-
-            # Sync updated permissions to disk manifest
-            cursor.execute(
-                "SELECT DISTINCT agent_id FROM agent_skill_map WHERE skill_id = ?",
-                (target_sk_id,),
-            )
-            authorized_agents = sorted([row[0] for row in cursor.fetchall()])
-            _sync_manifest_allowed_agents(target_sk_id, authorized_agents)
-    except Exception as e:
-        logger.error(f"Failed to grant agent permission: {e}")
+    success, target_sk_id, authorized_agents = grant_agent_permission_db(agent_id, skill_id)
+    if success and target_sk_id:
+        _sync_manifest_allowed_agents(target_sk_id, authorized_agents)
 
 
 def revoke_agent_permission(agent_id: str, skill_id: str) -> None:
     """Revokes an agent's permission for a skill in agent_skill_map and updates manifest.json."""
-    if not STATE_DB_PATH.exists() or not skill_id:
-        return
-    try:
-        with get_connection(STATE_DB_PATH) as conn:
-            cursor = conn.cursor()
-            _, matched_skill_id = resolve_skill_contract(cursor, skill_id)
-            target_sk_id = matched_skill_id or skill_id
-            norm_id = skill_id.replace("sk_", "")
-
-            cursor.execute(
-                """
-                DELETE FROM agent_skill_map 
-                WHERE agent_id = ? AND (skill_id = ? OR skill_id = ? OR skill_id = ?)
-                """,
-                (agent_id, skill_id, matched_skill_id or "", f"sk_{norm_id}"),
-            )
-            conn.commit()
-
-            # Sync remaining permissions to disk manifest
-            cursor.execute(
-                "SELECT DISTINCT agent_id FROM agent_skill_map WHERE skill_id = ?",
-                (target_sk_id,),
-            )
-            remaining_agents = sorted([row[0] for row in cursor.fetchall()])
-            _sync_manifest_allowed_agents(target_sk_id, remaining_agents)
-    except Exception as e:
-        logger.error(f"Failed to revoke agent permission: {e}")
+    success, target_sk_id, remaining_agents = revoke_agent_permission_db(agent_id, skill_id)
+    if success and target_sk_id:
+        _sync_manifest_allowed_agents(target_sk_id, remaining_agents)
 
 
 def set_agent_default_skill(agent_id: str, skill_id: str) -> bool:
-    """
-    Binds a skill as default_action target for an agent in Schema V3.
-    Resolves through skill_registry first. Fails if unresolvable.
-    """
-    if not STATE_DB_PATH.exists() or not agent_id or not skill_id:
-        return False
-    try:
-        with get_connection(STATE_DB_PATH) as conn:
-            cursor = conn.cursor()
-
-            action_name, matched_skill_id = resolve_skill_contract(cursor, skill_id)
-
-            if not action_name or not matched_skill_id:
-                logger.error(
-                    f"Refusing default assignment: '{skill_id}' cannot be resolved in skill_registry."
-                )
-                return False
-
-            # 1. Update agent_registry default_action contract
-            cursor.execute(
-                """
-                UPDATE agent_registry
-                SET default_action = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE agent_id = ?
-                """,
-                (action_name, agent_id),
-            )
-
-            # 2. Ensure agent_skill_map link exists
-            cursor.execute(
-                """
-                INSERT INTO agent_skill_map (agent_id, skill_id)
-                VALUES (?, ?)
-                ON CONFLICT(agent_id, skill_id) DO NOTHING
-                """,
-                (agent_id, matched_skill_id),
-            )
-
-            # 3. Update is_default state in agent_skill_map if column exists
-            try:
-                cursor.execute(
-                    "UPDATE agent_skill_map SET is_default = 0 WHERE agent_id = ?",
-                    (agent_id,),
-                )
-                cursor.execute(
-                    """
-                    UPDATE agent_skill_map SET is_default = 1 
-                    WHERE agent_id = ? AND (skill_id = ? OR skill_id = ?)
-                    """,
-                    (agent_id, skill_id, matched_skill_id),
-                )
-            except sqlite3.OperationalError:
-                pass
-
-            conn.commit()
-            return True
-    except Exception as e:
-        logger.error(f"Failed to set default skill for agent '{agent_id}': {e}")
-        return False
+    """Binds a skill as default_action target for an agent in Schema V3."""
+    return set_agent_default_skill_db(agent_id, skill_id)
 
 
 def discover_skills() -> List[Dict[str, Any]]:
@@ -379,7 +163,6 @@ def discover_skills() -> List[Dict[str, Any]]:
 
                 authorized_agents = sorted(list(auth_set))
 
-                # Auto-upgrade prototype manifests missing the standard 'allowed_agents' field
                 if "allowed_agents" not in data:
                     data["allowed_agents"] = authorized_agents
                     try:
@@ -423,70 +206,20 @@ def discover_skills() -> List[Dict[str, Any]]:
     return list(skills_by_id.values())
 
 
-# ============================================================================
-# DECOUPLED DUAL-PATHWAY AUDITING
-# ============================================================================
-
 def audit_agent_skill_integrity() -> Dict[str, Any]:
-    """
-    PATHWAY 1: Database Integrity Audit.
-    Validates that active agents have valid default_action targets in skill_registry
-    and corresponding authorization entries in agent_skill_map.
-    """
-    audit_report: Dict[str, Any] = {
-        "is_clean": True,
-        "orphan_default_actions": [],
+    """PATHWAY 1: Database Integrity Audit. Delegates query to pure database audit module."""
+    from charon.cli.librarian.db import perform_state_audit
+    audit_data = perform_state_audit()
+    return {
+        "is_clean": audit_data.get("drift_count", 0) == 0,
+        "orphan_default_actions": audit_data.get("orphaned_mappings", []),
         "missing_permission_links": [],
-        "active_agents_checked": 0,
+        "active_agents_checked": len(audit_data.get("skills", [])),
     }
-
-    if not STATE_DB_PATH.exists():
-        return audit_report
-
-    try:
-        with get_connection(STATE_DB_PATH, read_only=True) as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                SELECT 
-                    a.agent_id,
-                    a.default_action,
-                    s.skill_id AS skill_in_registry,
-                    asm.skill_id AS linked_in_map
-                FROM agent_registry a
-                LEFT JOIN skill_registry s ON (a.default_action = s.action_name OR a.default_action = s.skill_id)
-                LEFT JOIN agent_skill_map asm ON a.agent_id = asm.agent_id AND s.skill_id = asm.skill_id
-                WHERE a.is_active = 1
-                """
-            )
-            rows = cursor.fetchall()
-            audit_report["active_agents_checked"] = len(rows)
-
-            for agent_id, default_action, skill_in_registry, linked_in_map in rows:
-                if default_action and not skill_in_registry:
-                    audit_report["is_clean"] = False
-                    audit_report["orphan_default_actions"].append(
-                        {"agent_id": agent_id, "default_action": default_action}
-                    )
-                elif skill_in_registry and not linked_in_map:
-                    audit_report["is_clean"] = False
-                    audit_report["missing_permission_links"].append(
-                        {"agent_id": agent_id, "skill_id": skill_in_registry, "default_action": default_action}
-                    )
-
-    except Exception as e:
-        logger.error(f"Failed to execute database agent-skill integrity audit: {e}")
-
-    return audit_report
 
 
 def audit_filesystem_manifest_health() -> Dict[str, Any]:
-    """
-    PATHWAY 2: Filesystem Health Audit.
-    Scans physical disk roots, verifying manifest validation, plugin entrypoints,
-    and matching entries in skill_registry.
-    """
+    """PATHWAY 2: Filesystem Health Audit. Verifies physical disk roots against DB state."""
     audit_report: Dict[str, Any] = {
         "is_healthy": True,
         "unregistered_disk_skills": [],
@@ -535,55 +268,6 @@ def audit_filesystem_manifest_health() -> Dict[str, Any]:
                 audit_report["corrupt_manifests"].append({"path": str(manifest_path), "error": str(e)})
 
     return audit_report
-
-
-# ============================================================================
-# METRICS & STATE DB QUERIES
-# ============================================================================
-
-def get_quarantined_orphans_count() -> int:
-    """Queries count of quarantined/orphaned skills in charon_state.db."""
-    if not STATE_DB_PATH.exists():
-        return 0
-    try:
-        with get_connection(STATE_DB_PATH, read_only=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM skill_registry WHERE status = 'QUARANTINED'")
-            row = cursor.fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        logger.debug(f"Failed to query quarantined orphans count: {e}")
-        return 0
-
-
-def get_open_gaps_count() -> int:
-    """Queries count of open skill gaps in charon_state.db."""
-    if not STATE_DB_PATH.exists():
-        return 0
-    try:
-        with get_connection(STATE_DB_PATH, read_only=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM skill_gaps WHERE status = 'open'")
-            row = cursor.fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        logger.debug(f"Failed to query open gaps count: {e}")
-        return 0
-
-
-def get_resolved_gaps_count() -> int:
-    """Queries count of resolved skill gaps pending database purge."""
-    if not STATE_DB_PATH.exists():
-        return 0
-    try:
-        with get_connection(STATE_DB_PATH, read_only=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM skill_gaps WHERE status = 'resolved'")
-            row = cursor.fetchone()
-            return row[0] if row else 0
-    except Exception as e:
-        logger.debug(f"Failed to query resolved gaps count: {e}")
-        return 0
 
 
 def save_manifest(skill: Dict[str, Any], librarian: SkillLibrarian) -> None:

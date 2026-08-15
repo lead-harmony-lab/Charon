@@ -1,6 +1,8 @@
 """
 charon/cli/librarian/tui/components.py
-System Version: v0.2.0 | File Revision: 2.1.0
+System Version: v0.2.0 | File Revision: 2.4.0
+
+Module: System Version: v0.2.0 | File Revision: 2.1.0
 """
 
 from typing import Any, Dict, List

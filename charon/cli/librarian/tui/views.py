@@ -1,6 +1,8 @@
 """
 charon/cli/librarian/tui/views.py
 System Version: v0.2.0 | File Revision: 3.3.0
+
+Module:
 """
 
 import sys
@@ -9,7 +11,7 @@ from typing import List, Optional
 from rich.console import Console
 from rich.prompt import Prompt
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.tui.components import (
     display_skill_table,
     render_header,

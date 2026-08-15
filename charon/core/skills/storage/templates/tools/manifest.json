@@ -1,0 +1,26 @@
+{
+  "skill_id": "sys_web_scraper",
+  "version": "2.0.0",
+  "skill_type": "tool",
+  "category": "recon",
+  "status": "ACTIVE",
+  "allowed_agents": ["scout", "generalist"],
+  "actions": [
+    {
+      "action_name": "web_scrape_markdown",
+      "handler_name": "scrape_to_markdown",
+      "description": "Extracts and sanitizes the content of a target URL into clean markdown.",
+      "parameters": {
+        "url": {"type": "string", "description": "The target website URL"}
+      }
+    },
+    {
+      "action_name": "web_extract_links",
+      "handler_name": "extract_hrefs",
+      "description": "Returns a list of all hyperlinks found on the target web page.",
+      "parameters": {
+        "url": {"type": "string"}
+      }
+    }
+  ]
+}

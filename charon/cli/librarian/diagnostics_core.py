@@ -1,13 +1,23 @@
+"""
+charon/cli/librarian/diagnostics_core.py
+System Version: v0.2.2 | File Revision: 2.4.0
+
+Module: System diagnostics, manifest normalization, binary system dependencies, and AST healing.
+All database operations are strictly delegated to charon.cli.librarian.db.
+"""
+
 import ast
 import json
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from charon.cli.librarian.database import (
-    STATE_DB_PATH,
-    _audit_agent_skill_map,
-    get_connection,
+from charon.cli.librarian.db import (
+    cleanup_orphaned_agent_mappings_db,
+    get_deficient_skills_db,
+    get_quarantined_skills_db,
+    purge_skill_records,
+    repair_quarantined_skill_db,
 )
 from charon.config.paths import (
     DYNAMIC_SKILLS_DIR,
@@ -28,24 +38,12 @@ PACKAGE_MAP = {
 
 def cleanup_orphaned_agent_mappings() -> int:
     """Purges orphaned records from agent_skill_map where skill_id no longer exists."""
-    if not STATE_DB_PATH.exists():
-        return 0
-
-    with get_connection(STATE_DB_PATH) as conn:
-        cursor = conn.cursor()
-        orphans = _audit_agent_skill_map(conn)
-        if not orphans:
-            return 0
-
-        cursor.execute("""
-            DELETE FROM agent_skill_map
-            WHERE skill_id NOT IN (SELECT skill_id FROM skill_registry)
-        """)
-        conn.commit()
-        return len(orphans)
+    return cleanup_orphaned_agent_mappings_db()
 
 
-def normalize_manifest_action_contracts(librarian: SkillLibrarian, dry_run: bool = False) -> int:
+def normalize_manifest_action_contracts(
+    librarian: SkillLibrarian, dry_run: bool = False
+) -> int:
     """Converts supported_actions keys into 3-node canonical names on disk."""
     if hasattr(librarian, "_discover_manifests"):
         manifests = librarian._discover_manifests()
@@ -55,7 +53,12 @@ def normalize_manifest_action_contracts(librarian: SkillLibrarian, dry_run: bool
             "search_paths",
             [PKG_STAGED_SKILLS_DIR, PKG_DYNAMIC_SKILLS_DIR, DYNAMIC_SKILLS_DIR],
         )
-        manifests = [p for path in search_paths if path.exists() for p in path.rglob("manifest.json")]
+        manifests = [
+            p
+            for path in search_paths
+            if path.exists()
+            for p in path.rglob("manifest.json")
+        ]
 
     updated_count = 0
 
@@ -82,18 +85,37 @@ def normalize_manifest_action_contracts(librarian: SkillLibrarian, dry_run: bool
                         raw_action=raw_action,
                     )
                 else:
-                    clean_cat = category.lower().strip().replace("-", "_").replace(" ", "_")
-                    clean_verb = raw_action.lower().strip().replace("-", "_").replace(" ", "_")
+                    clean_cat = (
+                        category.lower().strip().replace("-", "_").replace(" ", "_")
+                    )
+                    clean_verb = (
+                        raw_action.lower().strip().replace("-", "_").replace(" ", "_")
+                    )
 
-                    if clean_verb.count("_") >= 2 and clean_verb.startswith(f"{clean_cat}_"):
+                    if clean_verb.count("_") >= 2 and clean_verb.startswith(
+                        f"{clean_cat}_"
+                    ):
                         canonical_name = clean_verb
                     else:
-                        clean_skill = skill_id.lower().strip().replace("-", "_").replace(" ", "_").replace("skill_", "")
-                        context_node = clean_skill[len(f"{clean_cat}_"):].split("_")[0] if clean_skill.startswith(
-                            f"{clean_cat}_") else clean_skill.split("_")[0]
+                        clean_skill = (
+                            skill_id.lower()
+                            .strip()
+                            .replace("-", "_")
+                            .replace(" ", "_")
+                            .replace("skill_", "")
+                        )
+                        context_node = (
+                            clean_skill[len(f"{clean_cat}_") :].split("_")[0]
+                            if clean_skill.startswith(f"{clean_cat}_")
+                            else clean_skill.split("_")[0]
+                        )
                         if not context_node or context_node == clean_verb:
                             base_verb = clean_verb.split("_")[0]
-                            context_node = f"{base_verb}r" if base_verb.endswith("e") else f"{base_verb}er"
+                            context_node = (
+                                f"{base_verb}r"
+                                if base_verb.endswith("e")
+                                else f"{base_verb}er"
+                            )
                         canonical_name = f"{clean_cat}_{context_node}_{clean_verb}"
 
                 if canonical_name != raw_action:
@@ -101,8 +123,13 @@ def normalize_manifest_action_contracts(librarian: SkillLibrarian, dry_run: bool
 
                 if isinstance(action_def, dict):
                     action_payload = dict(action_def)
-                    if "handler" not in action_payload and "handler_name" not in action_payload:
-                        action_payload["handler"] = f"handle_{raw_action.replace(' ', '_').replace('-', '_')}"
+                    if (
+                        "handler" not in action_payload
+                        and "handler_name" not in action_payload
+                    ):
+                        action_payload["handler"] = (
+                            f"handle_{raw_action.replace(' ', '_').replace('-', '_')}"
+                        )
                 else:
                     action_payload = {
                         "description": f"Executes '{canonical_name}'",
@@ -116,7 +143,9 @@ def normalize_manifest_action_contracts(librarian: SkillLibrarian, dry_run: bool
                 data["supported_actions"] = normalized_actions
                 updated_count += 1
                 if not dry_run:
-                    manifest_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+                    manifest_path.write_text(
+                        json.dumps(data, indent=2) + "\n", encoding="utf-8"
+                    )
         except Exception:
             pass
 
@@ -125,26 +154,15 @@ def normalize_manifest_action_contracts(librarian: SkillLibrarian, dry_run: bool
 
 def get_deficient_skills() -> List[Tuple]:
     """Retrieves skills missing parameters or artifacts."""
-    if not STATE_DB_PATH.exists():
-        return []
-    with get_connection(STATE_DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT skill_id, action_name, handler_name, entry_file_path 
-            FROM skill_registry
-            WHERE parameters = '{}' 
-               OR consumed_artifacts = '[]' 
-               OR produced_artifacts = '[]'
-        """)
-        return cursor.fetchall()
+    return get_deficient_skills_db()
 
 
 def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
-    """
-    Cracks open plugin.py via AST and heals manifest.json.
-    Auto-injects the alias contract into plugin.py if it is missing,
-    ensuring the DB's 3-node contract maps to the dev's code.
-    Returns: (healed_count, verified_empty_count, not_found_count)
+    """Cracks open plugin.py via AST and heals manifest.json.
+
+    Auto-injects the alias contract into plugin.py if it is missing, ensuring
+    the DB's 3-node contract maps to the dev's code. Returns: (healed_count,
+    verified_empty_count, not_found_count)
     """
     healed_count = 0
     verified_empty = 0
@@ -191,7 +209,10 @@ def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == db_handler_name:
+                    if (
+                        isinstance(target, ast.Name)
+                        and target.id == db_handler_name
+                    ):
                         alias_found = True
                         if isinstance(node.value, ast.Name):
                             target_func_name = node.value.id
@@ -210,14 +231,18 @@ def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
                 action_def = supported_actions.get(action_name)
 
                 if isinstance(action_def, dict):
-                    dev_handler = action_def.get("handler", action_def.get("handler_name"))
+                    dev_handler = action_def.get(
+                        "handler", action_def.get("handler_name")
+                    )
                 elif isinstance(action_def, str):
                     dev_handler = action_def
 
                 if dev_handler and dev_handler != db_handler_name:
                     # Physically append the alias to the python file
                     with open(entry_file, "a", encoding="utf-8") as f:
-                        f.write(f"\n\n# [Charon Harness] Alias Contract\n{db_handler_name} = {dev_handler}\n")
+                        f.write(
+                            f"\n\n# [Charon Harness] Alias Contract\n{db_handler_name} = {dev_handler}\n"
+                        )
 
                     # Reload the AST with the new alias injected
                     tree = ast.parse(entry_file.read_text(encoding="utf-8"))
@@ -230,7 +255,10 @@ def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
         # 3. AST PASS TWO: Locate Function Definition
         handler_node = None
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == target_func_name:
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == target_func_name
+            ):
                 handler_node = node
                 break
 
@@ -263,7 +291,7 @@ def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
             derived_params[arg_name] = {
                 "type": arg_type,
                 "description": f"Auto-extracted parameter: {arg_name}",
-                "required": required
+                "required": required,
             }
 
         # 5. Extract Keyword-Only Arguments
@@ -282,7 +310,7 @@ def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
             derived_params[arg_name] = {
                 "type": arg_type,
                 "description": f"Auto-extracted kwarg: {arg_name}",
-                "required": required
+                "required": required,
             }
 
         # 6. Extract Return Annotations
@@ -291,7 +319,9 @@ def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
                 derived_produced.append(ast.unparse(handler_node.returns))
             elif isinstance(handler_node.returns, ast.Name):
                 derived_produced.append(handler_node.returns.id)
-            elif isinstance(handler_node.returns, ast.Subscript) and hasattr(handler_node.returns.slice, "id"):
+            elif isinstance(
+                handler_node.returns, ast.Subscript
+            ) and hasattr(handler_node.returns.slice, "id"):
                 derived_produced.append(handler_node.returns.slice.id)
 
         # 7. Determine if legitimately empty
@@ -306,14 +336,24 @@ def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
 
             modified = False
 
-            if "supported_actions" in manifest_data and action_name in manifest_data["supported_actions"]:
+            if (
+                "supported_actions" in manifest_data
+                and action_name in manifest_data["supported_actions"]
+            ):
                 action_def = manifest_data["supported_actions"][action_name]
                 if not action_def.get("parameters") and derived_params:
                     action_def["parameters"] = derived_params
                     modified = True
             else:
-                if not manifest_data.get("action_parameters", {}).get(action_name) and derived_params:
-                    manifest_data.setdefault("action_parameters", {})[action_name] = derived_params
+                if (
+                    not manifest_data.get("action_parameters", {}).get(
+                        action_name
+                    )
+                    and derived_params
+                ):
+                    manifest_data.setdefault("action_parameters", {})[
+                        action_name
+                    ] = derived_params
                     modified = True
 
             if not manifest_data.get("produced_artifacts") and derived_produced:
@@ -335,34 +375,19 @@ def process_ast_healing(deficient_skills: List[Tuple]) -> Tuple[int, int, int]:
 
 def get_quarantined_skills() -> List[Tuple]:
     """Fetches list of currently quarantined skills."""
-    if not STATE_DB_PATH.exists():
-        return []
-    with get_connection(STATE_DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT skill_id, entry_file_path, quarantine_reason FROM skill_registry WHERE status = 'QUARANTINED'")
-        return cursor.fetchall()
+    return get_quarantined_skills_db()
 
 
 def delete_quarantined_skill(skill_id: str) -> None:
-    """Deletes a skill from the registry."""
-    with get_connection(STATE_DB_PATH) as conn:
-        conn.execute("DELETE FROM skill_registry WHERE skill_id = ?", (skill_id,))
-        conn.commit()
+    """Deletes a skill and its agent mappings from the database."""
+    purge_skill_records(skill_id)
 
 
 def repair_quarantined_skill(skill_id: str, path_str: str) -> bool:
     """Attempts to reactivate a quarantined skill if files exist."""
     entry_path = Path(path_str) if path_str else None
     if entry_path and entry_path.exists():
-        with get_connection(STATE_DB_PATH) as conn:
-            conn.execute("""
-                UPDATE skill_registry 
-                SET status = 'ACTIVE', quarantine_reason = NULL, updated_at = CURRENT_TIMESTAMP 
-                WHERE skill_id = ?
-            """, (skill_id,))
-            conn.commit()
-        return True
+        return repair_quarantined_skill_db(skill_id)
     return False
 
 

@@ -8,7 +8,6 @@ directory constants, and summary providers.
 """
 
 from charon.cli.librarian.cli import main
-from charon.cli.librarian.database import run_audit, run_sync
 from charon.cli.librarian.ingestion import (
     SKILLS_DYNAMIC_DIR,
     SKILLS_QUARANTINE_DIR,
@@ -36,9 +35,6 @@ __all__ = [
     # Manifest Handlers
     "run_check",
     "validate_manifest_file",
-    # Database Handlers
-    "run_sync",
-    "run_audit",
     # Ingestion & Quarantine Operations
     "run_create",
     "run_ingest",

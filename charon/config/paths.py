@@ -21,9 +21,11 @@ BASE_DIR = CHARON_PKG_DIR.parent                          # .../Charon
 # Internal Module Directories
 CONFIG_DIR = CHARON_PKG_DIR / "config"
 DEFINITIONS_DIR = CONFIG_DIR / "definitions"
-CLI_DIR = CHARON_PKG_DIR / "cli"
-LIBRARIAN_DIR = CLI_DIR / "librarian"
-STORAGE_DIR = LIBRARIAN_DIR / "storage"
+
+# Move storage into core/skills
+CORE_DIR = CHARON_PKG_DIR / "core"
+SKILLS_DIR = CORE_DIR / "skills"
+STORAGE_DIR = SKILLS_DIR / "storage"
 
 # =============================================================================
 # 1. XDG Base Directory Specification Standards
@@ -68,7 +70,7 @@ TASK_QUEUE_DB_PATH = STATE_DB_PATH  # Task queue state shares StateManager DB
 DYNAMIC_SKILLS_DIR = CHARON_DATA_DIR / "storage"
 WORKSPACES_DIR = CHARON_DATA_DIR / "workspaces"
 
-# Repository-Internal 3-Tier Skill Storage (Modularized inside Librarian)
+# Repository-Internal 3-Tier Skill Storage (Now homed in core/skills)
 QUARANTINE_SKILLS_DIR = STORAGE_DIR / "quarantine"
 PKG_QUARANTINE_SKILLS_DIR = QUARANTINE_SKILLS_DIR  # Alias for consistency
 PKG_STAGED_SKILLS_DIR = STORAGE_DIR / "staged"

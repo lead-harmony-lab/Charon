@@ -1,6 +1,6 @@
 """
 charon/cli/librarian/lifecycle.py
-System Version: v0.2.1 | File Revision: 2.2.1
+System Version: v0.2.2 | File Revision: 2.3.0
 
 Module: Skill lifecycle operations: promotion, demotion/quarantine, renaming, and purging.
 Features strict isolation guards to prevent unintended directory deletion or database record wipes.
@@ -15,9 +15,11 @@ from typing import List, Optional
 
 from rich.console import Console
 
-from charon.cli.librarian.database import (
+from charon.cli.librarian.db import (
     get_skill_by_id,
+    get_skill_entry_and_status,
     migrate_skill_id_in_db,
+    purge_skill_records,
     run_sync,
 )
 from charon.cli.librarian.manifest import validate_manifest_file
@@ -26,9 +28,7 @@ from charon.config.paths import (
     DYNAMIC_SKILLS_DIR,
     PKG_DYNAMIC_SKILLS_DIR,
     PKG_STAGED_SKILLS_DIR,
-    STATE_DB_PATH,
 )
-from charon.db.connection import get_connection
 
 console = Console()
 logger = logging.getLogger("charon.cli.librarian.lifecycle")
@@ -45,50 +45,33 @@ def _slugify(text: str) -> str:
 def _locate_skill_manifest(
     skill_id: str, stage_filter: Optional[str] = None
 ) -> Optional[Path]:
-    """Locates manifest.json for a given skill_id by querying skill_registry's
-    entry_file_path or scanning physical storage directories. Handles case-insensitive
-    stage filtering ('STAGED' vs 'Staged' vs 'staged' path).
+    """Locates manifest.json for a given skill_id by querying database entry paths
+    or scanning physical storage directories.
     """
-    clean_id = _slugify(skill_id)
+    # 1. Primary lookup via Database DAL helper
+    rows = get_skill_entry_and_status(skill_id)
+    for entry_path_str, status_val in rows:
+        if not entry_path_str:
+            continue
+        entry_path = Path(entry_path_str)
+        manifest_path = entry_path.parent / "manifest.json"
+        if manifest_path.exists():
+            if not stage_filter:
+                return manifest_path
 
-    # 1. Primary lookup using entry_file_path from SQLite skill_registry
-    if STATE_DB_PATH.exists():
-        try:
-            with get_connection(STATE_DB_PATH, read_only=True) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT entry_file_path, status
-                    FROM skill_registry
-                    WHERE skill_id = ? OR LOWER(skill_id) = LOWER(?) OR LOWER(skill_id) = LOWER(?)
-                    """,
-                    (skill_id, skill_id, clean_id),
-                )
-                rows = cursor.fetchall()
-                for entry_path_str, status_val in rows:
-                    if not entry_path_str:
-                        continue
-                    entry_path = Path(entry_path_str)
-                    manifest_path = entry_path.parent / "manifest.json"
-                    if manifest_path.exists():
-                        if not stage_filter:
-                            return manifest_path
+            sf = stage_filter.upper()
+            status_str = (status_val or "").upper()
+            path_str = str(manifest_path).lower()
 
-                        sf = stage_filter.upper()
-                        status_str = (status_val or "").upper()
-                        path_str = str(manifest_path).lower()
-
-                        if sf == "STAGED" and (
-                            status_str == "STAGED" or "/staged/" in path_str
-                        ):
-                            return manifest_path
-                        elif sf == "DYNAMIC" and (
-                            status_str in ("DYNAMIC", "USER DYNAMIC")
-                            or "/dynamic/" in path_str
-                        ):
-                            return manifest_path
-        except Exception as e:
-            logger.debug(f"DB lookup failed in _locate_skill_manifest: {e}")
+            if sf == "STAGED" and (
+                status_str == "STAGED" or "/staged/" in path_str
+            ):
+                return manifest_path
+            elif sf == "DYNAMIC" and (
+                status_str in ("DYNAMIC", "USER DYNAMIC")
+                or "/dynamic/" in path_str
+            ):
+                return manifest_path
 
     # 2. Filesystem fallback search across storage directories
     search_roots = []
@@ -116,9 +99,9 @@ def _locate_skill_manifest(
                 folder_name = m_path.parent.name
 
                 if (
-                    m_id.lower() in (skill_id.lower(), clean_id.lower())
+                    m_id.lower() in (skill_id.lower(), _slugify(skill_id).lower())
                     or folder_name.lower()
-                    in (skill_id.lower(), clean_id.lower())
+                    in (skill_id.lower(), _slugify(skill_id).lower())
                 ):
                     if not stage_filter:
                         return m_path
@@ -143,30 +126,8 @@ def _locate_skill_manifest(
 
 
 def _cleanup_agent_mappings_for_skill(skill_id: str) -> None:
-    """Purges corresponding bindings from agent_skill_map BEFORE database resync.
-
-    SAFETY GUARANTEE: Uses case-insensitive equality scoped strictly to `skill_id`.
-    Never executes global table resets or un-parameterized DELETE statements.
-    """
-    if not STATE_DB_PATH.exists() or not skill_id:
-        return
-    try:
-        with get_connection(STATE_DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM agent_skill_map WHERE LOWER(skill_id) = LOWER(?)",
-                (skill_id,),
-            )
-            cursor.execute(
-                "DELETE FROM skill_registry WHERE LOWER(skill_id) = LOWER(?)",
-                (skill_id,),
-            )
-            conn.commit()
-            logger.info(
-                f"Purged database records scoped strictly to skill_id='{skill_id}'"
-            )
-    except Exception as e:
-        logger.warning(f"Failed to purge DB records for skill '{skill_id}': {e}")
+    """Purges corresponding bindings from agent_skill_map BEFORE database resync."""
+    purge_skill_records(skill_id)
 
 
 def run_promote(skill_id: str) -> int:
@@ -178,7 +139,6 @@ def run_promote(skill_id: str) -> int:
         )
         return 1
 
-    # Pre-check schema validity before promoting
     is_valid, errors, _ = validate_manifest_file(staged_manifest, auto_fix=True)
     if not is_valid:
         console.print(
@@ -187,7 +147,6 @@ def run_promote(skill_id: str) -> int:
         )
         return 1
 
-    # Resolve distinct action naming contract before promotion
     action_name, was_fixed = ensure_distinct_action_name(
         str(staged_manifest), skill_id
     )
@@ -222,7 +181,6 @@ def run_promote(skill_id: str) -> int:
 
     shutil.rmtree(staged_dir)
 
-    # Clean up redundant dynamic dir if target moved locations
     if (
         old_dynamic_dir
         and old_dynamic_dir.exists()
@@ -291,19 +249,16 @@ def run_rename(old_skill_id: str, new_skill_id: str) -> int:
     skill_dir = manifest_path.parent
     target_dir = skill_dir.parent / clean_new_id
 
-    # Collision guard
     if target_dir.exists() and target_dir.resolve() != skill_dir.resolve():
         console.print(
             f"[bold red]Error:[/bold red] Target directory already exists: {target_dir}"
         )
         return 1
 
-    # 1. Update manifest on disk
     with open(manifest_path, "r+", encoding="utf-8") as f:
         data = json.load(f)
         data["skill_id"] = clean_new_id
 
-        # Update action_name if it matched the old ID
         if data.get("action_name") in (old_skill_id, clean_old_id):
             data["action_name"] = clean_new_id
 
@@ -312,23 +267,19 @@ def run_rename(old_skill_id: str, new_skill_id: str) -> int:
         f.truncate()
         f.write("\n")
 
-    # 2. Rename directory on disk
     if skill_dir.name != clean_new_id:
         skill_dir.rename(target_dir)
         manifest_path = target_dir / "manifest.json"
         console.print(f"[dim]Renamed skill folder {skill_dir} -> {target_dir}[/dim]")
 
-    # 3. Atomic Database Migration (Handles FKs, skill_registry, and agent_skill_map)
     success, msg = migrate_skill_id_in_db(old_skill_id, clean_new_id)
     if not success:
-        # Fallback retry with slugified old ID if case/formatting differed
         success, msg = migrate_skill_id_in_db(clean_old_id, clean_new_id)
 
     if not success:
         console.print(f"[bold red]❌ Database Migration Failed:[/bold red] {msg}")
         return 1
 
-    # 4. Resolve action names and sync state
     ensure_distinct_action_name(str(manifest_path), clean_new_id)
 
     console.print(
@@ -338,13 +289,7 @@ def run_rename(old_skill_id: str, new_skill_id: str) -> int:
 
 
 def run_delete_skill(skill_id: str) -> int:
-    """Purges directory instances of a specific skill and cleans corresponding SQLite records.
-
-    SAFETY ISOLATION GUARANTEES:
-      1. Requires explicit non-empty skill_id (prevents empty/wildcard matching).
-      2. Validates child subfolder depth to prevent wiping root skill directories.
-      3. Scopes DB removal queries strictly to the target skill_id.
-    """
+    """Purges directory instances of a specific skill and cleans corresponding SQLite records."""
     clean_id = _slugify(skill_id)
     if not clean_id and not skill_id:
         console.print(

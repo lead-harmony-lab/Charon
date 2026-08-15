@@ -1,4 +1,9 @@
-"""UI views and modal components for skill inspection."""
+"""
+charon/cli/librarian/tui/inspector/views.py
+System Version: v0.2.0 | File Revision: 3.3.0
+
+Module: UI views and modal components for skill inspection.
+"""
 
 from typing import Any, Dict, List
 from rich.console import Console
@@ -6,7 +11,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from charon.cli.librarian.database import get_plugin_actions, get_system_action_contract
+from charon.cli.database import get_plugin_actions, get_system_action_contract
 from charon.cli.librarian.tui.inspector.helpers import (
     extract_action_desc,
     extract_handler_name,

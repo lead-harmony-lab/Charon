@@ -1,9 +1,9 @@
 """
 charon/cli/librarian/tui/diagnostics.py
-System Version: v0.2.0 | File Revision: 3.0.0
+System Version: v0.2.0 | File Revision: 3.1.0
 
 Module: Diagnostic UI View. Handles presentation layer and user prompting.
-All business logic is delegated to diagnostics_core.py.
+All business logic is delegated to diagnostics_core.py and charon.cli.librarian.db.
 """
 
 import sys
@@ -14,9 +14,9 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from charon.cli.librarian.database import (
+from charon.cli.database import (
     flag_quarantined_orphans,
-    run_audit,
+    perform_state_audit,
     run_sync,
 )
 from charon.cli.librarian.ingestion import flag_quarantined_orphans as sync_orphans
@@ -42,6 +42,7 @@ from charon.cli.librarian.diagnostics_core import (
 )
 
 console = Console()
+
 
 def run_diagnostics_suite(librarian: SkillLibrarian) -> None:
     """Main interactive entry point for Option [3]: Diagnostics & Maintenance."""
@@ -199,7 +200,12 @@ def _ui_maintenance_routine(librarian: SkillLibrarian) -> None:
     purged_maps = cleanup_orphaned_agent_mappings()
     console.print(f"  • Agent mapping integrity: [bold yellow]{purged_maps} purged[/bold yellow]" if purged_maps else "  • Agent mapping integrity: [green]OK[/green]")
 
-    run_sync()
+    sync_result = run_sync()
+    console.print(
+        f"  • Filesystem re-index: [bold green]COMPLETE[/bold green] "
+        f"([bold white]{sync_result['registered_handlers']}[/bold white] handlers active)"
+    )
+
     if hasattr(librarian, "reindex_skills"):
         librarian.reindex_skills()
         console.print("  • SkillLibrarian AST contract re-index: [green]COMPLETE[/green]")
@@ -207,11 +213,64 @@ def _ui_maintenance_routine(librarian: SkillLibrarian) -> None:
     console.print("\n[bold green]✅ Database and action contract maintenance complete.[/bold green]")
 
 
+def _render_drift_audit_report(audit_data: Dict) -> None:
+    """Renders formatted Rich tables and status text for state drift analysis."""
+    skills = audit_data.get("skills", [])
+    orphaned_mappings = audit_data.get("orphaned_mappings", [])
+    drift_count = audit_data.get("drift_count", 0)
+
+    if not skills and not orphaned_mappings:
+        console.print("[yellow]No skills discovered in SQLite or on disk.[/yellow]")
+        return
+
+    table = Table(title="Charon Skill Registry vs Filesystem Audit")
+    table.add_column("Manifest Skill ID", style="bold white")
+    table.add_column("Category", style="cyan")
+    table.add_column("Disk Actions", justify="center")
+    table.add_column("DB Indexed Actions", justify="center")
+    table.add_column("Drift Analysis", style="yellow")
+
+    for item in skills:
+        status = item["status"]
+        disk_cnt = item["disk_count"]
+        db_cnt = item["db_count"]
+
+        if status == "UNINDEXED":
+            analysis = "[bold red]Unindexed Skill[/bold red] (Run sync to index)"
+        elif status == "PARTIAL":
+            analysis = f"[bold yellow]Partial Actions Indexed[/bold yellow] ({item['missing_actions']} missing)"
+        else:
+            analysis = "[dim green]In Sync[/dim green]"
+
+        table.add_row(item["skill_id"], item["category"], str(disk_cnt), str(db_cnt), analysis)
+
+    console.print(table)
+
+    if orphaned_mappings:
+        console.print(f"\n[bold red]⚠️ agent_skill_map Integrity Faults ({len(orphaned_mappings)} found):[/bold red]")
+        map_table = Table(title="Orphaned Agent Skill Mappings")
+        map_table.add_column("Agent ID", style="bold cyan")
+        map_table.add_column("Missing Skill ID", style="bold red")
+        for agent_id, skill_id in orphaned_mappings:
+            map_table.add_row(agent_id, skill_id)
+        console.print(map_table)
+
+    if drift_count > 0:
+        console.print(
+            f"\n[bold yellow]⚠️ State Drift Detected:[/bold yellow] {drift_count} inconsistency(ies) found. "
+            f"Run [cyan]charon librarian sync[/cyan] to align database index with filesystem."
+        )
+    else:
+        console.print("\n[bold green]✅ Database, agent_skill_map, and Filesystem are 100% in sync.[/bold green]")
+
+
 def _ui_drift_audit(resolved_gaps: int) -> None:
     console.clear()
     console.print("[bold cyan]📋 SQLite vs Filesystem State Drift Audit[/bold cyan]\n")
     flag_quarantined_orphans()
-    run_audit()
+
+    audit_data = perform_state_audit()
+    _render_drift_audit_report(audit_data)
 
     purged_maps = cleanup_orphaned_agent_mappings()
     if purged_maps > 0:
@@ -274,7 +333,6 @@ def _ui_heal_manifests() -> None:
     console.print(
         f"Found [bold yellow]{len(deficient_skills)}[/bold yellow] skill action(s) missing metadata in the DB. Starting AST extraction...\n")
 
-    # Unpack the new robust metrics
     healed, verified, not_found = process_ast_healing(deficient_skills)
 
     if healed > 0:

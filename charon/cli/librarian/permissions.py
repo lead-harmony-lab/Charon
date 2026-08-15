@@ -1,9 +1,9 @@
 """
 charon/cli/librarian/permissions.py
-System Version: v0.2.0 | File Revision: 2.1.0
+System Version: v0.2.0 | File Revision: 2.2.0
 
-Module: DB-backed authorization management, default action configuration, inventory views,
-and agent registry queries. Aligned with Schema V3.
+Module: CLI permissions controller, default action configuration, inventory views,
+and agent registry display commands. Aligned with Schema V3.
 """
 
 import json
@@ -13,34 +13,20 @@ from typing import List, Optional
 from rich.console import Console
 from rich.table import Table
 
+from charon.cli.librarian.db import (
+    get_registered_agents,
+    get_skill_inventory_db,
+    grant_agent_permission_db,
+    revoke_agent_permission_db,
+    set_agent_default_skill_db,
+)
 from charon.config.paths import (
     DYNAMIC_SKILLS_DIR,
     PKG_DYNAMIC_SKILLS_DIR,
     PKG_STAGED_SKILLS_DIR,
-    STATE_DB_PATH,
 )
-from charon.db.connection import get_connection
 
 console = Console()
-
-
-def get_registered_agents() -> List[str]:
-    """
-    Retrieves a sorted list of registered agent identifiers from agent_registry in SQLite.
-    Falls back to system defaults if database tables are uninitialized or empty.
-    """
-    try:
-        with get_connection(STATE_DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT agent_id FROM agent_registry ORDER BY agent_id ASC")
-            rows = cursor.fetchall()
-            agents = [row[0] for row in rows if row[0]]
-            if agents:
-                return agents
-    except Exception:
-        pass
-
-    return ["executor", "coder", "researcher", "librarian"]
 
 
 def find_skill_manifest(
@@ -81,98 +67,43 @@ def run_permission_change(skill_id: str, agent_id: str, action: str) -> int:
         )
         return 1
 
-    with get_connection(STATE_DB_PATH) as conn:
-        cursor = conn.cursor()
+    if action_clean == "grant":
+        success, err_msg = grant_agent_permission_db(skill_id, agent_id)
+    else:
+        success, err_msg = revoke_agent_permission_db(skill_id, agent_id)
 
-        # Validate skill exists in registry
-        cursor.execute(
-            "SELECT skill_id FROM skill_registry WHERE skill_id = ? LIMIT 1",
-            (skill_id,),
+    if not success:
+        console.print(f"[bold red]Error:[/bold red] {err_msg}")
+        return 1
+
+    if action_clean == "grant":
+        console.print(
+            f"[bold green]✅ Granted[/bold green] agent '{agent_id}' access to skill '[bold cyan]{skill_id}[/bold cyan]'."
         )
-        if not cursor.fetchone():
-            console.print(
-                f"[bold red]Error:[/bold red] Skill ID '{skill_id}' not found in DB."
-            )
-            return 1
-
-        # Validate agent exists in registry
-        cursor.execute(
-            "SELECT agent_id FROM agent_registry WHERE agent_id = ? LIMIT 1",
-            (agent_id,),
+    else:
+        console.print(
+            f"[bold green]✅ Revoked[/bold green] agent '{agent_id}' access from skill '[bold cyan]{skill_id}[/bold cyan]'."
         )
-        if not cursor.fetchone():
-            console.print(
-                f"[bold red]Error:[/bold red] Agent ID '{agent_id}' not found in DB."
-            )
-            return 1
 
-        if action_clean == "grant":
-            cursor.execute(
-                """
-                INSERT INTO agent_skill_map (agent_id, skill_id)
-                VALUES (?, ?)
-                ON CONFLICT(agent_id, skill_id) DO NOTHING
-                """,
-                (agent_id, skill_id),
-            )
-            console.print(
-                f"[bold green]✅ Granted[/bold green] agent '{agent_id}' access to skill '[bold cyan]{skill_id}[/bold cyan]'."
-            )
-
-        elif action_clean == "revoke":
-            cursor.execute(
-                "DELETE FROM agent_skill_map WHERE agent_id = ? AND skill_id = ?",
-                (agent_id, skill_id),
-            )
-            console.print(
-                f"[bold green]✅ Revoked[/bold green] agent '{agent_id}' access from skill '[bold cyan]{skill_id}[/bold cyan]'."
-            )
-
-        conn.commit()
     return 0
 
 
 def set_default_action(agent_id: str, action_name: str) -> int:
     """Updates the default_action column in agent_registry for a specific agent."""
-    with get_connection(STATE_DB_PATH) as conn:
-        cursor = conn.cursor()
+    success, err_msg, warning_msg = set_agent_default_skill_db(
+        agent_id, action_name
+    )
 
-        # Ensure action exists in skill_registry and check status
-        cursor.execute(
-            "SELECT skill_id, status FROM skill_registry WHERE action_name = ? LIMIT 1",
-            (action_name,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            console.print(
-                f"[bold red]Error:[/bold red] Action '{action_name}' does not exist in skill_registry."
-            )
-            return 1
+    if warning_msg:
+        console.print(f"[bold yellow]Warning:[/bold yellow] {warning_msg}")
 
-        if row[1] != "ACTIVE":
-            console.print(
-                f"[bold yellow]Warning:[/bold yellow] Action '{action_name}' belongs to skill '{row[0]}' which has status '{row[1]}'."
-            )
+    if not success:
+        console.print(f"[bold red]Error:[/bold red] {err_msg}")
+        return 1
 
-        cursor.execute(
-            """
-            UPDATE agent_registry
-            SET default_action = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE agent_id = ?
-            """,
-            (action_name, agent_id),
-        )
-
-        if cursor.rowcount == 0:
-            console.print(
-                f"[bold red]Error:[/bold red] Agent '{agent_id}' not found in agent_registry."
-            )
-            return 1
-
-        conn.commit()
-        console.print(
-            f"[bold green]✅ Set default action for agent '[cyan]{agent_id}[/cyan]' to '[bold yellow]{action_name}[/bold yellow]'."
-        )
+    console.print(
+        f"[bold green]✅ Set default action for agent '[cyan]{agent_id}[/cyan]' to '[bold yellow]{action_name}[/bold yellow]'."
+    )
     return 0
 
 
@@ -185,33 +116,19 @@ def run_list() -> int:
     table.add_column("Authorized Agents", style="green")
     table.add_column("Category", style="yellow")
 
-    with get_connection(STATE_DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT 
-                s.skill_id,
-                s.action_name,
-                s.status,
-                s.category,
-                GROUP_CONCAT(DISTINCT asm.agent_id) AS agents
-            FROM skill_registry s
-            LEFT JOIN agent_skill_map asm ON s.skill_id = asm.skill_id
-            GROUP BY s.skill_id, s.action_name, s.status, s.category
-            ORDER BY s.skill_id ASC, s.action_name ASC
-            """
+    rows = get_skill_inventory_db()
+    for row in rows:
+        skill_id, action_name, status, category, agents = row
+        formatted_agents = (
+            agents.replace(",", ", ") if agents else "[dim]None[/dim]"
         )
-        rows = cursor.fetchall()
-        for row in rows:
-            skill_id, action_name, status, category, agents = row
-            formatted_agents = agents.replace(",", ", ") if agents else "[dim]None[/dim]"
-            table.add_row(
-                skill_id,
-                action_name,
-                status,
-                category or "General",
-                formatted_agents,
-            )
+        table.add_row(
+            skill_id,
+            action_name,
+            status,
+            category or "General",
+            formatted_agents,
+        )
 
     console.print(table)
     console.print(f"\n[bold]Total Registered Actions:[/bold] {len(rows)}\n")

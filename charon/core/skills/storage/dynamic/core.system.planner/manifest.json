@@ -1,0 +1,37 @@
+{
+  "skill_id": "core.system.planner",
+  "skill_type": "system",
+  "version": "2.0.0",
+  "category": "Orchestration",
+  "status": "ACTIVE",
+  "system_requirements": [],
+  "allowed_agents": [
+    "role:system_planner"
+  ],
+  "actions": [
+    {
+      "action_name": "sys_synthesize_execution_plan",
+      "description": "Default execution envelope for the system_planner. Accepts a raw task payload and contextual tools, returning a structured PlanArtifact DAG.",
+      "handler_name": "PlannerWorkContract",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "user_query": {
+            "type": "string",
+            "description": "The raw task payload assigned by the Coordinator."
+          }
+        },
+        "required": [
+          "user_query"
+        ]
+      },
+      "consumed_artifacts": [
+        "UnfulfilledRequirement"
+      ],
+      "produced_artifacts": [
+        "PlanArtifact",
+        "DiagnosticArtifact"
+      ]
+    }
+  ]
+}

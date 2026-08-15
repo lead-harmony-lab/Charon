@@ -478,7 +478,7 @@ Provides backwards-compatible imports for CLI entrypoints and core handlers.
 """
 
 from charon.cli.librarian.cli import main
-from charon.cli.librarian.database import run_audit, run_sync
+from charon.cli.database import run_audit, run_sync
 from charon.cli.librarian.ingestion import run_create, run_edit, run_ingest
 from charon.cli.librarian.lifecycle import (
     run_delete_skill,
@@ -525,7 +525,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from charon.cli.librarian.database import run_audit, run_sync
+from charon.cli.database import run_audit, run_sync
 from charon.cli.librarian.ingestion import run_create, run_edit, run_ingest
 from charon.cli.librarian.lifecycle import (
     run_delete_skill,
@@ -672,7 +672,7 @@ if __name__ == "__main__":
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/cli/librarian/database.py`
+## Target File: `../charon/cli/database.py`
 
 ```python
 """
@@ -1190,7 +1190,7 @@ from typing import Optional, Tuple
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.manifest import validate_manifest_file
 from charon.cli.librarian.permissions import find_skill_manifest
 from charon.cli.librarian.service import register_and_bind_skill
@@ -1199,7 +1199,7 @@ from charon.config.paths import PKG_DYNAMIC_SKILLS_DIR, PKG_STAGED_SKILLS_DIR
 console = Console()
 
 SKILLS_TEMPLATES_DIR = (
-    Path(__file__).resolve().parents[2] / "skills" / "templates"
+        Path(__file__).resolve().parents[2] / "skills" / "templates"
 )
 
 
@@ -1217,7 +1217,7 @@ def is_skill_id_taken(skill_id: str) -> bool:
 
 
 def resolve_ingestion_skill_id(
-    source_path: Path, explicit_id: Optional[str] = None
+        source_path: Path, explicit_id: Optional[str] = None
 ) -> Optional[str]:
     """Interactively resolves and validates a non-colliding skill identifier with the user."""
     manifest_id = None
@@ -1283,7 +1283,7 @@ def resolve_ingestion_skill_id(
 
 
 def get_template_content(
-    filename: str, replacements: Optional[dict] = None
+        filename: str, replacements: Optional[dict] = None
 ) -> str:
     """Reads a template file from charon/skills/templates and replaces double-curly placeholders."""
     template_path = SKILLS_TEMPLATES_DIR / filename
@@ -1312,7 +1312,7 @@ def verify_plugin_entrypoint(plugin_path: Path) -> Tuple[bool, str]:
 
         # Plugin must define execute_action OR at least one handle_* function
         if "execute_action" not in declared_functions and not any(
-            f.startswith("handle_") for f in declared_functions
+                f.startswith("handle_") for f in declared_functions
         ):
             return (
                 False,
@@ -1516,7 +1516,7 @@ from typing import List, Optional
 
 from rich.console import Console
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.manifest import validate_manifest_file
 from charon.cli.librarian.permissions import find_skill_manifest
 from charon.config.paths import (
@@ -1618,9 +1618,9 @@ def run_promote(skill_id: str) -> int:
 
     # Clean up redundant dynamic dir if target moved locations
     if (
-        old_dynamic_dir
-        and old_dynamic_dir.exists()
-        and old_dynamic_dir.resolve() != target_dir.resolve()
+            old_dynamic_dir
+            and old_dynamic_dir.exists()
+            and old_dynamic_dir.resolve() != target_dir.resolve()
     ):
         shutil.rmtree(old_dynamic_dir)
         console.print(
@@ -2544,7 +2544,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.syntax import Syntax
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.forge import main as run_forge
 from charon.cli.librarian.ingestion import SKILLS_TEMPLATES_DIR, run_create, run_ingest
 from charon.cli.librarian.tui.diagnostics import run_diagnostics_suite
@@ -2792,7 +2792,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from charon.cli.librarian.database import run_audit, run_sync
+from charon.cli.database import run_audit, run_sync
 from charon.cli.librarian.purge_gaps import purge_resolved_gaps
 from charon.cli.librarian.tui.discovery import discover_skills, get_resolved_gaps_count
 from charon.core.skills import SkillLibrarian
@@ -2899,7 +2899,8 @@ def run_diagnostics_suite(librarian: SkillLibrarian):
             run_audit()
 
             if resolved_gaps > 0:
-                console.print(f"\n[bold yellow]⚠️ Drift Detected: {resolved_gaps} resolved gap(s) pending purge.[/bold yellow]")
+                console.print(
+                    f"\n[bold yellow]⚠️ Drift Detected: {resolved_gaps} resolved gap(s) pending purge.[/bold yellow]")
                 confirm = Prompt.ask("Purge resolved gaps and vacuum database?", choices=["y", "n"], default="y")
                 if confirm.lower() == "y":
                     purged = purge_resolved_gaps()
@@ -3527,7 +3528,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.ingestion import run_edit
 from charon.cli.librarian.lifecycle import (
     run_delete_skill,
@@ -3715,7 +3716,8 @@ def view_catalog(agents: List[str], librarian: SkillLibrarian, initial_filter: O
 
             target_agent = agents[int(agent_sel) - 1]
             filtered = [
-                s for s in skills if target_agent in s.get("authorized_agents", []) or "*" in s.get("authorized_agents", [])
+                s for s in skills if
+                target_agent in s.get("authorized_agents", []) or "*" in s.get("authorized_agents", [])
             ]
             title = f"Skills Authorized for: {target_agent}"
 
@@ -3730,7 +3732,7 @@ def view_catalog(agents: List[str], librarian: SkillLibrarian, initial_filter: O
 
 
 def inspect_skill_list(
-    skills: List[Dict[str, Any]], title: str, agents: List[str], librarian: SkillLibrarian
+        skills: List[Dict[str, Any]], title: str, agents: List[str], librarian: SkillLibrarian
 ):
     """Loops over a list of skills allowing item selection for detail inspection."""
     if not skills:
@@ -3796,7 +3798,8 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
             f"{urgent_banner}"
         )
 
-        console.print(Panel(card, title=f"Inspector: {skill['skill_id']}", border_style="blue", padding=(0, 2), expand=True))
+        console.print(
+            Panel(card, title=f"Inspector: {skill['skill_id']}", border_style="blue", padding=(0, 2), expand=True))
         console.print("[bold]Operations:[/bold]")
         console.print("  [1] Grant Agent Permission (SQLite)")
         console.print("  [2] Revoke Agent Permission (SQLite)")
@@ -3848,7 +3851,7 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
             for idx, a in enumerate(available_to_grant, start=1):
                 console.print(f"  [{idx}] {a}")
             sel = (
-                int(Prompt.ask("Agent", choices=[str(i) for i in range(1, len(available_to_grant) + 1)])) - 1
+                    int(Prompt.ask("Agent", choices=[str(i) for i in range(1, len(available_to_grant) + 1)])) - 1
             )
             target_agent = available_to_grant[sel]
 
@@ -3859,7 +3862,8 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
 
             skill.setdefault("authorized_agents", []).append(target_agent)
             skill["authorized_agents"].sort()
-            console.print(f"[bold green]✓ Granted {target_agent} access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
+            console.print(
+                f"[bold green]✓ Granted {target_agent} access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
             Prompt.ask("Press Enter to refresh")
 
         elif op == "2":
@@ -3882,12 +3886,14 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
             if target_agent in default_for:
                 default_for.remove(target_agent)
 
-            console.print(f"[bold green]✓ Revoked {target_agent} access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
+            console.print(
+                f"[bold green]✓ Revoked {target_agent} access to skill '{skill['skill_id']}' in SQLite DB[/bold green]")
             Prompt.ask("Press Enter to refresh")
 
         elif op == "3":
             if not auth_agents:
-                console.print("[yellow]No agents are currently authorized for this skill. Grant permission first.[/yellow]")
+                console.print(
+                    "[yellow]No agents are currently authorized for this skill. Grant permission first.[/yellow]")
                 Prompt.ask("Press Enter to continue")
                 continue
 
@@ -3910,7 +3916,8 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
                 skill["default_for_agents"].append(target_agent)
 
             was_modified = True
-            console.print(f"[bold green]✓ Set '{skill['skill_id']}' as default skill for agent '{target_agent}' in SQLite DB[/bold green]")
+            console.print(
+                f"[bold green]✓ Set '{skill['skill_id']}' as default skill for agent '{target_agent}' in SQLite DB[/bold green]")
             Prompt.ask("Press Enter to refresh")
 
         elif op == "4":

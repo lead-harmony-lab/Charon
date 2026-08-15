@@ -9,7 +9,7 @@ integrating interactive quarantine selection prompts and detailed outcome summar
 
 from pathlib import Path
 import sys
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.syntax import Syntax
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.forge import main as run_forge
 from charon.cli.librarian.ingestion import (
     SKILLS_QUARANTINE_DIR,

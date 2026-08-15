@@ -1,10 +1,11 @@
 """
 charon/cli/librarian/forge.py
-System Version: v0.2.0 | File Revision: 3.1.0
+System Version: v0.2.0 | File Revision: 3.2.0
 
 Module: Charon Skill Forge utility integrated within Librarian.
 Handles querying open skill gaps, forging candidate dynamic skill scaffolds,
 indexing dynamic skills, and resolving gaps in Schema V3.
+Decoupled DB state interactions to charon.cli.librarian.db.
 """
 
 import argparse
@@ -14,32 +15,24 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
 
-from charon.cli.librarian.service import register_and_bind_skill
+from charon.cli.librarian.db import (
+    get_open_gaps,
+    resolve_gap_db,
+    run_sync,
+)
 from charon.config.paths import (
-    DYNAMIC_SKILLS_DIR,
-    PKG_DYNAMIC_SKILLS_DIR,
     PKG_STAGED_SKILLS_DIR,
     STATE_DB_PATH,
 )
 from charon.core.skills import SkillLibrarian
-from charon.db.repositories import SkillGapRepository, SkillRepository
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] [FORGE] %(message)s")
 logger = logging.getLogger("charon.cli.librarian.forge")
 
 
 def fetch_open_gaps(db_path: Path = STATE_DB_PATH) -> List[Dict[str, Any]]:
-    """Fetches all open skill gaps from the state database via repository layer."""
-    if not Path(db_path).exists():
-        logger.warning(f"Database not found at {db_path}")
-        return []
-
-    try:
-        repo = SkillGapRepository(db_path)
-        return repo.get_open_gaps()
-    except Exception as e:
-        logger.error(f"Error querying skill_gaps table: {e}")
-        return []
+    """Fetches all open skill gaps from the state database via db package."""
+    return get_open_gaps(db_path=db_path)
 
 
 def forge_skill_scaffold(
@@ -106,53 +99,10 @@ def execute(agent_name: str, parameters: Dict[str, Any], raw_prompt: str = "") -
     return base_dir
 
 
-def register_disk_skills(db_path: Path = STATE_DB_PATH) -> int:
-    """Scans search paths, parses manifest.json files, and populates Schema V3 DB tables."""
-    search_paths = [PKG_DYNAMIC_SKILLS_DIR, PKG_STAGED_SKILLS_DIR, DYNAMIC_SKILLS_DIR]
-    count = 0
-
-    for search_path in search_paths:
-        expanded = Path(search_path).expanduser().resolve()
-        if not expanded.exists() or not expanded.is_dir():
-            continue
-        for manifest_path in expanded.rglob("manifest.json"):
-            try:
-                manifest_content = manifest_path.read_text(encoding="utf-8")
-                manifest_data = json.loads(manifest_content)
-                plugin_entry = manifest_path.parent / "plugin.py"
-
-                if not plugin_entry.exists():
-                    logger.warning(
-                        f"Skipping {manifest_data.get('skill_id', manifest_path.parent.name)}: missing plugin.py at {plugin_entry}"
-                    )
-                    continue
-
-                # Delegate directly to the V3 registration service
-                register_and_bind_skill(
-                    skill_manifest=manifest_data,
-                    entry_file_path=plugin_entry,
-                    db_path=db_path,
-                )
-                count += 1
-                logger.info(
-                    f"Indexed dynamic action(s) for '{manifest_data.get('skill_id')}' from {manifest_path}"
-                )
-            except Exception as exc:
-                logger.error(f"Error processing {manifest_path}: {exc}")
-
-    return count
-
-
 def sync_db(db_path: Path = STATE_DB_PATH) -> int:
     """Ensures schema consistency and re-indexes all disk skills into the registry."""
-    try:
-        repo = SkillRepository(str(db_path))
-        if hasattr(repo, "ensure_schema"):
-            repo.ensure_schema()
-    except Exception as exc:
-        logger.warning(f"Could not execute SkillRepository schema verification: {exc}")
-
-    return register_disk_skills(db_path)
+    sync_results = run_sync(db_path=db_path)
+    return sync_results.get("registered_handlers", 0)
 
 
 def promote_and_resolve_gap(
@@ -160,7 +110,7 @@ def promote_and_resolve_gap(
     skill_dir: Path,
     db_path: Path = STATE_DB_PATH,
 ) -> bool:
-    """Indexes newly forged skill via SkillLibrarian/register_disk_skills and marks gap as resolved."""
+    """Indexes newly forged skill via SkillLibrarian/run_sync and marks gap as resolved."""
     indexed_count = 0
     try:
         librarian = SkillLibrarian.get_instance()
@@ -173,17 +123,14 @@ def promote_and_resolve_gap(
 
     if indexed_count == 0:
         logger.info("Re-running V3 service sync fallback...")
-        indexed_count = register_disk_skills(db_path)
+        indexed_count = sync_db(db_path)
 
-    try:
-        repo = SkillGapRepository(db_path)
-        repo.resolve_gap(gap_id)
+    if resolve_gap_db(gap_id, db_path=db_path):
         logger.info(f"✅ Marked Gap ID {gap_id} as 'resolved' in state database.")
-    except Exception as e:
-        logger.error(f"Failed to resolve gap ID {gap_id} in database: {e}")
+        return True
+    else:
+        logger.error(f"Failed to resolve gap ID {gap_id} in database.")
         return False
-
-    return True
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -3103,7 +3103,7 @@ import json
 import logging
 from pathlib import Path
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.ingestion import run_create
 from charon.cli.librarian.lifecycle import run_promote
 from charon.cli.librarian.permissions import run_permission_change
@@ -3277,7 +3277,7 @@ import json
 import logging
 from pathlib import Path
 
-from charon.cli.librarian.database import run_sync
+from charon.cli.database import run_sync
 from charon.cli.librarian.ingestion import run_create
 from charon.cli.librarian.lifecycle import run_promote
 from charon.cli.librarian.permissions import run_permission_change
