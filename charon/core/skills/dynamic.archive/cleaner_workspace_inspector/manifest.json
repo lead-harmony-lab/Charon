@@ -1,0 +1,37 @@
+{
+  "skill_id": "cleaner_workspace_inspector",
+  "version": "1.0.0",
+  "description": "Inspects workspace structures, profiles file type counts, and lists active projects.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": [
+    "inspect",
+    "list",
+    "workspace",
+    "profiling"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
+  "supported_actions": {
+    "system_cleaner_list": {
+      "description": "Indexes active projects or generates a detailed structure breakdown of a target directory.",
+      "parameters": {
+        "project_name": {
+          "type": "string",
+          "description": "Name of the target project to inspect in detail.",
+          "required": false
+        },
+        "target_path": {
+          "type": "string",
+          "description": "Path to inspect or list projects from.",
+          "required": false
+        }
+      },
+      "handler": "handle_list_workspaces"
+    }
+  },
+  "allowed_agents": [
+    "cleaner"
+  ]
+}

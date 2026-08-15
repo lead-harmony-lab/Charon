@@ -1,0 +1,59 @@
+{
+  "skill_id": "fab_cam_slicer",
+  "version": "1.0.0",
+  "description": "CAM toolpath generation and 3D mesh slicing using CLI engines (PrusaSlicer, OrcaSlicer, Cura).",
+  "category": "Execution",
+  "author": "Charon Librarian",
+  "shelf_tags": [
+    "cam",
+    "slicing",
+    "gcode",
+    "prusa-slicer",
+    "orca-slicer",
+    "3d-printing"
+  ],
+  "system_requirements": [
+    "prusa-slicer"
+  ],
+  "supported_actions": {
+    "execution_fab_generate": {
+      "description": "Invokes local CAM slicer CLI to generate G-Code toolpaths from 3D geometry.",
+      "parameters": {
+        "stl_file": {
+          "type": "string",
+          "description": "Path to input STL or 3MF geometry file.",
+          "required": true
+        },
+        "slicer_cmd": {
+          "type": "string",
+          "description": "Executable name or path for slicer binary. Autodetects if omitted.",
+          "required": false
+        },
+        "profile": {
+          "type": "string",
+          "description": "Optional slicer print profile name or file path.",
+          "required": false
+        },
+        "layer_height": {
+          "type": "number",
+          "description": "Layer height in millimeters (e.g., 0.2).",
+          "required": false
+        },
+        "infill": {
+          "type": "integer",
+          "description": "Infill percentage (0-100).",
+          "required": false
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Simulate slicing without writing output files.",
+          "required": false
+        }
+      },
+      "handler": "handle_generate_gcode"
+    }
+  },
+  "allowed_agents": [
+    "machinist"
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "skill_id": "plan_task_decomposer",
+  "version": "1.0.0",
+  "description": "Task decomposition into execution DAGs and engineering build sequence blueprints using LLM reasoning.",
+  "category": "Autonomous Execution",
+  "author": "Charon Librarian",
+  "shelf_tags": [
+    "planning",
+    "dag",
+    "sequence",
+    "architecture"
+  ],
+  "system_requirements": [
+    "python3",
+    "ollama"
+  ],
+  "supported_actions": {
+    "autonomous_plan_decompose": {
+      "description": "Decomposes a user objective into a structured sequence of multi-agent execution steps.",
+      "parameters": {
+        "objective": {
+          "type": "string",
+          "description": "High-level goal or prompt to decompose into an execution DAG.",
+          "required": true
+        },
+        "model_name": {
+          "type": "string",
+          "description": "Ollama model identifier to use for inference.",
+          "required": false
+        }
+      },
+      "handler": "handle_decompose_task"
+    },
+    "autonomous_plan_draft": {
+      "description": "Generates a structured engineering blueprint and step-by-step build plan for an objective.",
+      "parameters": {
+        "objective": {
+          "type": "string",
+          "description": "Target engineering system or feature objective.",
+          "required": true
+        },
+        "model_name": {
+          "type": "string",
+          "description": "Ollama model identifier to use for inference.",
+          "required": false
+        }
+      },
+      "handler": "handle_draft_build_sequence"
+    }
+  },
+  "allowed_agents": [
+    "planner"
+  ]
+}

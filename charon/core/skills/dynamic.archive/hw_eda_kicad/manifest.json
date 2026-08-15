@@ -1,0 +1,40 @@
+{
+  "skill_id": "hw_eda_kicad",
+  "version": "1.0.0",
+  "description": "Automated KiCad Gerber fabrication files and Bill of Materials (BOM) CSV generation.",
+  "category": "Execution",
+  "author": "Charon Librarian",
+  "shelf_tags": [
+    "eda",
+    "kicad",
+    "pcb",
+    "gerber",
+    "bom",
+    "hardware"
+  ],
+  "system_requirements": [
+    "python3",
+    "kicad-cli"
+  ],
+  "supported_actions": {
+    "execution_hw_export": {
+      "description": "Exports Bill of Materials CSV datasheet from KiCad schematic/PCB designs.",
+      "parameters": {
+        "pcb_file": {
+          "type": "string",
+          "description": "Path to target .kicad_pcb file or containing project directory.",
+          "required": true
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Simulate export without writing CSV files.",
+          "required": false
+        }
+      },
+      "handler": "handle_export_bom"
+    }
+  },
+  "allowed_agents": [
+    "spark"
+  ]
+}

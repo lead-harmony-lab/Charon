@@ -1,0 +1,81 @@
+{
+  "skill_id": "quartermaster_inventory_manager",
+  "version": "1.0.0",
+  "description": "Provides PartVault SQLite inventory logging, stock queries, bin location management, and KiCad unified part view integration.",
+  "category": "Data",
+  "author": "Charon Librarian",
+  "shelf_tags": [
+    "inventory",
+    "sqlite3",
+    "partvault",
+    "kicad",
+    "bin_location",
+    "stock"
+  ],
+  "system_requirements": [
+    "python3",
+    "sqlite3"
+  ],
+  "supported_actions": {
+    "data_quartermaster_check": {
+      "description": "Queries PartVault SQLite database for component stock levels, bin locations, datasheets, and metadata.",
+      "parameters": {
+        "mpn": {
+          "type": "string",
+          "description": "Manufacturer Part Number or partial query string to search.",
+          "required": true
+        },
+        "query": {
+          "type": "string",
+          "description": "Alternative query parameter for component search.",
+          "required": false
+        }
+      },
+      "handler": "handle_check_inventory"
+    },
+    "data_quartermaster_log": {
+      "description": "Logs incoming component stock, bin assignments, categories, and footprints into PartVault SQLite.",
+      "parameters": {
+        "mpn": {
+          "type": "string",
+          "description": "Manufacturer Part Number to log into inventory.",
+          "required": true
+        },
+        "quantity": {
+          "type": "integer",
+          "description": "Number of component units to add (default: 1).",
+          "required": false
+        },
+        "storage_bin": {
+          "type": "string",
+          "description": "Physical bin or storage location ID.",
+          "required": false
+        },
+        "category": {
+          "type": "string",
+          "description": "Taxonomy category for the component.",
+          "required": false
+        },
+        "manufacturer": {
+          "type": "string",
+          "description": "Component manufacturer name.",
+          "required": false
+        },
+        "description": {
+          "type": "string",
+          "description": "Technical summary description.",
+          "required": false
+        },
+        "package_footprint": {
+          "type": "string",
+          "description": "PCB footprint identifier (e.g., 0805, SOIC-8).",
+          "required": false
+        }
+      },
+      "handler": "handle_log_inventory"
+    }
+  },
+  "allowed_agents": [
+    "quartermaster"
+  ]
+}

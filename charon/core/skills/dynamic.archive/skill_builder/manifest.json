@@ -1,0 +1,31 @@
+{
+  "skill_id": "skill_builder",
+  "version": "1.1.0",
+  "description": "Meta-skill allowing authorized agents to scaffold, write, authorize, and promote new skills programmatically.",
+  "category": "System Maintenance",
+  "author": "Charon Librarian",
+  "stage": "Dynamic",
+  "allowed_agents": [],
+  "shelf_tags": [
+    "developer",
+    "builder"
+  ],
+  "system_requirements": [],
+  "supported_actions": {
+    "system_builder_execute": {
+      "description": "Scaffold and write a new skill manifest and plugin.py implementation into staging.",
+      "handler": "build_skill",
+      "parameters": {}
+    },
+    "system_builder_authorize": {
+      "description": "Grant an agent access/permission to execute a target skill ID.",
+      "handler": "authorize_agent",
+      "parameters": {}
+    },
+    "system_builder_promote": {
+      "description": "Promote a staged skill package into active dynamic production registry.",
+      "handler": "promote_skill",
+      "parameters": {}
+    }
+  }
+}

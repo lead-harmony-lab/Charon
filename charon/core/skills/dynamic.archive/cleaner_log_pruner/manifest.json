@@ -1,0 +1,43 @@
+{
+  "skill_id": "cleaner_log_pruner",
+  "version": "1.0.0",
+  "description": "Prunes historical or rotated system log files based on retention windows and protects active log streams.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": [
+    "logs",
+    "prune",
+    "maintenance",
+    "retention",
+    "disk_space"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
+  "supported_actions": {
+    "system_cleaner_prune": {
+      "description": "Removes expired log files from the specified log directory to free up disk space.",
+      "parameters": {
+        "logs_dir": {
+          "type": "string",
+          "description": "Target logs directory path.",
+          "required": false
+        },
+        "max_age_days": {
+          "type": "integer",
+          "description": "Retention threshold in days (default: 7).",
+          "required": false
+        },
+        "keep_active": {
+          "type": "boolean",
+          "description": "Whether to protect active system log files from deletion (default: true).",
+          "required": false
+        }
+      },
+      "handler": "handle_prune_logs"
+    }
+  },
+  "allowed_agents": [
+    "cleaner"
+  ]
+}

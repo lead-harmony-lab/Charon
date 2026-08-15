@@ -1,0 +1,32 @@
+{
+  "skill_id": "sys_asset_pruner",
+  "version": "1.1.0",
+  "description": "System maintenance capability for sweeping and pruning logs, stale workspaces, broken symlinks, and orphaned assets.",
+  "category": "System",
+  "author": "Charon Librarian",
+  "shelf_tags": [
+    "maintenance",
+    "cleanup",
+    "pruning",
+    "filesystem"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
+  "supported_actions": {
+    "system_sys_prune": {
+      "description": "Prunes old logs and cache files.",
+      "parameters": {
+        "prune_days": {
+          "type": "integer",
+          "description": "Number of days before logs/cache are considered stale. Defaults to 7.",
+          "required": false
+        }
+      },
+      "handler": "handle_prune_logs_and_cache"
+    }
+  },
+  "allowed_agents": [
+    "overseer"
+  ]
+}

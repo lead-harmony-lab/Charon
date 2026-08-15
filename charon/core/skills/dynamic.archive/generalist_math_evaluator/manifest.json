@@ -1,0 +1,38 @@
+{
+  "skill_id": "generalist_math_evaluator",
+  "version": "1.0.0",
+  "description": "Evaluates mathematical expressions deterministically via AST with LLM fallback assistance.",
+  "category": "Execution",
+  "author": "Charon Librarian",
+  "shelf_tags": [
+    "math",
+    "calculator",
+    "evaluation",
+    "ast",
+    "generalist"
+  ],
+  "system_requirements": [
+    "python3"
+  ],
+  "supported_actions": {
+    "execution_generalist_calculate": {
+      "description": "Evaluates mathematical expressions deterministically via safe AST evaluation or LLM computation.",
+      "parameters": {
+        "expression": {
+          "type": "string",
+          "description": "The math expression or word problem to evaluate.",
+          "required": true
+        },
+        "model_name": {
+          "type": "string",
+          "description": "Inference model name for fallback processing.",
+          "required": false
+        }
+      },
+      "handler": "handle_calculate_math"
+    }
+  },
+  "allowed_agents": [
+    "generalist"
+  ]
+}
