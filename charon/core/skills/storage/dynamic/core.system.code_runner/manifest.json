@@ -1,0 +1,86 @@
+{
+  "package": "core.system.code_runner",
+  "skill_type": "tool",
+  "version": "2.0.0",
+  "domain": "System",
+  "status": "ACTIVE",
+  "description": "Sandboxed Python code execution and artifact security auditing.",
+  "author": "Charon System",
+  "entrypoint": "plugin.py",
+  "system_requirements": [
+    "python3"
+  ],
+  "allowed_agents": [
+    "system_engineer"
+  ],
+  "actions": [
+    {
+      "action_name": "run_script_in_subprocess",
+      "skill_id": "sk_engineer_run_script",
+      "handler_name": "run_script_in_subprocess",
+      "description": "Executes a provided string of Python code in an isolated subprocess with a configured timeout and working directory.",
+      "required_permissions": [
+        "sys:process:execute",
+        "sys:fs:write"
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The full Python code string to execute."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "The workspace target path where the script will run."
+          },
+          "python_cmd": {
+            "type": "string",
+            "description": "The Python binary to invoke (defaults to python3).",
+            "default": "python3"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Maximum execution time in seconds prior to SIGKILL.",
+            "default": 15.0
+          }
+        },
+        "required": [
+          "code",
+          "cwd"
+        ]
+      },
+      "consumed_artifacts": [],
+      "produced_artifacts": []
+    },
+    {
+      "action_name": "audit_written_artifacts",
+      "skill_id": "sk_engineer_audit_artifacts",
+      "handler_name": "HT_audit_written_artifacts",
+      "description": "Inspects workspace changes and code structure to ensure no unsafe operations or invalid files were produced.",
+      "required_permissions": [
+        "sys:fs:read"
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The Python script code to inspect for hazardous patterns."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "The target workspace directory to audit for generated files."
+          }
+        },
+        "required": [
+          "code",
+          "cwd"
+        ]
+      },
+      "consumed_artifacts": [],
+      "produced_artifacts": []
+    }
+  ],
+  "stage": "Dynamic"
+}
