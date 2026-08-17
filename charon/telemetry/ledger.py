@@ -6,7 +6,7 @@ Module: Execution Audit Ledger
 Append-only operational event logger recording role interactions,
 tool executions, gatekeeper decisions, and engine state transitions.
 Guarantees strict database separation using LEDGER_DB_PATH.
-The BaseWorkContract (which exposes a bind_telemetry method) and
+The BaseContractPolicy (which exposes a bind_telemetry method) and
 the Coordinator should import the ledger from the telemetry package,
 strictly decoupling I/O-bound logging from core state transitions.
 """

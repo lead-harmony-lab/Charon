@@ -1,10 +1,10 @@
 """
 charon/core/skills/roles.py
-System Version: v0.6.4 | File Revision: 9.1.0
+System Version: v0.6.4 | File Revision: 9.1.1
 
 Strict database-driven role resolution and entrypoint discovery mixin for SkillLibrarian.
-No in-memory fallback dictionaries. No string normalization heuristics or dynamic fallbacks.
-The database is the single source of truth. Unmapped roles raise RoleResolutionError immediately.
+No in-memory fallback dictionaries. The database is the single source of truth.
+Unmapped roles raise RoleResolutionError immediately.
 """
 
 import logging
@@ -17,7 +17,6 @@ logger = logging.getLogger("Charon.Core.Skills.Roles")
 
 class RoleResolutionError(KeyError):
     """Raised when a requested role cannot be resolved directly from the database registry."""
-
     pass
 
 
@@ -70,22 +69,25 @@ class RoleResolverMixin:
         """
         Queries the database directly for the exact agent_id bound to the given role key.
 
+        Strips the 'role:' namespace prefix if present to ensure clean DB lookups.
         HARD FAIL: Raises `RoleResolutionError` immediately if input is missing or unmapped in DB.
-        No normalization, lowercasing, or string manipulation is performed.
         """
         if not role_input or not isinstance(role_input, str):
             raise RoleResolutionError(
                 "[LIBRARIAN] Role lookup rejected: Blank or invalid role input."
             )
 
+        # Safely strip "role:" prefix for DB lookups
+        sanitized_role = role_input.replace("role:", "") if role_input.startswith("role:") else role_input
+
         # Single Source of Truth: Direct raw key lookup in database
-        resolved_id = self._role_repo.get_agent_id_for_role(role_input)
+        resolved_id = self._role_repo.get_agent_id_for_role(sanitized_role)
         if resolved_id:
             return resolved_id
 
         # HARD FAIL: No in-memory guessing, no normalization, no fallbacks
         raise RoleResolutionError(
-            f"[LIBRARIAN] Unresolvable Role: Exact key '{role_input}' has no active agent binding in the database."
+            f"[LIBRARIAN] Unresolvable Role: Exact key '{role_input}' (sanitized to '{sanitized_role}') has no active agent binding in the database."
         )
 
     def resolve_role(self, role_input: str) -> str:

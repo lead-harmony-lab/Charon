@@ -1,6 +1,5 @@
 """
-charon/cli/librarian/tui/inspector/actions.py
-System Version: v0.2.0 | File Revision: 3.3.0
+System Version: v0.2.0 | File Revision: 3.3.2
 
 Module: Discrete user operation handlers invoked from inspector cards.
 """
@@ -20,7 +19,6 @@ from charon.cli.librarian.db import (
     grant_agent_permission_db,
     revoke_agent_permission_db,
     run_sync,
-    set_agent_default_skill_db,
 )
 from charon.cli.librarian.lifecycle import (
     run_delete_skill,
@@ -30,6 +28,7 @@ from charon.cli.librarian.lifecycle import (
 )
 from charon.cli.librarian.manifest import update_manifest_allowed_agents
 from charon.cli.librarian.tui.diagnostics import PACKAGE_MAP
+from charon.cli.librarian.tui.discovery import set_agent_default_skill
 from charon.cli.librarian.tui.inspector.helpers import (
     parse_list,
     parse_supported_actions,
@@ -70,8 +69,8 @@ def handle_grant_permission(
         return
     elif sel.lower() == "a":
         for target_agent in available_to_grant:
-            grant_agent_permission_db(target_agent, skill["skill_id"])
-            if target_agent not in auth_agents:
+            success, msg, _ = grant_agent_permission_db(target_agent, skill["skill_id"])
+            if success and target_agent not in auth_agents:
                 auth_agents.append(target_agent)
 
         auth_agents.sort()
@@ -79,22 +78,27 @@ def handle_grant_permission(
         update_manifest_allowed_agents(skill["manifest_path"], auth_agents)
         run_sync()
         console.print(
-            f"[bold green]✓ Granted all remaining agents access to skill '{skill['skill_id']}' in DB & Manifest[/bold green]"
+            f"[bold green]✓ Granted all remaining agents access to skill '{skill['skill_id']}'[/bold green]"
         )
         Prompt.ask("Press Enter to refresh")
     else:
         target_agent = available_to_grant[int(sel) - 1]
-        grant_agent_permission_db(target_agent, skill["skill_id"])
-        if target_agent not in auth_agents:
-            auth_agents.append(target_agent)
-        auth_agents.sort()
-        skill["authorized_agents"] = auth_agents
+        success, msg, _ = grant_agent_permission_db(target_agent, skill["skill_id"])
 
-        update_manifest_allowed_agents(skill["manifest_path"], auth_agents)
-        run_sync()
-        console.print(
-            f"[bold green]✓ Granted {target_agent} access to skill '{skill['skill_id']}' in DB & Manifest[/bold green]"
-        )
+        if success:
+            if target_agent not in auth_agents:
+                auth_agents.append(target_agent)
+            auth_agents.sort()
+            skill["authorized_agents"] = auth_agents
+
+            update_manifest_allowed_agents(skill["manifest_path"], auth_agents)
+            run_sync()
+            console.print(
+                f"[bold green]✓ Granted {target_agent} access to skill '{skill['skill_id']}'[/bold green]"
+            )
+        else:
+            console.print(f"[bold red]❌ Failed to grant access: {msg}[/bold red]")
+
         Prompt.ask("Press Enter to refresh")
 
 
@@ -122,12 +126,7 @@ def handle_revoke_permission(
     console.print("  [Q] Exit Librarian TUI\n")
 
     valid_choices = [str(i) for i in range(1, len(auth_agents) + 1)] + [
-        "a",
-        "A",
-        "b",
-        "B",
-        "q",
-        "Q",
+        "a", "A", "b", "B", "q", "Q",
     ]
     sel = Prompt.ask("Agent", choices=valid_choices, default="B")
 
@@ -140,32 +139,38 @@ def handle_revoke_permission(
     try:
         if sel.lower() == "a":
             for target_agent in list(auth_agents):
-                revoke_agent_permission_db(target_agent, skill["skill_id"])
+                success, msg, _ = revoke_agent_permission_db(target_agent, skill["skill_id"])
+                if success:
+                    if target_agent in auth_agents:
+                        auth_agents.remove(target_agent)
+                    if target_agent in default_for:
+                        default_for.remove(target_agent)
+
+            skill["authorized_agents"] = auth_agents
+            update_manifest_allowed_agents(skill["manifest_path"], auth_agents)
+            run_sync()
+            console.print(
+                f"[bold green]✓ Revoked all agent access to skill '{skill['skill_id']}'[/bold green]"
+            )
+        else:
+            target_agent = auth_agents[int(sel) - 1]
+            success, msg, _ = revoke_agent_permission_db(target_agent, skill["skill_id"])
+
+            if success:
                 if target_agent in auth_agents:
                     auth_agents.remove(target_agent)
                 if target_agent in default_for:
                     default_for.remove(target_agent)
 
-            skill["authorized_agents"] = auth_agents
-            update_manifest_allowed_agents(skill["manifest_path"], auth_agents)
-            run_sync()
-            console.print(
-                f"[bold green]✓ Revoked all agent access to skill '{skill['skill_id']}' in DB & Manifest[/bold green]"
-            )
-        else:
-            target_agent = auth_agents[int(sel) - 1]
-            revoke_agent_permission_db(target_agent, skill["skill_id"])
-            if target_agent in auth_agents:
-                auth_agents.remove(target_agent)
-            if target_agent in default_for:
-                default_for.remove(target_agent)
+                skill["authorized_agents"] = auth_agents
+                update_manifest_allowed_agents(skill["manifest_path"], auth_agents)
+                run_sync()
+                console.print(
+                    f"[bold green]✓ Revoked {target_agent} access to skill '{skill['skill_id']}'[/bold green]"
+                )
+            else:
+                console.print(f"[bold red]❌ Failed to revoke access: {msg}[/bold red]")
 
-            skill["authorized_agents"] = auth_agents
-            update_manifest_allowed_agents(skill["manifest_path"], auth_agents)
-            run_sync()
-            console.print(
-                f"[bold green]✓ Revoked {target_agent} access to skill '{skill['skill_id']}' in DB & Manifest[/bold green]"
-            )
     except sqlite3.OperationalError as err:
         console.print(
             f"\n[bold red]❌ Operation Blocked by System Contract Trigger:[/bold red]\n{err}"
@@ -175,7 +180,7 @@ def handle_revoke_permission(
 
 
 def handle_set_default(skill: Dict[str, Any], auth_agents: List[str]) -> bool:
-    """Handles prompt to assign skill as default for an agent."""
+    """Handles prompt to assign skill as default for an agent across JSON disk registry and SQLite DB."""
     if not auth_agents:
         console.print(
             "[yellow]No agents are currently authorized for this skill. Grant permission first.[/yellow]"
@@ -194,10 +199,7 @@ def handle_set_default(skill: Dict[str, Any], auth_agents: List[str]) -> bool:
     console.print("  [Q] Exit Librarian TUI\n")
 
     valid_choices = [str(i) for i in range(1, len(auth_agents) + 1)] + [
-        "b",
-        "B",
-        "q",
-        "Q",
+        "b", "B", "q", "Q",
     ]
     sel = Prompt.ask("Agent", choices=valid_choices, default="B")
 
@@ -209,18 +211,30 @@ def handle_set_default(skill: Dict[str, Any], auth_agents: List[str]) -> bool:
 
     target_agent = auth_agents[int(sel) - 1]
 
-    set_agent_default_skill_db(target_agent, skill["skill_id"])
-    run_sync()
+    # Dynamically resolve action_name fallback from supported_actions
+    action_name = skill.get("action_name")
+    if not action_name or action_name == "N/A":
+        supported = skill.get("supported_actions", {})
+        action_keys = list(supported.keys()) if isinstance(supported, dict) else [str(a) for a in supported]
+        action_name = action_keys[0] if action_keys else skill["skill_id"]
 
-    if target_agent not in default_for:
-        default_for.append(target_agent)
-    skill["default_for_agents"] = default_for
+    success = set_agent_default_skill(target_agent, action_name)
 
-    console.print(
-        f"[bold green]✓ Set '{skill['skill_id']}' as default action for agent '{target_agent}' in SQLite DB[/bold green]"
-    )
-    Prompt.ask("Press Enter to refresh")
-    return True
+    if success:
+        run_sync()
+        if target_agent not in default_for:
+            default_for.append(target_agent)
+        skill["default_for_agents"] = default_for
+
+        console.print(
+            f"[bold green]✓ Set '{action_name}' as default action for agent '{target_agent}' (SQLite & Agent Registry)[/bold green]"
+        )
+        Prompt.ask("Press Enter to refresh")
+        return True
+    else:
+        console.print(f"[bold red]❌ Failed to set default skill target for '{target_agent}'. Check agent_registry.json write permissions.[/bold red]")
+        Prompt.ask("Press Enter to continue")
+        return False
 
 
 def handle_stage_transition(skill: Dict[str, Any]) -> bool:
@@ -349,10 +363,7 @@ def handle_bind_system_action(
     console.print("  [Q] Exit Librarian TUI\n")
 
     valid_choices = [str(i) for i in range(1, len(available_contracts) + 1)] + [
-        "b",
-        "B",
-        "q",
-        "Q",
+        "b", "B", "q", "Q",
     ]
     sel = Prompt.ask(
         "Select System Contract to Bind", choices=valid_choices, default="B"

@@ -1,0 +1,65 @@
+[
+  {
+    "perm_id": "sys:db:write",
+    "group_id": "sys_core",
+    "scope_pattern": "sqlite3://charon_state.db/*",
+    "description": "Direct mutation rights on internal SQLite state tables.",
+    "_relations": {
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "perm_id": "sys:process:execute",
+    "group_id": "sys_core",
+    "scope_pattern": "shell://bin/*",
+    "description": "Subprocess execution rights for low-level host commands.",
+    "_relations": {
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "perm_id": "sys:fs:read",
+    "group_id": "filesystem_access",
+    "scope_pattern": "file://{WORKSPACE}/*",
+    "description": "Read access to workspace artifacts and source files.",
+    "_relations": {
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "perm_id": "sys:fs:write",
+    "group_id": "filesystem_access",
+    "scope_pattern": "file://{WORKSPACE}/*",
+    "description": "Write and deletion rights within workspace paths.",
+    "_relations": {
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "perm_id": "net:http:outbound",
+    "group_id": "network_comms",
+    "scope_pattern": "https://*",
+    "description": "Outbound REST and GraphQL API calls over TLS.",
+    "_relations": {
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "perm_id": "agent:spawn:dynamic",
+    "group_id": "agent_control",
+    "scope_pattern": "agent://*",
+    "description": "Ability to invoke secondary agents dynamically during plan execution.",
+    "_relations": {
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "perm_id": "contract:execute",
+    "group_id": "agent_control",
+    "scope_pattern": "contract://*",
+    "description": "Base capability allowing an agent to orchestrate and execute a Work Contract.",
+    "_relations": {
+      "group_id": "permission_groups.group_id"
+    }
+  }
+]

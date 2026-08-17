@@ -1,6 +1,6 @@
 """
 charon/core/state.py
-System Version: v0.5.0 | File Revision: 2.0.0
+System Version: v0.5.0 | File Revision: 2.1.0
 
 Module: Persistent Task State Machine & Idle Ticker Feed Coordinator
 Tracks task execution status, execution plans, Work Contract artifact outputs, Gatekeeper approval state,
@@ -30,6 +30,7 @@ class TaskStatus(str, Enum):
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
 
 

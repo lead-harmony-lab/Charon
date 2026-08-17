@@ -1,19 +1,21 @@
 """
-charon/cli/librarian/tui/inspector/card.py
-System Version: v0.2.0 | File Revision: 3.3.0
+System Version: v2.0.0 | File Revision: 3.4.0
 
 Module: Control flow and interaction loops for inspecting skills.
+Target Standard: Manifest Schema V2 Only.
 """
 
 import sys
 from typing import Any, Dict, List
+
 from rich.console import Console
 from rich.prompt import Prompt
 
-from charon.cli.database import run_sync
+from charon.cli.librarian.db.sync import run_sync
 from charon.cli.librarian.ingestion import run_edit
 from charon.cli.librarian.tui.components import display_skill_table
 from charon.cli.librarian.tui.inspector.actions import (
+    handle_bind_system_action,
     handle_delete,
     handle_grant_permission,
     handle_rename,
@@ -23,7 +25,10 @@ from charon.cli.librarian.tui.inspector.actions import (
     handle_stage_transition,
 )
 from charon.cli.librarian.tui.inspector.helpers import hydrate_skill_from_manifest
-from charon.cli.librarian.tui.inspector.views import display_plugin_actions_modal, render_skill_card
+from charon.cli.librarian.tui.inspector.views import (
+    display_plugin_actions_modal,
+    render_skill_card,
+)
 from charon.core.skills import SkillLibrarian
 
 console = Console()
@@ -41,7 +46,9 @@ def inspect_skill_list(
     while True:
         console.clear()
         display_skill_table(skills, title)
-        console.print("\n[bold]Actions:[/bold] Enter item number [#] to inspect/edit, [B] to return, or [Q] to quit.")
+        console.print(
+            "\n[bold]Actions:[/bold] Enter item number [#] to inspect/edit, [B] to return, or [Q] to quit."
+        )
 
         valid_choices = [str(i) for i in range(1, len(skills) + 1)] + ["b", "B", "q", "Q"]
         choice = Prompt.ask("Action", choices=valid_choices, default="B")
@@ -69,7 +76,7 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
         console.print("[bold]Operations:[/bold]")
         console.print("  [1] Grant Agent Permission (SQLite & Manifest)")
         console.print("  [2] Revoke Agent Permission (SQLite & Manifest)")
-        console.print("  [3] Set as Default Skill for Agent (SQLite)")
+        console.print("  [3] Set as Default Skill for Agent (SQLite & Registry)")
 
         stage_choice_key = "4"
         if skill.get("stage") == "Staged":
@@ -77,6 +84,7 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
         elif skill.get("stage") in ("Dynamic", "User Dynamic"):
             console.print(f"  [{stage_choice_key}] Demote Skill to Quarantine Pathway")
 
+        console.print("  [S] Bind System Action to Role Contract")
         console.print("  [V] View Root Plugin Action Map")
         console.print("  [E] Edit Manifest in $EDITOR")
         console.print("  [N] Rename Skill ID")
@@ -88,7 +96,7 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
         console.print("  [B] Back")
         console.print("  [Q] Exit Librarian TUI\n")
 
-        choices = ["1", "2", "3", "4", "v", "V", "e", "E", "n", "N", "d", "D", "b", "B", "q", "Q"]
+        choices = ["1", "2", "3", "4", "s", "S", "v", "V", "e", "E", "n", "N", "d", "D", "b", "B", "q", "Q"]
         if missing_reqs:
             choices.extend(["r", "R"])
 
@@ -99,6 +107,9 @@ def inspect_skill_card(skill: Dict[str, Any], agents: List[str], librarian: Skil
             sys.exit(0)
         elif op.lower() == "b":
             break
+        elif op.lower() == "s":
+            if handle_bind_system_action(skill, agents):
+                was_modified = True
         elif op.lower() == "v":
             display_plugin_actions_modal(skill)
         elif op.lower() == "e":

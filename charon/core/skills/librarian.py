@@ -96,7 +96,7 @@ class SkillLibrarian(
     # Skill Action Lookup & Authorization API
     # =========================================================================
 
-    def resolve_system_action(self, reserved_key: str) -> str:
+    def resolve_system_action(self, reserved_key: str, conn: Optional[sqlite3.Connection] = None) -> str:
         """Resolves an abstract system action key (e.g., 'sys_synthesis') to its active database action_name SSOT.
 
         Fails fast if the key is missing, unbound, or unmapped in the database.
@@ -105,13 +105,19 @@ class SkillLibrarian(
             raise ValueError("[FAIL-FAST] System action key cannot be empty.")
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
+            if conn:
+                cursor = conn.execute(
                     "SELECT action_name FROM system_actions WHERE reserved_key = ?;",
                     (reserved_key,),
                 )
                 row = cursor.fetchone()
+            else:
+                with sqlite3.connect(self.db_path) as temp_conn:
+                    cursor = temp_conn.execute(
+                        "SELECT action_name FROM system_actions WHERE reserved_key = ?;",
+                        (reserved_key,),
+                    )
+                    row = cursor.fetchone()
 
             if not row or not row[0]:
                 raise RuntimeError(
@@ -125,7 +131,7 @@ class SkillLibrarian(
             raise
 
     def get_action_manifest(
-        self, action: str, role_name: Optional[str] = None
+        self, action: str, role_name: Optional[str] = None, conn: Optional[sqlite3.Connection] = None
     ) -> Optional[Dict[str, Any]]:
         """Retrieves action details/manifest for a given skill trigger after validating authorization.
 
@@ -137,21 +143,21 @@ class SkillLibrarian(
         # Validate role authorization if role name/ID provided
         if role_name:
             try:
-                canonical_role = self.resolve_agent_id_for_role(role_name)
-                if not self.is_skill_available(action, canonical_role):
+                canonical_role = self.resolve_agent_id_for_role(role_name, conn=conn)
+                if not self.is_skill_available(action, canonical_role, conn=conn):
                     return None
             except RoleResolutionError:
                 logger.debug(f"[SkillLibrarian] Unmapped role '{role_name}' for action '{action}'.")
                 return None
 
         # Resolve skill action metadata from query mixin or repository
-        details = self.get_action_details(action)
+        details = self.get_action_details(action, conn=conn)
         if details:
             return details
 
-        return self.repo.get_skill_by_action(action)
+        return self.repo.get_skill_by_action(action, conn=conn)
 
-    def get_roles_for_action(self, action_name: str) -> List[str]:
+    def get_roles_for_action(self, action_name: str, conn: Optional[sqlite3.Connection] = None) -> List[str]:
         """Resolves candidate role IDs authorized to perform an ACTIVE action capability contract.
 
         Delegates directly to SkillRepository SSOT query.
@@ -159,14 +165,14 @@ class SkillLibrarian(
         if not action_name:
             return []
         try:
-            return self.repo.get_agents_for_action(action_name.strip())
+            return self.repo.get_agents_for_action(action_name.strip(), conn=conn)
         except Exception as err:
             logger.error(
                 f"[SkillLibrarian] Error resolving candidate roles for action '{action_name}': {err}"
             )
             return []
 
-    def list_available_actions(self, role_name: str) -> List[str]:
+    def list_available_actions(self, role_name: str, conn: Optional[sqlite3.Connection] = None) -> List[str]:
         """Retrieves all active action capability names granted to a role alias.
 
         Resolves role aliases to canonical IDs before querying SSOT state.
@@ -174,8 +180,8 @@ class SkillLibrarian(
         if not role_name:
             return []
         try:
-            canonical_id = self.resolve_agent_id_for_role(role_name)
-            return self.repo.get_actions_for_agent(canonical_id)
+            canonical_id = self.resolve_agent_id_for_role(role_name, conn=conn)
+            return self.repo.get_actions_for_agent(canonical_id, conn=conn)
         except RoleResolutionError as rre:
             logger.warning(
                 f"[SkillLibrarian] Could not resolve role '{role_name}' for available actions: {rre}"
@@ -191,33 +197,33 @@ class SkillLibrarian(
     # Manifest Control API
     # =========================================================================
 
-    def get_role_default_action(self, role_id: str) -> Optional[str]:
+    def get_role_default_action(self, role_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[str]:
         """Retrieves the default interface action (Work Contract) for a role.
 
         Resolves canonical role ID via RoleResolverMixin and queries cached manifests.
         """
-        manifest = self.get_agent_manifest(role_id)
+        manifest = self.get_agent_manifest(role_id, conn=conn)
         if manifest and "default_action" in manifest:
             return str(manifest["default_action"])
         return None
 
-    def get_default_action_for_role(self, role_name: str) -> str:
+    def get_default_action_for_role(self, role_name: str, conn: Optional[sqlite3.Connection] = None) -> str:
         """Resolves and returns the default action_name (Work Contract) for a given system role.
 
         Fails fast if role_name cannot be resolved to an active role in SQLite.
         """
-        role_id = self.resolve_agent_id_for_role(role_name)
+        role_id = self.resolve_agent_id_for_role(role_name, conn=conn)
 
-        agent_manifest = self.get_agent_manifest(role_id) or {}
+        agent_manifest = self.get_agent_manifest(role_id, conn=conn) or {}
         if isinstance(agent_manifest, dict):
             return agent_manifest.get("default_action") or ""
 
         return getattr(agent_manifest, "default_action", "")
 
-    def reload_all_manifests(self) -> None:
+    def reload_all_manifests(self, conn: Optional[sqlite3.Connection] = None) -> None:
         """Refreshes the in-memory manifest cache directly from AgentRepository."""
         try:
-            self._manifest_cache = self.agent_repo.get_all_manifests()
+            self._manifest_cache = self.agent_repo.get_all_manifests(conn=conn)
             logger.info(
                 f"[SkillLibrarian] Cached {len(self._manifest_cache)} role manifest(s) in memory."
             )
@@ -227,10 +233,10 @@ class SkillLibrarian(
             )
 
     def get_all_agent_manifests(self) -> Dict[str, Dict[str, Any]]:
-        """Returns all cached role manifests."""
+        """Returns all cached role manifests. (In-memory lookup, no DB connection required)"""
         return self._manifest_cache
 
-    def get_agent_manifest(self, role_id: str) -> Optional[Dict[str, Any]]:
+    def get_agent_manifest(self, role_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[Dict[str, Any]]:
         """Retrieves a single manifest by resolving target via RoleResolverMixin.
 
         Fails fast if role_id is an unmapped role.
@@ -238,34 +244,34 @@ class SkillLibrarian(
         if not role_id:
             return None
         try:
-            canonical_id = self.resolve_agent_id_for_role(role_id)
+            canonical_id = self.resolve_agent_id_for_role(role_id, conn=conn)
             return self._manifest_cache.get(canonical_id) or self._manifest_cache.get(role_id)
         except RoleResolutionError:
             return None
 
-    def update_agent_manifest(self, role_id: str, update_data: Dict[str, Any]) -> bool:
+    def update_agent_manifest(self, role_id: str, update_data: Dict[str, Any], conn: Optional[sqlite3.Connection] = None) -> bool:
         """Delegates manifest persistence to AgentRepository via resolved ID and refreshes cache."""
-        canonical_id = self.resolve_agent_id_for_role(role_id)
-        success = self.agent_repo.update_manifest(canonical_id, update_data)
+        canonical_id = self.resolve_agent_id_for_role(role_id, conn=conn)
+        success = self.agent_repo.update_manifest(canonical_id, update_data, conn=conn)
         if success:
-            self.reload_agent_manifest(canonical_id)
+            self.reload_agent_manifest(canonical_id, conn=conn)
         return success
 
-    def reload_agent_manifest(self, role_id: str) -> Optional[Dict[str, Any]]:
+    def reload_agent_manifest(self, role_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[Dict[str, Any]]:
         """Hot-reloads a single role manifest from AgentRepository into memory cache."""
-        canonical_id = self.resolve_agent_id_for_role(role_id)
-        manifest = self.agent_repo.get_manifest(canonical_id)
+        canonical_id = self.resolve_agent_id_for_role(role_id, conn=conn)
+        manifest = self.agent_repo.get_manifest(canonical_id, conn=conn)
         if manifest:
             self._manifest_cache[canonical_id] = manifest
         else:
             self._manifest_cache.pop(canonical_id, None)
         return manifest
 
-    def set_tool_status(self, role_id: str, tool_name: str, enabled: bool) -> bool:
+    def set_tool_status(self, role_id: str, tool_name: str, enabled: bool, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Toggles role capability via AgentRepository and hot-reloads the manifest cache."""
-        canonical_id = self.resolve_agent_id_for_role(role_id)
-        success = self.agent_repo.set_tool_status(canonical_id, tool_name, enabled)
+        canonical_id = self.resolve_agent_id_for_role(role_id, conn=conn)
+        success = self.agent_repo.set_tool_status(canonical_id, tool_name, enabled, conn=conn)
 
         if success:
-            self.reload_agent_manifest(canonical_id)
+            self.reload_agent_manifest(canonical_id, conn=conn)
         return success

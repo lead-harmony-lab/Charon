@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from charon.config.paths import STATE_DB_PATH, SYSTEM_ACTIONS_FILE
+from charon.config.paths import STATE_DB_PATH, SYSTEM_ACTIONS_JSON
 from charon.db.connection import get_connection
 
 logger = logging.getLogger("charon.cli.librarian.db.contracts")
@@ -63,11 +63,11 @@ def sync_system_actions(db_path: Optional[Union[str, Path]] = None) -> Tuple[boo
         Tuple[bool, int, str]: (success, synced_record_count, message)
     """
     target_db = Path(db_path) if db_path else STATE_DB_PATH
-    if not SYSTEM_ACTIONS_FILE.exists():
-        return False, 0, f"File not found: {SYSTEM_ACTIONS_FILE}"
+    if not SYSTEM_ACTIONS_JSON.exists():
+        return False, 0, f"File not found: {SYSTEM_ACTIONS_JSON}"
 
     try:
-        with open(SYSTEM_ACTIONS_FILE, "r", encoding="utf-8") as f:
+        with open(SYSTEM_ACTIONS_JSON, "r", encoding="utf-8") as f:
             actions_manifest = json.load(f)
 
         synced_count = 0

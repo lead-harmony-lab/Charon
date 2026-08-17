@@ -1,18 +1,25 @@
 {
-  "skill_id": "core.system.planner",
-  "skill_type": "system",
+  "package": "core.system.planner",
+  "skill_type": "contract",
   "version": "2.0.0",
-  "category": "Orchestration",
+  "domain": "Orchestration",
   "status": "ACTIVE",
+  "description": "Execution envelope for the system_planner role.",
+  "author": "Charon System",
+  "entrypoint": "plugin.py",
   "system_requirements": [],
   "allowed_agents": [
-    "role:system_planner"
+    "system_planner"
   ],
   "actions": [
     {
       "action_name": "sys_synthesize_execution_plan",
-      "description": "Default execution envelope for the system_planner. Accepts a raw task payload and contextual tools, returning a structured PlanArtifact DAG.",
+      "skill_id": "wc_planner_workspace",
       "handler_name": "PlannerWorkContract",
+      "description": "Default execution envelope for the system_planner. Accepts a raw task payload and contextual tools, returning a structured PlanArtifact DAG.",
+      "required_permissions": [
+        "contract:execute"
+      ],
       "parameters": {
         "type": "object",
         "properties": {

@@ -14,12 +14,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from charon.cli.database import (
-    flag_quarantined_orphans,
-    perform_state_audit,
-    run_sync,
-)
-from charon.cli.librarian.ingestion import flag_quarantined_orphans as sync_orphans
+from charon.cli.librarian.db.sync import run_sync, flag_quarantined_orphans
+from charon.cli.librarian.db.audit import perform_state_audit
 from charon.cli.librarian.purge_gaps import purge_resolved_gaps
 from charon.cli.librarian.tui.discovery import (
     discover_skills,
@@ -47,7 +43,7 @@ console = Console()
 def run_diagnostics_suite(librarian: SkillLibrarian) -> None:
     """Main interactive entry point for Option [3]: Diagnostics & Maintenance."""
     while True:
-        sync_orphans()
+        flag_quarantined_orphans()
 
         skills = discover_skills()
         broken_skills = [s for s in skills if s.get("missing_requirements")]
@@ -294,28 +290,42 @@ def _ui_review_quarantine() -> None:
     console.clear()
     console.print(f"[bold yellow]⚠️  Found {len(orphans)} Quarantined Skill(s):[/bold yellow]\n")
 
-    for skill_id, path_str, reason in orphans:
+    for idx, (skill_id, path_str, reason) in enumerate(orphans):
         console.print("-" * 60)
         console.print(f"[bold]Skill ID :[/bold] {skill_id}\n[bold]Path     :[/bold] {path_str}\n[bold]Reason   :[/bold] [red]{reason}[/red]")
         console.print("-" * 60)
 
-        choice = Prompt.ask(
-            f"Action for '{skill_id}' ([bold cyan]R[/bold cyan]echeck, [bold red]D[/bold red]elete, [dim]S[/dim]kip, [dim]B[/dim]ack, [dim]Q[/dim]uit)",
-            choices=["r", "d", "s", "b", "q"], default="s", show_choices=False, show_default=True,
-        ).lower()
+        # Removed the strict 'choices' list so Rich doesn't reject variations before we parse them
+        raw_choice = Prompt.ask(
+            f"Action for '{skill_id}' ([bold cyan]R[/bold cyan]echeck, [bold red]D[/bold red]elete, Delete [bold red]A[/bold red]ll, [dim]S[/dim]kip, [dim]B[/dim]ack, [dim]Q[/dim]uit)",
+            default="s", show_choices=False, show_default=True,
+        )
 
-        if choice == "q":
+        # Normalize the input (handles "D", "d", "Delete", " DELETE ", etc.)
+        choice = str(raw_choice).strip().lower()
+
+        if choice in ["q", "quit"]:
             sys.exit(0)
-        elif choice == "b":
+        elif choice in ["b", "back"]:
             return
-        elif choice == "d":
+        elif choice in ["d", "delete"]:
             delete_quarantined_skill(skill_id)
             console.print(f"[bold green]🗑️  Deleted '{skill_id}' from registry.[/bold green]\n")
-        elif choice == "r":
+        elif choice in ["a", "all", "delete all"]:
+            # Slice the list from current index to the end, purging all remaining
+            remaining = orphans[idx:]
+            for rem_skill_id, _, _ in remaining:
+                delete_quarantined_skill(rem_skill_id)
+            console.print(f"\n[bold green]🗑️  Batch deleted {len(remaining)} orphaned skill(s) from registry.[/bold green]\n")
+            break  # Break out of the loop since the rest are handled
+        elif choice in ["r", "recheck"]:
             if repair_quarantined_skill(skill_id, path_str):
                 console.print(f"[bold green]✅ Repaired! '{skill_id}' is now ACTIVE.[/bold green]\n")
             else:
                 console.print(f"[bold red]❌ Failed: Files for '{skill_id}' are still missing or invalid.[/bold red]\n")
+        else:
+            # Default fallback for "s", "skip", or any unrecognized input
+            console.print("[dim]Skipped.[/dim]\n")
 
     Prompt.ask("\nPress Enter to return to Diagnostics Menu")
 

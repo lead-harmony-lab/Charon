@@ -1,0 +1,232 @@
+[
+  {
+    "role_name": "system_steward",
+    "agent_id": "steward",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Steward",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_cleaner",
+    "agent_id": "cleaner",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Cleaner",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_scout",
+    "agent_id": "scout",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Scout",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_engineer",
+    "agent_id": "engineer",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for System Engineer",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_planner",
+    "agent_id": "planner",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Planner",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_overseer",
+    "agent_id": "overseer",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Overseer",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_archivist",
+    "agent_id": "archivist",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Archivist",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_spark",
+    "agent_id": "spark",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for TheSpark",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_generalist",
+    "agent_id": "generalist",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Generalist",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_machinist",
+    "agent_id": "machinist",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Machinist",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_quartermaster",
+    "agent_id": "quartermaster",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Primary role for The Quartermaster",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "system_fallback",
+    "agent_id": "generalist",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Ultimate system safety net fallback",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "archivist",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "cleaner",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "engineer",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "generalist",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "machinist",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "overseer",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "planner",
+    "agent_id": "planner",
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "quartermaster",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "scout",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "spark",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  },
+  {
+    "role_name": "steward",
+    "agent_id": null,
+    "is_mandatory": false,
+    "is_system_core": false,
+    "description": "Dynamic agent execution role",
+    "_relations": {
+      "agent_id": "agent_registry.agent_id"
+    }
+  }
+]

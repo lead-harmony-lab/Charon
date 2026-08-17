@@ -1,8 +1,8 @@
 """
-charon/cli/librarian/db/sync.py
-System Version: v0.2.0 | File Revision: 2.2.0
+System Version: v2.0.0 | File Revision: 3.5.0
 
 Module: Filesystem re-indexing, plugin metadata querying, and orphan quarantine logic.
+Target Standard: Manifest Schema V2 Only.
 """
 
 import json
@@ -36,7 +36,7 @@ def get_plugin_actions(
             try:
                 with open(m_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    extracted_skill_id = data.get("skill_id")
+                    extracted_skill_id = data.get("package") or data.get("skill_id")
             except Exception as e:
                 logger.debug(f"Could not parse manifest at {manifest_path}: {e}")
 
@@ -104,7 +104,7 @@ def flag_quarantined_orphans(db_path: Optional[Union[str, Path]] = None) -> int:
 
 
 def run_sync(db_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
-    """Re-indexes filesystem manifests into SQLite and syncs system actions.
+    """Re-indexes filesystem manifests into SQLite, flags orphans, and syncs system actions.
 
     Returns:
         Dict[str, Any]: Re-indexing stats and operational state.
@@ -123,7 +123,11 @@ def run_sync(db_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
     if hasattr(librarian, "reindex_skills"):
         librarian.reindex_skills()
 
+    # Synchronize system action contracts registry with SQLite state
     contracts_synced, contracts_count, contract_msg = sync_system_actions(target_db)
+
+    # Audit and flag missing entry files in SQLite quarantine
+    flagged_orphans = flag_quarantined_orphans(target_db)
 
     registered_count = 0
     if target_db.exists():
@@ -139,6 +143,7 @@ def run_sync(db_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
     return {
         "success": True,
         "registered_handlers": registered_count,
+        "quarantined_orphans": flagged_orphans,
         "contracts_synced": contracts_synced,
         "contracts_count": contracts_count,
         "contracts_message": contract_msg,

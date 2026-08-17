@@ -1,47 +1,38 @@
 """
 charon/core/coordinator/blackboard.py
-System Version: v0.9.0 | File Revision: 9.0.0
+System Version: v1.0.0 | File Revision: 10.0.0
 
-Module: Core state blackboard and execution TaskBlackboard models.
-Refactored for the Active Execution Envelope (Work Contract) paradigm.
-Provides strongly-typed schemas for multi-step artifact propagation, task payloads,
-contract reflection, strict diagnostic gap tracing, and state hydration.
+Module: DB-backed state blackboard and execution TaskBlackboard wrapper.
+Refactored for the Zero-Trust Execution Engine paradigm.
+Provides strongly-typed schemas for artifact propagation, task payloads,
+and strict diagnostic gap tracing, persisting instantly to SQLite state.
 """
 
 import json
+import sqlite3
 import uuid
 from datetime import datetime, timezone
-from enum import Enum, IntEnum
-from typing import Any, Callable, Dict, List, Optional, Set
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from charon.core.contracts import ContractResponse, ExecutionStatus
-from charon.core.skills.librarian import SkillLibrarian
 
 
 class TaskStatus(str, Enum):
-    """Lifecycle status of a TaskBlackboard."""
-
+    """Lifecycle status of a Task in the Zero-Trust Coordinator."""
     PENDING = "PENDING"
-    IN_PROGRESS = "IN_PROGRESS"
-    NEEDS_ESCALATION = "NEEDS_ESCALATION"
+    PLANNING = "PLANNING"
+    RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
-
-
-class EscalationLevel(IntEnum):
-    """The 4-Level Self-Healing Escalation Hierarchy."""
-
-    L1_SPECIALIST = 1        # Domain specialist Work Contract execution
-    L2_OS_AUTOMATION = 2     # OS automation and shell operations
-    L3_DIAGNOSTIC = 3        # Diagnostic planning & environment analysis
-    L4_ENGINEER_FALLBACK = 4 # System engineer fallback & custom schema repair
+    REJECTED = "REJECTED"
 
 
 class ThoughtType(str, Enum):
     """Categorizes the phase of internal role/coordinator reasoning."""
-
     ANALYSIS = "ANALYSIS"
     PLANNING = "PLANNING"
     EXECUTION = "EXECUTION"
@@ -50,377 +41,133 @@ class ThoughtType(str, Enum):
 
 
 class ThoughtRecord(BaseModel):
-    """Granular CoT reasoning step emitted by the Coordinator or Specialist Roles."""
+    """Granular CoT reasoning step emitted by the Coordinator or Agents."""
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    record_id: str = Field(
-        default_factory=lambda: f"thg-{uuid.uuid4().hex[:6]}",
-        description="Unique identifier for the reasoning record.",
-    )
-    task_id: str = Field(description="Associated blackboard task ID.")
-    source_role: str = Field(description="Abstract role or module key emitting the thought.")
-    thought_type: ThoughtType = Field(
-        default=ThoughtType.ANALYSIS,
-        description="Phase category of the reasoning step.",
-    )
+    record_id: str = Field(default_factory=lambda: f"thg-{uuid.uuid4().hex[:6]}")
+    source_role: str = Field(description="Abstract role or agent_id emitting the thought.")
+    thought_type: ThoughtType = Field(default=ThoughtType.ANALYSIS)
     message: str = Field(description="Internal CoT narrative payload.")
-    context_data: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional telemetry payloads (e.g., partial payload contexts).",
-    )
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
-        description="UTC timestamp of thought emission.",
-    )
-
-
-class UnfulfilledRequirement(BaseModel):
-    """Represents a discrete goal delegated to an Agent's Work Contract."""
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    requirement_id: str = Field(
-        default_factory=lambda: f"req-{uuid.uuid4().hex[:6]}",
-        description="Unique identifier for the requirement.",
-    )
-    capability_required: str = Field(
-        description="The target default action mapping to the agent's Work Contract envelope."
-    )
-    target_artifact_key: Optional[str] = Field(
-        default=None,
-        description="Key in the blackboard artifacts dictionary required for this step.",
-    )
-    preferred_tool: Optional[str] = Field(
-        default=None,
-        description="Optional preferred tool/app requested by the user, passed as context.",
-    )
-    escalation_level: EscalationLevel = Field(
-        default=EscalationLevel.L1_SPECIALIST,
-        description="Current escalation level assigned to resolve this requirement.",
-    )
-    assigned_role_override: Optional[str] = Field(
-        default=None,
-        description="Abstract system role assigned during escalation (e.g., 'system_engineer').",
-    )
-    assigned_agent_override: Optional[str] = Field(
-        default=None,
-        description="Resolved agent_id matching agent_registry FK constraint.",
-    )
-    parameters: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="The declarative payload bound to this requirement, consumed by the Work Contract.",
-    )
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ExecutionStepRecord(BaseModel):
     """Audit log entry representing a single Work Contract execution turn."""
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    step_number: int = Field(description="1-based index of the step execution order.")
-    role: str = Field(description="The specialist role or agent_id that executed the envelope.")
-    action: str = Field(description="The assigned default action/capability.")
-    status: str = Field(
-        default="SUCCESS",
-        description="Outcome status of the Work Contract step.",
-    )
-    output_summary: str = Field(
-        default="",
-        description="Summary of the Artifact produced or diagnostic gap returned.",
-    )
-    produced_artifacts: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="New canonical artifacts added to the blackboard during this step.",
-    )
-    unresolved_gaps: List[str] = Field(
-        default_factory=list,
-        description="Sub-task requirements that could not be completed during this turn.",
-    )
-    error_message: Optional[str] = Field(
-        default=None,
-        description="High-level error string if execution failed.",
-    )
-    diagnostic_context: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Serialized DiagnosticArtifact data detailing fast-fail schema or execution violations.",
-    )
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
-        description="UTC timestamp of execution.",
-    )
+    step_number: int = Field(description="Index of the step execution order.")
+    agent_id: str = Field(description="The agent_id that executed the envelope.")
+    skill_id: str = Field(description="The authorized tool used.")
+    status: str = Field(default="SUCCESS", description="Outcome status of the Work Contract.")
+    output_summary: str = Field(default="", description="Summary of the Artifact produced.")
+    diagnostic_context: Optional[Dict[str, Any]] = Field(default=None)
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
-class TaskBlackboard(BaseModel):
-    """The shared state blackboard for Charon execution turns."""
-    model_config = ConfigDict(strict=True, extra="forbid")
+class TaskBlackboard:
+    """
+    Lightweight, DB-backed wrapper for task state.
+    Provides agents and the Coordinator a clean interface to mutate state
+    without holding massive JSON structures in memory.
+    """
 
-    task_id: str = Field(
-        default_factory=lambda: f"task-{uuid.uuid4().hex[:8]}",
-        description="Unique execution session identifier.",
-    )
-    original_prompt: str = Field(
-        description="Unmodified prompt string supplied by the user."
-    )
-    status: TaskStatus = Field(
-        default=TaskStatus.PENDING,
-        description="Current operational state of the blackboard.",
-    )
-    current_escalation_level: EscalationLevel = Field(
-        default=EscalationLevel.L1_SPECIALIST,
-        description="Highest active escalation level reached during execution.",
-    )
+    def __init__(self, db_path: Union[str, Path], task_id: str):
+        self.db_path = Path(db_path)
+        self.task_id = task_id
 
-    artifacts: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Ground truth key-value store containing validated operational Artifacts.",
-    )
-    unfulfilled_requirements: List[UnfulfilledRequirement] = Field(
-        default_factory=list,
-        description="Queue of unsatisfied intents that the Coordinator delegates to Work Contracts.",
-    )
-    active_gaps: List[str] = Field(
-        default_factory=list,
-        description="Accumulated diagnostic gaps requiring re-routing or escalation.",
-    )
-    execution_history: List[ExecutionStepRecord] = Field(
-        default_factory=list,
-        description="Ordered list of execution records for auditing and reflection.",
-    )
-    thought_stream: List[ThoughtRecord] = Field(
-        default_factory=list,
-        description="Live chronological CoT reasoning events emitted during execution.",
-    )
-    mutation_ledger: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="Detailed audit log of state mutations.",
-    )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="System runtime metadata.",
-    )
+    def _get_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
 
-    @property
-    def available_artifact_keys(self) -> Set[str]:
-        """Returns non-empty keys available in the current blackboard artifact store."""
-        return {k for k, v in self.artifacts.items() if v is not None and v != ""}
+    def _get_results_payload(self) -> Dict[str, Any]:
+        """Fetches and parses the current results_json from DB."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT results_json FROM task_state WHERE task_id = ?",
+                (self.task_id,)
+            ).fetchone()
 
-    def get_role_display_name(self, role: str) -> str:
-        """Resolves human-readable presentation label via SkillLibrarian accessors."""
-        clean_role = str(getattr(role, "value", role)).strip() if role else ""
-        if not clean_role:
-            return "system_generalist"
+            if not row or not row["results_json"]:
+                return {"artifacts": {}, "history": [], "thought_stream": []}
+            return json.loads(row["results_json"])
 
-        librarian = SkillLibrarian.get_instance()
-        if hasattr(librarian, "get_display_name_for_role") and callable(
-            librarian.get_display_name_for_role
-        ):
-            name = librarian.get_display_name_for_role(clean_role)
-            if name:
-                return name
-        if hasattr(librarian, "get_display_name_for_agent") and callable(
-            librarian.get_display_name_for_agent
-        ):
-            name = librarian.get_display_name_for_agent(clean_role)
-            if name:
-                return name
-        return clean_role
+    def _update_results_payload(self, payload: Dict[str, Any]) -> None:
+        """Serializes and writes the results payload back to DB."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE task_state SET results_json = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                (json.dumps(payload), self.task_id)
+            )
 
-    def emit_thought(
-        self,
-        source_role: str,
-        message: str,
-        thought_type: ThoughtType = ThoughtType.ANALYSIS,
-        context_data: Optional[Dict[str, Any]] = None,
-        bus_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> ThoughtRecord:
-        """Emits a live CoT reasoning event to the blackboard and optional bus callback."""
-        clean_role = (
-            str(getattr(source_role, "value", source_role)).strip()
-            if source_role
-            else "system_generalist"
-        )
-        record = ThoughtRecord(
-            task_id=self.task_id,
-            source_role=clean_role,
-            thought_type=thought_type,
-            message=message,
-            context_data=context_data or {},
-        )
-        self.thought_stream.append(record)
+    # ---------------------------------------------------------
+    # CORE STATE MUTATORS
+    # ---------------------------------------------------------
 
-        if bus_callback and callable(bus_callback):
-            try:
-                bus_callback(record.model_dump())
-            except Exception:
-                pass
-
-        return record
-
-    def _safe_summary(self, value: Any, max_len: int = 250) -> str:
-        """Safely summarizes ledger values to prevent memory bloat with large artifacts."""
-        if value is None:
-            return "None"
-        try:
-            val_str = str(value)
-            if len(val_str) > max_len:
-                return f"{val_str[:max_len]}... [Truncated {len(val_str) - max_len} chars]"
-            return val_str
-        except Exception:
-            return f"<{type(value).__name__} Unserializable Object>"
-
-    def set_artifact(self, key: str, value: Any, source_role: str = "system_generalist") -> None:
-        """Stores a ground truth artifact on the blackboard and logs a truncated mutation."""
-        clean_role = (
-            str(getattr(source_role, "value", source_role)).strip()
-            if source_role
-            else "system_generalist"
-        )
-        previous_val = self.artifacts.get(key)
-        self.artifacts[key] = value
-
-        self.mutation_ledger.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "key": key,
-            "previous_value": self._safe_summary(previous_val),
-            "new_value": self._safe_summary(value),
-            "source_role": clean_role,
-        })
+    def set_artifact(self, key: str, value: Any) -> None:
+        """Stores a ground truth artifact directly to disk."""
+        payload = self._get_results_payload()
+        if "artifacts" not in payload:
+            payload["artifacts"] = {}
+        payload["artifacts"][key] = value
+        self._update_results_payload(payload)
 
     def get_artifact(self, key: str, default: Any = None) -> Any:
-        """Retrieves a ground truth artifact from the blackboard."""
-        return self.artifacts.get(key, default)
+        """Retrieves a ground truth artifact from disk."""
+        payload = self._get_results_payload()
+        return payload.get("artifacts", {}).get(key, default)
 
-    def has_artifact(self, key: str) -> bool:
-        """Checks if a ground truth artifact exists and is non-empty."""
-        val = self.artifacts.get(key)
-        return val is not None and val != ""
-
-    def log_gap(self, gap_description: str) -> None:
-        """Logs an unresolved step gap for the Coordinator's reflection loop."""
-        if gap_description and gap_description not in self.active_gaps:
-            self.active_gaps.append(gap_description)
-
-    def clear_gap(self, gap_description: str) -> None:
-        """Removes a resolved gap from the active gaps list."""
-        if gap_description in self.active_gaps:
-            self.active_gaps.remove(gap_description)
-
-    def record_step(
-        self,
-        role: Any = None,
-        action: str = "",
-        status: str = "SUCCESS",
-        output_summary: str = "",
-        produced_artifacts: Optional[Dict[str, Any]] = None,
-        unresolved_gaps: Optional[List[str]] = None,
-        error_message: Optional[str] = None,
-        diagnostic_context: Optional[Dict[str, Any]] = None,
-        agent: Any = None,  # Alias for role
-    ) -> ExecutionStepRecord:
-        """Appends an execution turn to history and updates blackboard artifacts."""
-        resolved_role = role if role is not None else agent
-        clean_role = (
-            str(getattr(resolved_role, "value", resolved_role)).strip()
-            if resolved_role
-            else "system_generalist"
+    def emit_thought(self, source_role: str, message: str, thought_type: ThoughtType = ThoughtType.ANALYSIS) -> ThoughtRecord:
+        """Emits a live CoT reasoning event directly to the DB."""
+        record = ThoughtRecord(
+            source_role=source_role,
+            thought_type=thought_type,
+            message=message
         )
+        payload = self._get_results_payload()
+        if "thought_stream" not in payload:
+            payload["thought_stream"] = []
 
-        produced = produced_artifacts or {}
-        gaps = unresolved_gaps or []
-        step_number = len(self.execution_history) + 1
-
-        record = ExecutionStepRecord(
-            step_number=step_number,
-            role=clean_role,
-            action=action,
-            status=status,
-            output_summary=output_summary,
-            produced_artifacts=produced,
-            unresolved_gaps=gaps,
-            error_message=error_message,
-            diagnostic_context=diagnostic_context,
-        )
-        self.execution_history.append(record)
-
-        for gap in gaps:
-            self.log_gap(gap)
-
-        for k, v in produced.items():
-            self.set_artifact(k, v, source_role=clean_role)
-
+        payload["thought_stream"].append(record.model_dump())
+        self._update_results_payload(payload)
         return record
 
-    def record_contract_response(
-        self,
-        response: ContractResponse,
-        action: str,
-        produced_artifacts_map: Optional[Dict[str, Any]] = None,
-    ) -> ExecutionStepRecord:
-        """Integrates a formal Pydantic ContractResponse directly into state history."""
-        produced = produced_artifacts_map or {}
-        summary = (
-            " | ".join(response.accomplishments)
-            if response.accomplishments
-            else (response.reason or "")
+    def record_step(self, agent_id: str, skill_id: str, status: str = "SUCCESS", output_summary: str = "", diagnostic_context: Optional[Dict[str, Any]] = None) -> None:
+        """Appends an execution turn to history in the DB."""
+        payload = self._get_results_payload()
+        if "history" not in payload:
+            payload["history"] = []
+
+        step_number = len(payload["history"]) + 1
+        record = ExecutionStepRecord(
+            step_number=step_number,
+            agent_id=agent_id,
+            skill_id=skill_id,
+            status=status,
+            output_summary=output_summary,
+            diagnostic_context=diagnostic_context
         )
 
-        resolved_role = getattr(response, "agent_name", "system_generalist")
-        is_success = response.status in (ExecutionStatus.SUCCESS, ExecutionStatus.SATISFIED)
+        payload["history"].append(record.model_dump())
+        self._update_results_payload(payload)
 
-        diag_dict = response.diagnostics.model_dump() if response.diagnostics else None
+    # ---------------------------------------------------------
+    # COORDINATOR PLAN SYNC
+    # ---------------------------------------------------------
 
-        return self.record_step(
-            role=resolved_role,
-            action=action,
-            status=response.status.value,
-            output_summary=summary,
-            produced_artifacts=produced,
-            unresolved_gaps=getattr(response, "unresolved_gaps", []),
-            error_message=response.reason if not is_success else None,
-            diagnostic_context=diag_dict,
-        )
+    def get_plan(self) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT plan_json FROM task_state WHERE task_id = ?", (self.task_id,)).fetchone()
+            if row and row["plan_json"]:
+                return json.loads(row["plan_json"])
+            return None
 
-    def pop_requirement(self, requirement_id: str) -> Optional[UnfulfilledRequirement]:
-        """Removes and returns a fulfilled requirement from the queue."""
-        for idx, req in enumerate(self.unfulfilled_requirements):
-            if req.requirement_id == requirement_id:
-                return self.unfulfilled_requirements.pop(idx)
-        return None
+    def get_current_step_index(self) -> int:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT current_step_index FROM task_state WHERE task_id = ?", (self.task_id,)).fetchone()
+            return row["current_step_index"] if row else 0
 
-    def escalate(self, reason: str) -> EscalationLevel:
-        """Escalates the task level up to Level 4."""
-        if self.current_escalation_level < EscalationLevel.L4_ENGINEER_FALLBACK:
-            self.current_escalation_level = EscalationLevel(
-                self.current_escalation_level.value + 1
-            )
-            self.status = TaskStatus.NEEDS_ESCALATION
-        else:
-            self.status = TaskStatus.FAILED
-
-        self.log_gap(f"Escalated to Level {self.current_escalation_level.value}: {reason}")
-        return self.current_escalation_level
-
-    def mark_completed(self) -> None:
-        """Marks the blackboard state as fully satisfied."""
-        self.status = TaskStatus.COMPLETED
-        self.unfulfilled_requirements.clear()
-        self.active_gaps.clear()
-
-    def to_task_state_record(self) -> Dict[str, Any]:
-        """Serializes blackboard into SQLite `task_state` schema representation."""
-        override_agent = None
-        if self.unfulfilled_requirements:
-            override_agent = self.unfulfilled_requirements[0].assigned_agent_override
-
-        return {
-            "task_id": self.task_id,
-            "status": self.status.value,
-            "escalation_level": int(self.current_escalation_level),
-            "assigned_agent_override": override_agent,
-            "plan_json": json.dumps([req.model_dump() for req in self.unfulfilled_requirements]),
-            "results_json": json.dumps({
-                "artifacts": self.artifacts,
-                "history": [rec.model_dump() for rec in self.execution_history],
-                "active_gaps": self.active_gaps,
-            }),
-            "metadata_json": json.dumps(self.metadata),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+    def get_status(self) -> TaskStatus:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT status FROM task_state WHERE task_id = ?", (self.task_id,)).fetchone()
+            return TaskStatus(row["status"]) if row else TaskStatus.PENDING

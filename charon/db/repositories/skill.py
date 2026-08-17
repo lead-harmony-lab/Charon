@@ -1,6 +1,6 @@
 """
 charon/db/repositories/skill.py
-System Version: v0.6.0 | File Revision: 6.4.0
+System Version: v0.6.1 | File Revision: 6.5.1
 
 Module: Data Access Layer repository for skill dynamic indexing, quarantine lifecycle management,
 agent-capability authorization bindings, and CBAC skill permission assignments.
@@ -8,6 +8,8 @@ agent-capability authorization bindings, and CBAC skill permission assignments.
 
 import json
 import logging
+import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -23,15 +25,38 @@ class SkillRepository:
     def __init__(self, db_path: Union[str, Path] = STATE_DB_PATH):
         self.db_path = str(db_path)
 
-    def ensure_schema(self) -> None:
+    @contextmanager
+    def _get_or_create_connection(self, conn: Optional[sqlite3.Connection] = None, **kwargs):
+        """
+        Dependency Injection Router:
+        Yields the injected transaction connection if provided, otherwise opens and yields
+        a fresh connection using the specified kwargs.
+        """
+        if conn:
+            yield conn
+        else:
+            with get_connection(self.db_path, **kwargs) as new_conn:
+                yield new_conn
+
+    @contextmanager
+    def transaction(self, conn: Optional[sqlite3.Connection] = None, **kwargs):
+        """
+        Yields an active SQLite connection wrapped in an explicit transaction context block.
+        Automatically issues a COMMIT on clean exit or ROLLBACK if an exception is raised.
+        """
+        with self._get_or_create_connection(conn, **kwargs) as active_conn:
+            with active_conn:
+                yield active_conn
+
+    def ensure_schema(self, conn: Optional[sqlite3.Connection] = None) -> None:
         """
         Initializes standard skill, permission binding, and agent mapping tables using CBAC Schema V3.
 
         Note: Table creation is provided here for bootstrap initialization. Once the database schema
         stabilizes, DDL logic should be executed strictly through a dedicated system migration runner.
         """
-        with get_connection(self.db_path) as conn:
-            conn.executescript("""
+        with self._get_or_create_connection(conn) as c:
+            c.executescript("""
                 CREATE TABLE IF NOT EXISTS skill_registry (
                     skill_id TEXT PRIMARY KEY,
                     action_name TEXT NOT NULL UNIQUE,
@@ -79,33 +104,33 @@ class SkillRepository:
     # 1. REGISTRY CLEANUP & DESERIALIZATION UTILITIES
     # =========================================================================
 
-    def clear_registry(self, clear_agent_mappings: bool = False) -> None:
+    def clear_registry(self, clear_agent_mappings: bool = False, conn: Optional[sqlite3.Connection] = None) -> None:
         """Clears indexed skills and permission bindings prior to re-indexing."""
-        with get_connection(self.db_path) as conn:
+        with self._get_or_create_connection(conn) as c:
             if clear_agent_mappings:
-                conn.execute("DELETE FROM agent_skill_map;")
-                conn.execute("DELETE FROM skill_permissions;")
-                conn.execute("DELETE FROM skill_registry;")
+                c.execute("DELETE FROM agent_skill_map;")
+                c.execute("DELETE FROM skill_permissions;")
+                c.execute("DELETE FROM skill_registry;")
             else:
                 # Stash mappings in a session-level TEMP TABLE before clearing
-                conn.execute("""
+                c.execute("""
                     CREATE TEMP TABLE IF NOT EXISTS temp_agent_skill_map AS 
                     SELECT * FROM agent_skill_map;
                 """)
-                conn.execute("DELETE FROM skill_permissions;")
-                conn.execute("DELETE FROM skill_registry;")
+                c.execute("DELETE FROM skill_permissions;")
+                c.execute("DELETE FROM skill_registry;")
 
-    def clear_all_skills(self, clear_agent_mappings: bool = False) -> None:
+    def clear_all_skills(self, clear_agent_mappings: bool = False, conn: Optional[sqlite3.Connection] = None) -> None:
         """Alias for clear_registry to support clean full re-indexing sweeps."""
-        self.clear_registry(clear_agent_mappings=clear_agent_mappings)
+        self.clear_registry(clear_agent_mappings=clear_agent_mappings, conn=conn)
 
-    def clear_all_agent_skill_mappings(self, agent_id: Optional[str] = None) -> None:
+    def clear_all_agent_skill_mappings(self, agent_id: Optional[str] = None, conn: Optional[sqlite3.Connection] = None) -> None:
         """Clears agent-skill capability mappings."""
-        with get_connection(self.db_path) as conn:
+        with self._get_or_create_connection(conn) as c:
             if agent_id:
-                conn.execute("DELETE FROM agent_skill_map WHERE agent_id = ?;", (agent_id,))
+                c.execute("DELETE FROM agent_skill_map WHERE agent_id = ?;", (agent_id,))
             else:
-                conn.execute("DELETE FROM agent_skill_map;")
+                c.execute("DELETE FROM agent_skill_map;")
 
     def _get_permissions_map_for_skills(
         self, conn: Any, skill_ids: List[str]
@@ -175,6 +200,7 @@ class SkillRepository:
         self,
         record: Optional[Dict[str, Any]] = None,
         required_permissions: Optional[List[str]] = None,
+        conn: Optional[sqlite3.Connection] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -235,9 +261,9 @@ class SkillRepository:
                 is_global=EXCLUDED.is_global,
                 updated_at=CURRENT_TIMESTAMP;
         """
-        with get_connection(self.db_path) as conn:
+        with self._get_or_create_connection(conn) as c:
             # Handle skill action name collisions / skill_id updates
-            cursor = conn.execute(
+            cursor = c.execute(
                 "SELECT skill_id FROM skill_registry WHERE action_name = ? AND skill_id != ?;",
                 (rec["action_name"], rec["skill_id"]),
             )
@@ -245,16 +271,16 @@ class SkillRepository:
 
             if old_row:
                 old_skill_id = old_row[0] if isinstance(old_row, (tuple, list)) else old_row["skill_id"]
-                conn.execute("DELETE FROM agent_skill_map WHERE skill_id = ?;", (old_skill_id,))
-                conn.execute("DELETE FROM skill_permissions WHERE skill_id = ?;", (old_skill_id,))
-                conn.execute("DELETE FROM skill_registry WHERE skill_id = ?;", (old_skill_id,))
+                c.execute("DELETE FROM agent_skill_map WHERE skill_id = ?;", (old_skill_id,))
+                c.execute("DELETE FROM skill_permissions WHERE skill_id = ?;", (old_skill_id,))
+                c.execute("DELETE FROM skill_registry WHERE skill_id = ?;", (old_skill_id,))
 
             # Insert/Update Skill Record
-            conn.execute(query, rec)
+            c.execute(query, rec)
 
             # Restore agent mappings safely from session TEMP TABLE (verifying agent existence)
             try:
-                conn.execute(
+                c.execute(
                     """
                     INSERT INTO agent_skill_map (agent_id, skill_id, created_at)
                     SELECT b.agent_id, b.skill_id, b.created_at 
@@ -270,17 +296,25 @@ class SkillRepository:
 
             # Bind permissions with auto-seeding in permission_registry to guarantee FK integrity
             if req_perms:
+                # Ensure default permission group exists for auto-registered permissions
+                c.execute(
+                    """
+                    INSERT INTO permission_groups (group_id, display_name, description)
+                    VALUES ('general', 'General Permissions', 'Default group for auto-registered skill permissions')
+                    ON CONFLICT(group_id) DO NOTHING;
+                    """
+                )
                 for perm_id in req_perms:
                     try:
-                        conn.execute(
+                        c.execute(
                             """
-                            INSERT INTO permission_registry (perm_id, description, created_at)
-                            VALUES (?, ?, CURRENT_TIMESTAMP)
+                            INSERT INTO permission_registry (perm_id, group_id, description, created_at)
+                            VALUES (?, 'general', ?, CURRENT_TIMESTAMP)
                             ON CONFLICT(perm_id) DO NOTHING;
                             """,
                             (perm_id, f"Auto-registered permission for skill {rec['skill_id']}"),
                         )
-                        conn.execute(
+                        c.execute(
                             """
                             INSERT INTO skill_permissions (skill_id, perm_id)
                             VALUES (?, ?)
@@ -296,64 +330,63 @@ class SkillRepository:
                             pe,
                         )
 
-    def promote_skill(self, skill_id: str) -> bool:
+    def promote_skill(self, skill_id: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Promotes a quarantined/staged skill to ACTIVE status."""
         query = """
             UPDATE skill_registry 
             SET status = 'ACTIVE', quarantine_reason = NULL, updated_at = CURRENT_TIMESTAMP 
             WHERE skill_id = ?;
         """
-        with get_connection(self.db_path) as conn:
-            cursor = conn.execute(query, (skill_id,))
+        with self._get_or_create_connection(conn) as c:
+            cursor = c.execute(query, (skill_id,))
             return cursor.rowcount > 0
 
-    def quarantine_skill(self, skill_id: str, reason: str) -> bool:
+    def quarantine_skill(self, skill_id: str, reason: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Forces a skill into QUARANTINED status with an explicit reason."""
         query = """
             UPDATE skill_registry 
             SET status = 'QUARANTINED', quarantine_reason = ?, updated_at = CURRENT_TIMESTAMP 
             WHERE skill_id = ?;
         """
-        with get_connection(self.db_path) as conn:
-            cursor = conn.execute(query, (reason, skill_id))
+        with self._get_or_create_connection(conn) as c:
+            cursor = c.execute(query, (reason, skill_id))
             return cursor.rowcount > 0
 
-    def set_skill_active_status(self, skill_id: str, is_active: bool) -> bool:
+    def set_skill_active_status(self, skill_id: str, is_active: bool, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Enables ('ACTIVE') or disables ('DISABLED') a specific skill in the database."""
         status = "ACTIVE" if is_active else "DISABLED"
         query = "UPDATE skill_registry SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE skill_id = ?;"
-        with get_connection(self.db_path) as conn:
-            cursor = conn.execute(query, (status, skill_id))
+        with self._get_or_create_connection(conn) as c:
+            cursor = c.execute(query, (status, skill_id))
             return cursor.rowcount > 0
 
     # =========================================================================
     # 3. QUERY & READ OPERATIONS
     # =========================================================================
 
-    def get_all_active_skills(self) -> List[Dict[str, Any]]:
-        """Fetches all ACTIVE skills from the registry using a read-only transaction."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
+    def get_all_active_skills(self, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
+        """Fetches all ACTIVE skills from the registry."""
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(
                 "SELECT * FROM skill_registry WHERE status = 'ACTIVE';"
             )
             rows = cursor.fetchall()
             skill_ids = [r["skill_id"] for r in rows]
-            perm_map = self._get_permissions_map_for_skills(conn, skill_ids)
-            return [self._parse_skill_row(row, conn, perm_map) for row in rows]
+            perm_map = self._get_permissions_map_for_skills(c, skill_ids)
+            return [self._parse_skill_row(row, c, perm_map) for row in rows]
 
-    def get_all_skills(self) -> List[Dict[str, Any]]:
+    def get_all_skills(self, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
         """
         Fetches ALL skills from the registry across all statuses.
-        v0.3.x Fix: Removed restrictive 'ACTIVE' filter alias.
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute("SELECT * FROM skill_registry;")
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute("SELECT * FROM skill_registry;")
             rows = cursor.fetchall()
             skill_ids = [r["skill_id"] for r in rows]
-            perm_map = self._get_permissions_map_for_skills(conn, skill_ids)
-            return [self._parse_skill_row(row, conn, perm_map) for row in rows]
+            perm_map = self._get_permissions_map_for_skills(c, skill_ids)
+            return [self._parse_skill_row(row, c, perm_map) for row in rows]
 
-    def get_unassigned_skills(self) -> List[Dict[str, Any]]:
+    def get_unassigned_skills(self, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
         """
         Fetches skills that are ready (ACTIVE or STAGED) but not currently
         assigned to any agent in the agent_skill_map.
@@ -363,14 +396,14 @@ class SkillRepository:
             WHERE status IN ('ACTIVE', 'STAGED') 
             AND skill_id NOT IN (SELECT skill_id FROM agent_skill_map);
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query)
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query)
             rows = cursor.fetchall()
             skill_ids = [r["skill_id"] for r in rows]
-            perm_map = self._get_permissions_map_for_skills(conn, skill_ids)
-            return [self._parse_skill_row(row, conn, perm_map) for row in rows]
+            perm_map = self._get_permissions_map_for_skills(c, skill_ids)
+            return [self._parse_skill_row(row, c, perm_map) for row in rows]
 
-    def get_skill_by_action(self, action_name: str) -> Optional[Dict[str, Any]]:
+    def get_skill_by_action(self, action_name: str, conn: Optional[sqlite3.Connection] = None) -> Optional[Dict[str, Any]]:
         """Retrieves an active skill manifest directly by action trigger name or skill_id."""
         query = """
             SELECT 
@@ -382,39 +415,39 @@ class SkillRepository:
               AND status = 'ACTIVE' 
             LIMIT 1;
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (action_name, action_name))
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query, (action_name, action_name))
             row = cursor.fetchone()
             if not row:
                 return None
-            perm_map = self._get_permissions_map_for_skills(conn, [row["skill_id"]])
-            return self._parse_skill_row(row, conn, perm_map)
+            perm_map = self._get_permissions_map_for_skills(c, [row["skill_id"]])
+            return self._parse_skill_row(row, c, perm_map)
 
-    def get_skill_by_id(self, skill_id: str) -> Optional[Dict[str, Any]]:
+    def get_skill_by_id(self, skill_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[Dict[str, Any]]:
         """Retrieves skill metadata directly by unique skill_id regardless of status."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(
                 "SELECT * FROM skill_registry WHERE skill_id = ?;",
                 (skill_id,),
             )
             row = cursor.fetchone()
             if not row:
                 return None
-            perm_map = self._get_permissions_map_for_skills(conn, [skill_id])
-            return self._parse_skill_row(row, conn, perm_map)
+            perm_map = self._get_permissions_map_for_skills(c, [skill_id])
+            return self._parse_skill_row(row, c, perm_map)
 
-    def get_skill_permissions(self, skill_id: str) -> List[str]:
+    def get_skill_permissions(self, skill_id: str, conn: Optional[sqlite3.Connection] = None) -> List[str]:
         """Fetches all primitive permission IDs bound to a given skill."""
         query = "SELECT perm_id FROM skill_permissions WHERE skill_id = ?;"
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (skill_id,))
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query, (skill_id,))
             return [str(row["perm_id"]) for row in cursor.fetchall()]
 
     # =========================================================================
     # 4. GRANULAR AGENT & SKILL PERMISSIONS (`agent_skill_map`)
     # =========================================================================
 
-    def grant_agent_skill(self, agent_id: str, action_name: str) -> bool:
+    def grant_agent_skill(self, agent_id: str, action_name: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Grants capability to an agent for an action by resolving its skill_id."""
         query = """
             INSERT INTO agent_skill_map (agent_id, skill_id)
@@ -424,8 +457,8 @@ class SkillRepository:
             ON CONFLICT DO NOTHING;
         """
         try:
-            with get_connection(self.db_path) as conn:
-                cursor = conn.execute(query, (agent_id, action_name))
+            with self._get_or_create_connection(conn) as c:
+                cursor = c.execute(query, (agent_id, action_name))
                 return cursor.rowcount > 0
         except Exception as e:
             logger.error(
@@ -436,7 +469,7 @@ class SkillRepository:
             )
             return False
 
-    def revoke_agent_skill(self, agent_id: str, action_name: str) -> bool:
+    def revoke_agent_skill(self, agent_id: str, action_name: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Revokes capability from an agent for an action by resolving its skill_id."""
         query = """
             DELETE FROM agent_skill_map
@@ -445,8 +478,8 @@ class SkillRepository:
             );
         """
         try:
-            with get_connection(self.db_path) as conn:
-                cursor = conn.execute(query, (agent_id, action_name))
+            with self._get_or_create_connection(conn) as c:
+                cursor = c.execute(query, (agent_id, action_name))
                 return cursor.rowcount > 0
         except Exception as e:
             logger.error(
@@ -457,11 +490,11 @@ class SkillRepository:
             )
             return False
 
-    def link_agent_to_skill(self, agent_id: str, skill_id: str) -> bool:
+    def link_agent_to_skill(self, agent_id: str, skill_id: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Directly links an agent to a specific skill_id."""
-        return self.grant_skill_by_id(agent_id, skill_id)
+        return self.grant_skill_by_id(agent_id, skill_id, conn=conn)
 
-    def grant_skill_by_id(self, agent_id: str, skill_id: str) -> bool:
+    def grant_skill_by_id(self, agent_id: str, skill_id: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Directly grants a skill implementation to an agent using skill_id."""
         query = """
             INSERT INTO agent_skill_map (agent_id, skill_id)
@@ -469,8 +502,8 @@ class SkillRepository:
             ON CONFLICT DO NOTHING;
         """
         try:
-            with get_connection(self.db_path) as conn:
-                cursor = conn.execute(query, (agent_id, skill_id))
+            with self._get_or_create_connection(conn) as c:
+                cursor = c.execute(query, (agent_id, skill_id))
                 return cursor.rowcount > 0
         except Exception as e:
             logger.error(
@@ -481,12 +514,12 @@ class SkillRepository:
             )
             return False
 
-    def revoke_skill_by_id(self, agent_id: str, skill_id: str) -> bool:
+    def revoke_skill_by_id(self, agent_id: str, skill_id: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Directly revokes a skill implementation from an agent using skill_id."""
         query = "DELETE FROM agent_skill_map WHERE agent_id = ? AND skill_id = ?;"
         try:
-            with get_connection(self.db_path) as conn:
-                cursor = conn.execute(query, (agent_id, skill_id))
+            with self._get_or_create_connection(conn) as c:
+                cursor = c.execute(query, (agent_id, skill_id))
                 return cursor.rowcount > 0
         except Exception as e:
             logger.error(
@@ -498,7 +531,7 @@ class SkillRepository:
             return False
 
     def get_actions_for_agent(
-        self, agent_id: str, alt_agent_id: Optional[str] = None
+        self, agent_id: str, alt_agent_id: Optional[str] = None, conn: Optional[sqlite3.Connection] = None
     ) -> List[str]:
         """Fetches distinct ACTIVE action capability keys strictly granted to an agent (or marked global)."""
         target_id = agent_id
@@ -510,12 +543,12 @@ class SkillRepository:
               AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             ORDER BY sr.action_name ASC;
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (target_id,))
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query, (target_id,))
             return [str(row["action_name"]) for row in cursor.fetchall()]
 
     def get_skills_for_agent(
-        self, agent_id: str, alt_agent_id: Optional[str] = None
+        self, agent_id: str, alt_agent_id: Optional[str] = None, conn: Optional[sqlite3.Connection] = None
     ) -> List[Dict[str, Any]]:
         """Fetches full skill dictionary records for ACTIVE actions accessible to an agent."""
         target_id = agent_id
@@ -527,15 +560,15 @@ class SkillRepository:
               AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             ORDER BY sr.skill_id ASC;
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (target_id,))
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query, (target_id,))
             rows = cursor.fetchall()
             skill_ids = [r["skill_id"] for r in rows]
-            perm_map = self._get_permissions_map_for_skills(conn, skill_ids)
-            return [self._parse_skill_row(row, conn, perm_map) for row in rows]
+            perm_map = self._get_permissions_map_for_skills(c, skill_ids)
+            return [self._parse_skill_row(row, c, perm_map) for row in rows]
 
     def is_skill_available(
-        self, action_name: str, agent_id: str, alt_agent_id: Optional[str] = None
+        self, action_name: str, agent_id: str, alt_agent_id: Optional[str] = None, conn: Optional[sqlite3.Connection] = None
     ) -> bool:
         """Verifies if an action contract is ACTIVE and accessible by an agent."""
         target_id = agent_id
@@ -548,11 +581,11 @@ class SkillRepository:
               AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'))
             LIMIT 1;
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (action_name, target_id))
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query, (action_name, target_id))
             return cursor.fetchone() is not None
 
-    def get_agents_for_action(self, action_name: str) -> List[str]:
+    def get_agents_for_action(self, action_name: str, conn: Optional[sqlite3.Connection] = None) -> List[str]:
         """Fetches a list of agent_ids authorized to execute an ACTIVE action capability."""
         query = """
             SELECT DISTINCT 
@@ -566,11 +599,11 @@ class SkillRepository:
               AND sr.status = 'ACTIVE'
               AND (sr.is_global = 1 OR asm.agent_id IS NOT NULL);
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (action_name,))
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query, (action_name,))
             return [str(row["agent_id"]) for row in cursor.fetchall() if row["agent_id"]]
 
-    def get_equipped_skills_for_agent(self, agent_id: str) -> List[str]:
+    def get_equipped_skills_for_agent(self, agent_id: str, conn: Optional[sqlite3.Connection] = None) -> List[str]:
         """Fetches distinct ACTIVE skill_ids equipped to an agent via agent_skill_map or global flag."""
         query = """
             SELECT DISTINCT sr.skill_id
@@ -579,6 +612,6 @@ class SkillRepository:
             WHERE sr.status = 'ACTIVE'
               AND (sr.is_global = 1 OR asm.agent_id IN (?, '*'));
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query, (agent_id,))
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query, (agent_id,))
             return [str(row["skill_id"]) for row in cursor.fetchall()]

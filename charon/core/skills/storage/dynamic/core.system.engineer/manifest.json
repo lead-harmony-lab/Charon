@@ -1,0 +1,61 @@
+{
+  "package": "core.system.engineer",
+  "skill_type": "contract",
+  "version": "2.0.0",
+  "domain": "Orchestration",
+  "status": "ACTIVE",
+  "description": "Terminal repair and diagnostic execution envelope for the system_engineer role.",
+  "author": "Charon System",
+  "entrypoint": "plugin.py",
+  "system_requirements": [],
+  "allowed_agents": [
+    "system_engineer"
+  ],
+  "actions": [
+    {
+      "action_name": "sys_engineer_remediate_diagnostic",
+      "skill_id": "wc_engineer_workspace",
+      "handler_name": "EngineerWorkContract",
+      "description": "Default execution envelope for the system_engineer role. Accepts escalated DiagnosticArtifact payloads and system constraints, performing root-cause analysis, sandboxed code diff patching, and verification.",
+      "required_permissions": [
+        "contract:execute",
+        "sys:process:execute",
+        "sys:fs:write",
+        "sys:fs:read"
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "user_query": {
+            "type": "string",
+            "description": "Declarative task payload or issue description requiring system engineering intervention."
+          },
+          "diagnostic_history": {
+            "type": "array",
+            "description": "Accumulated DiagnosticArtifact records from lower-level agent fast-fail executions.",
+            "items": {
+              "type": "object"
+            }
+          },
+          "target_files": {
+            "type": "array",
+            "description": "Explicit file paths identified as targets for inspection or patch application.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "user_query"
+        ]
+      },
+      "consumed_artifacts": [
+        "DiagnosticArtifact"
+      ],
+      "produced_artifacts": [
+        "EngineeringArtifact",
+        "DiagnosticArtifact"
+      ]
+    }
+  ]
+}

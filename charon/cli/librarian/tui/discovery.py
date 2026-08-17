@@ -1,16 +1,14 @@
 """
-charon/cli/librarian/tui/discovery.py
-System Version: v0.2.0 | File Revision: 3.0.0
+System Version: v2.0.0 | File Revision: 3.5.0
 
 Module: Discovery, system dependency validation, and manifest inspection UI orchestrator.
 Database operations are fully decoupled and delegated to charon.cli.librarian.db.
+Target Standard: Manifest Schema V2 Only.
 """
 
-import importlib.util
 import json
 import logging
 from pathlib import Path
-import shutil
 from typing import Any, Dict, List, Set
 
 from charon.cli.librarian.db import (
@@ -24,40 +22,17 @@ from charon.cli.librarian.db import (
     revoke_agent_permission_db,
     set_agent_default_skill_db,
 )
+from charon.cli.librarian.validators import verify_system_dependencies
 from charon.config.paths import (
+    AGENT_REGISTRY_JSON,
     DYNAMIC_SKILLS_DIR,
     PKG_DYNAMIC_SKILLS_DIR,
     PKG_STAGED_SKILLS_DIR,
     STATE_DB_PATH,
 )
 from charon.core.skills import SkillLibrarian
-from charon.db.connection import get_connection
 
 logger = logging.getLogger("charon.cli.librarian.tui.discovery")
-
-PYPI_TO_MODULE_MAP = {
-    "beautifulsoup4": "bs4",
-    "paho-mqtt": "paho",
-    "python-dateutil": "dateutil",
-    "pyyaml": "yaml",
-    "pillow": "PIL",
-    "opencv-python": "cv2",
-    "scikit-learn": "sklearn",
-}
-
-
-def is_requirement_installed(req: str) -> bool:
-    """Checks if a requirement exists as an OS binary on $PATH or an importable Python module."""
-    if shutil.which(req):
-        return True
-
-    cleaned_req = req.strip().lower()
-    module_name = PYPI_TO_MODULE_MAP.get(cleaned_req, cleaned_req)
-
-    try:
-        return importlib.util.find_spec(module_name) is not None
-    except (ImportError, ValueError, AttributeError):
-        return False
 
 
 def get_active_db_agent_ids() -> Set[str]:
@@ -65,53 +40,64 @@ def get_active_db_agent_ids() -> Set[str]:
     return get_active_agent_ids()
 
 
-def _sync_manifest_allowed_agents(skill_id: str, allowed_agents: List[str]) -> None:
-    """Locates manifest.json on disk for skill_id and updates its allowed_agents key."""
-    roots = [PKG_DYNAMIC_SKILLS_DIR, DYNAMIC_SKILLS_DIR, PKG_STAGED_SKILLS_DIR]
-    norm_id = skill_id.lower().replace("sk_", "")
-
-    for root in roots:
-        if not root.exists():
-            continue
-        for manifest_path in root.rglob("manifest.json"):
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-                sid = data.get("skill_id", manifest_path.parent.name)
-                sid_norm = sid.lower().replace("sk_", "")
-
-                if sid == skill_id or sid_norm == norm_id or manifest_path.parent.name == skill_id:
-                    data["allowed_agents"] = allowed_agents
-                    with open(manifest_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=2)
-                    logger.debug(f"Updated allowed_agents for '{skill_id}' in {manifest_path}")
-                    return
-            except Exception as e:
-                logger.warning(f"Failed to sync manifest allowed_agents at {manifest_path}: {e}")
-
-
 def grant_agent_permission(agent_id: str, skill_id: str) -> None:
-    """Grants an agent permission for a skill in agent_skill_map and updates manifest.json."""
-    success, target_sk_id, authorized_agents = grant_agent_permission_db(agent_id, skill_id)
-    if success and target_sk_id:
-        _sync_manifest_allowed_agents(target_sk_id, authorized_agents)
+    """Grants an agent permission for a skill in agent_skill_map (Database is ground truth)."""
+    grant_agent_permission_db(agent_id, skill_id)
 
 
 def revoke_agent_permission(agent_id: str, skill_id: str) -> None:
-    """Revokes an agent's permission for a skill in agent_skill_map and updates manifest.json."""
-    success, target_sk_id, remaining_agents = revoke_agent_permission_db(agent_id, skill_id)
-    if success and target_sk_id:
-        _sync_manifest_allowed_agents(target_sk_id, remaining_agents)
+    """Revokes an agent's permission for a skill in agent_skill_map (Database is ground truth)."""
+    revoke_agent_permission_db(agent_id, skill_id)
 
 
-def set_agent_default_skill(agent_id: str, skill_id: str) -> bool:
-    """Binds a skill as default_action target for an agent in Schema V3."""
-    return set_agent_default_skill_db(agent_id, skill_id)
+def _update_agent_registry_json(agent_id: str, action_name: str) -> bool:
+    """Persists default_action change to agent_registry.json on disk."""
+    if not AGENT_REGISTRY_JSON.exists():
+        logger.error(f"Agent registry JSON file not found at {AGENT_REGISTRY_JSON}")
+        return False
+
+    try:
+        with open(AGENT_REGISTRY_JSON, "r", encoding="utf-8") as f:
+            agents = json.load(f)
+
+        updated = False
+        for agent in agents:
+            if agent.get("agent_id") == agent_id:
+                agent["default_action"] = action_name
+                updated = True
+                break
+
+        if not updated:
+            logger.warning(f"Agent '{agent_id}' not found in {AGENT_REGISTRY_JSON}")
+            return False
+
+        with open(AGENT_REGISTRY_JSON, "w", encoding="utf-8") as f:
+            json.dump(agents, f, indent=2)
+
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update agent_registry.json for agent '{agent_id}': {e}")
+        return False
+
+
+def set_agent_default_skill(agent_id: str, action_name: str) -> bool:
+    """Binds a skill as default_action target for an agent in Schema V3 across disk and DB."""
+    json_updated = _update_agent_registry_json(agent_id, action_name)
+    if not json_updated:
+        logger.warning(
+            f"Could not persist default action '{action_name}' to agent_registry.json for '{agent_id}'."
+        )
+
+    success, msg, warn = set_agent_default_skill_db(agent_id, action_name)
+    if warn:
+        logger.warning(warn)
+    if not success:
+        logger.error(msg)
+    return success and json_updated
 
 
 def discover_skills() -> List[Dict[str, Any]]:
-    """Scans search roots and returns enriched skill records validated against DB permissions."""
+    """Scans search roots and returns enriched skill records derived from V2 manifests validated against DB permissions."""
     skill_permissions = get_skill_permissions()
     skill_defaults = get_skill_defaults()
     skills_by_id: Dict[str, Dict[str, Any]] = {}
@@ -131,27 +117,42 @@ def discover_skills() -> List[Dict[str, Any]]:
                     data = json.load(f)
 
                 folder_name = manifest_path.parent.name
-                skill_id = data.get("skill_id", folder_name)
+                raw_actions = data.get("actions", [])
+
+                # Package identity fallback sequence: package > actions[0].skill_id > folder_name
+                package_name = data.get("package")
+                if not package_name and raw_actions and isinstance(raw_actions[0], dict):
+                    package_name = raw_actions[0].get("skill_id")
+
+                skill_id = package_name or folder_name
                 norm_id = skill_id.lower().replace("sk_", "")
                 sk_id = f"sk_{norm_id}"
 
+                # Decoupled system requirements verification
                 sys_reqs = data.get("system_requirements", [])
-                missing_reqs = [req for req in sys_reqs if not is_requirement_installed(req)]
+                _, missing_reqs = verify_system_dependencies(sys_reqs)
 
-                actions = data.get("supported_actions", {})
-                action_keys = list(actions.keys()) if isinstance(actions, dict) else [str(a) for a in actions]
+                supported_actions: Dict[str, str] = {}
+                primary_action = raw_actions[0] if raw_actions and isinstance(raw_actions[0], dict) else {}
+                primary_action_name = primary_action.get("action_name", skill_id)
+                primary_handler_name = primary_action.get("handler_name", "N/A")
+                primary_description = data.get("description") or primary_action.get("description", "No description provided.")
 
-                category = data.get("category")
-                if not category or category == "General":
-                    if any("kicad" in a or "cad" in a for a in action_keys):
-                        category = "Hardware & EDA"
-                    elif any("pdf" in a or "ocr" in a or "chunk" in a for a in action_keys):
-                        category = "Document Processing"
-                    elif any("vector" in a or "prune" in a for a in action_keys):
-                        category = "Data & Embeddings"
-                    else:
-                        category = "General / Utility"
+                for act in raw_actions:
+                    if isinstance(act, dict):
+                        act_name = act.get("action_name")
+                        if act_name:
+                            supported_actions[act_name] = act.get("handler_name", "")
 
+                action_keys = list(supported_actions.keys())
+
+                # Manifest Schema V2: skill_type and domain resolution
+                skill_type = data.get("skill_type", "tool")
+                domain = data.get("domain", "General")
+                formatted_type = skill_type.replace("_", " ").title()
+                category = f"{domain} / {formatted_type}"
+
+                # Resolve DB-backed authorized agents
                 auth_set = (
                     skill_permissions.get(skill_id, set())
                     | skill_permissions.get(norm_id, set())
@@ -163,15 +164,7 @@ def discover_skills() -> List[Dict[str, Any]]:
 
                 authorized_agents = sorted(list(auth_set))
 
-                if "allowed_agents" not in data:
-                    data["allowed_agents"] = authorized_agents
-                    try:
-                        with open(manifest_path, "w", encoding="utf-8") as f:
-                            json.dump(data, f, indent=2)
-                        logger.info(f"Upgraded prototype manifest standard at {manifest_path}")
-                    except Exception as e:
-                        logger.warning(f"Failed to save upgraded manifest at {manifest_path}: {e}")
-
+                # Resolve DB-backed defaults
                 def_set = (
                     skill_defaults.get(skill_id, set())
                     | skill_defaults.get(norm_id, set())
@@ -185,22 +178,27 @@ def discover_skills() -> List[Dict[str, Any]]:
 
                 skills_by_id[skill_id] = {
                     "skill_id": skill_id,
-                    "version": data.get("version", "1.0.0"),
-                    "description": data.get("description", "No description provided."),
+                    "package": data.get("package", skill_id),
+                    "action_name": primary_action_name,
+                    "handler_name": primary_handler_name,
+                    "version": data.get("version", "2.0.0"),
+                    "description": primary_description,
                     "folder_name": folder_name,
                     "manifest_path": manifest_path,
-                    "stage": data.get("stage", stage),
+                    "stage": data.get("status", stage),
+                    "skill_type": skill_type,
+                    "domain": domain,
                     "category": category,
-                    "allowed_agents": data.get("allowed_agents", []),
+                    "is_global": data.get("is_global", False),
                     "authorized_agents": authorized_agents,
                     "default_for_agents": default_for_agents,
                     "system_requirements": sys_reqs,
                     "missing_requirements": missing_reqs,
-                    "supported_actions": actions,
+                    "supported_actions": supported_actions,
                     "health_status": "HEALTHY" if not missing_reqs else "MISSING_PREREQ",
                 }
             except Exception as e:
-                logger.warning(f"Failed to load or parse skill manifest at {manifest_path}: {e}")
+                logger.warning(f"Failed to load or parse V2 skill manifest at {manifest_path}: {e}")
                 continue
 
     return list(skills_by_id.values())
@@ -248,9 +246,6 @@ def audit_filesystem_manifest_health() -> Dict[str, Any]:
             continue
         for manifest_path in root.rglob("manifest.json"):
             try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
                 plugin_path = manifest_path.parent / "plugin.py"
                 if not plugin_path.exists():
                     audit_report["is_healthy"] = False
@@ -276,12 +271,13 @@ def save_manifest(skill: Dict[str, Any], librarian: SkillLibrarian) -> None:
     with open(manifest_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    data["category"] = skill["category"]
-    data["version"] = skill.get("version", "1.0.0")
-    data["description"] = skill.get("description", "")
-
-    if "allowed_agents" not in data:
-        data["allowed_agents"] = skill.get("authorized_agents", [])
+    # Purge deprecated V1 key and persist V2 schema keys
+    data.pop("category", None)
+    data["skill_type"] = skill.get("skill_type", data.get("skill_type", "tool"))
+    data["domain"] = skill.get("domain", data.get("domain", "General"))
+    data["version"] = skill.get("version", "2.0.0")
+    if "is_global" in skill:
+        data["is_global"] = skill["is_global"]
 
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)

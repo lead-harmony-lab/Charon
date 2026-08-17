@@ -1,0 +1,50 @@
+[
+  {
+    "role_name": "sys_admin",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "sys_admin",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "sys_admin",
+    "group_id": "network_comms",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "sys_admin",
+    "group_id": "agent_control",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "task_executor",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "task_executor",
+    "group_id": "network_comms",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  }
+]

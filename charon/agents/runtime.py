@@ -1,21 +1,22 @@
 """
 charon/agents/runtime.py
-System Version: v0.5.3 | File Revision: 2.5.0
+System Version: v1.0.0 | File Revision: 3.1.0
 
 Universal Data-Driven Agent Runtime.
 Instantiated dynamically by the Router using metadata stored in SQLite agent_registry.
-Acts as the hardware container that executes an assigned Work Contract (Default Action).
+Acts as the hardware container that binds CBAC roles and executes an assigned Work Contract,
+wrapped inside the BaseAgent Zero-Trust Ephemeral Envelope.
 """
 
 import importlib
 import logging
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
-from charon.agents.base import BaseAgent, BaseWorkContract
+from charon.agents.base import BaseAgent
+from charon.core.permissions.contract_policies import BaseContractPolicy
 from charon.core.skills import SkillLibrarian
 from charon.gateway.gatekeeper import GatekeeperManager
-from charon.core.utils import normalize_role_name
 
 logger = logging.getLogger("Charon.Agents.Runtime")
 
@@ -23,14 +24,15 @@ logger = logging.getLogger("Charon.Agents.Runtime")
 class RuntimeAgent(BaseAgent):
     """
     Universal concrete implementation of BaseAgent.
-    Hydrated with persona, default_action_contract, and database metadata.
-    Delegates all execution routing to its bound Work Contract via SkillLibrarian resolution.
+    Hydrated with persona, CBAC role, default_action_contract, and database metadata.
+    Delegates tool calls through BaseAgent.execute_sub_skill for CBAC validation.
     """
 
     def __init__(
         self,
         agent_id: str,
         default_action_contract: str,
+        role_name: Optional[str] = None,
         display_name: str = "",
         description: str = "",
         priority_weight: float = 1.0,
@@ -38,11 +40,11 @@ class RuntimeAgent(BaseAgent):
         librarian: Optional[SkillLibrarian] = None,
         **kwargs: Any,
     ) -> None:
-        # BaseAgent applies utils.normalize_role_name during instantiation
         super().__init__(
             librarian=librarian,
             agent_id=agent_id,
-            ledger=kwargs.get("ledger")
+            role_name=role_name,
+            ledger=kwargs.get("ledger"),
         )
 
         self.name = display_name or self.agent_id.capitalize()
@@ -50,40 +52,36 @@ class RuntimeAgent(BaseAgent):
         self.priority_weight = priority_weight
         self.heavy_model = heavy_model
 
-        # 1. Extract the Gatekeeper from kwargs (passed down by the Coordinator/Router)
+        # Extract GatekeeperManager from context kwargs
         self.gatekeeper: Optional[GatekeeperManager] = kwargs.get("gatekeeper")
         if not self.gatekeeper:
-            logger.warning(f"[{self.agent_id}] Initialized without GatekeeperManager! Guardrails disabled.")
+            logger.warning(
+                f"[{self.agent_id}] Initialized without GatekeeperManager! Manual approval guardrails disabled."
+            )
 
-        # 2. Hydrate the Execution Envelope (Work Contract)
+        # Hydrate the Execution Envelope (Work Contract)
         self.work_contract = self._instantiate_contract(default_action_contract)
 
-        # 3. Bind the agent's telemetry methods directly to the contract
+        # Bind telemetry handlers
         if self.work_contract:
             self.work_contract.bind_telemetry(self.report_trace)
-            # self.work_contract.bind_cot(self.log_cot)  # Enable when CoT integration is ready
 
-    def _instantiate_contract(self, contract_name: str) -> Optional[BaseWorkContract]:
+    def _instantiate_contract(self, contract_name: str) -> Optional[BaseContractPolicy]:
         """
         Dynamically loads the Work Contract class required by this agent.
-        Queries the database via SkillLibrarian for the physical file location.
+        Queries database via SkillLibrarian for file location and instantiates contract handler.
         """
-        logger.info(f"[{self.agent_id}] Binding Work Contract envelope: {contract_name}")
+        logger.info(f"[{self.agent_id}] Binding Work Contract envelope '{contract_name}' (Role: {self.role_name})")
 
         if not self.librarian:
             logger.error(f"[{self.agent_id}] Librarian missing. Cannot resolve contract '{contract_name}'.")
             return None
 
-        # 1. Fetch the raw metadata manifest for the default_action
-        # We don't pass role_name here because the default_action is structurally guaranteed
-        # via the agent_registry FK, regardless of peripheral agent_skill_map entries.
         contract_manifest = self.librarian.get_action_manifest(contract_name)
-
         if not contract_manifest:
             logger.error(f"[{self.agent_id}] Contract '{contract_name}' not found in DB registry.")
             return None
 
-        # Handle object or dict manifest access securely
         get_val = lambda k: contract_manifest.get(k) if isinstance(contract_manifest, dict) else getattr(contract_manifest, k, None)
 
         raw_path = get_val("entry_file_path")
@@ -93,13 +91,11 @@ class RuntimeAgent(BaseAgent):
             logger.error(f"[{self.agent_id}] Invalid registry entry for '{contract_name}'. Missing file/handler.")
             return None
 
-        # 2. Normalize file paths to Python module notation (e.g. charon/contracts/planner.py -> charon.contracts.planner)
         module_path = raw_path
         if module_path.endswith('.py'):
             module_path = module_path[:-3]
         module_path = module_path.replace('/', '.').replace('\\', '.')
 
-        # 3. Dynamically import and hydrate the contract
         try:
             logger.debug(f"[{self.agent_id}] Importing {class_name} from {module_path}")
             module = importlib.import_module(module_path)
@@ -116,17 +112,12 @@ class RuntimeAgent(BaseAgent):
             logger.error(f"[{self.agent_id}] Critical failure instantiating contract {contract_name}: {e}")
             return None
 
-    def execute_task(
-        self,
-        task_payload: Dict[str, Any],
-        constraints: Optional[Dict[str, Any]] = None,
-    ) -> BaseModel:
+    def _execute_container(self, payload: Dict[str, Any]) -> BaseModel:
         """
-        Primary execution dispatch:
+        Internal execution dispatch (called by BaseAgent.execute_task after Zero-Trust envelope locks).
         1. Validates Work Contract existence.
-        2. Fetches all authorized peripheral tools (SkillManifests) from Librarian SSOT.
-        3. Delegates execution loop to the assigned Work Contract.
-        4. Returns a strictly validated Pydantic Artifact.
+        2. Fetches 'blinded' authorized tool schemas via BaseAgent.
+        3. Invokes Work Contract execution loop guarded by BaseAgent CBAC checks.
         """
         self.report_progress("Initiating Work Contract for task assignment", phase="contract_start")
 
@@ -135,27 +126,17 @@ class RuntimeAgent(BaseAgent):
                 f"[FAIL-FAST] Agent '{self.agent_id}' has no bound Work Contract. Execution aborted."
             )
 
-        if not self.librarian:
-            raise RuntimeError(
-                f"[FAIL-FAST] SkillLibrarian unavailable for runtime agent '{self.agent_id}'."
-            )
+        # BaseAgent restricts and provides this list via The Blinder
+        authorized_tool_schemas = self.get_authorized_tool_schemas()
 
-        # 1. Fetch authorized peripheral capabilities (We do NOT execute them yet)
-        authorized_tools_names = self.librarian.list_available_actions(self.agent_id)
-
-        # Re-hydrate the full tool manifests so the Contract can natively translate them
-        authorized_tools = []
-        for tool_name in authorized_tools_names:
-            manifest = self.librarian.get_action_manifest(tool_name, self.agent_id)
-            if manifest:
-                authorized_tools.append(manifest)
-
-        # 2. Delegate to the Work Contract wrapper
         logger.info(f"[{self.name}] Handing off payload to Work Contract: {self.work_contract.__class__.__name__}")
 
+        # Ingest both task payload and constraints (if generated by constraints.py)
+        constraints = payload.get("constraints") or payload.get("constraint_revision")
+
         result_artifact = self.work_contract.execute(
-            task_payload=task_payload,
-            authorized_tools=authorized_tools,
+            task_payload=payload.get("task_payload", payload),
+            authorized_tools=authorized_tool_schemas,
             coordinator_constraints=constraints
         )
 

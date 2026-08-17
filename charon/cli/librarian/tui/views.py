@@ -11,7 +11,7 @@ from typing import List, Optional
 from rich.console import Console
 from rich.prompt import Prompt
 
-from charon.cli.database import run_sync
+from charon.cli.librarian.db.sync import run_sync
 from charon.cli.librarian.tui.components import (
     display_skill_table,
     render_header,

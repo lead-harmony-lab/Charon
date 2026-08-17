@@ -1,10 +1,9 @@
 """
 charon/cli/librarian/tui/app.py
-System Version: v0.2.0 | File Revision: 2.4.0
+System Version: v0.2.1 | File Revision: 2.6.0
 
 Module: LibrarianTUI application orchestrator and main menu navigation loop.
-Refactored to trigger startup orphan quarantine auto-sweeps prior to database sync,
-integrating interactive quarantine selection prompts and detailed outcome summaries.
+Wired Option [2] to delegate to views_cbac.py management menu.
 """
 
 from pathlib import Path
@@ -17,7 +16,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.syntax import Syntax
 
-from charon.cli.database import run_sync
+from charon.cli.librarian.db.sync import run_sync
 from charon.cli.librarian.forge import main as run_forge
 from charon.cli.librarian.ingestion import (
     SKILLS_QUARANTINE_DIR,
@@ -31,12 +30,13 @@ from charon.cli.librarian.tui.diagnostics import run_diagnostics_suite
 from charon.cli.librarian.tui.discovery import (
     discover_skills,
     get_active_db_agent_ids,
+    get_open_gaps_count,
     get_quarantined_orphans_count,
-    get_open_gaps_count,      # <-- Added import
-    get_resolved_gaps_count   # <-- Added import
+    get_resolved_gaps_count,
 )
 from charon.cli.librarian.tui.prompts import prompt_quarantine_selection
 from charon.cli.librarian.tui.views import view_catalog
+from charon.cli.librarian.tui.views_cbac import view_cbac_management_menu
 from charon.core.skills import SkillLibrarian
 
 console = Console()
@@ -314,25 +314,23 @@ class LibrarianTUI:
             skills = discover_skills()
             self.agents = self._fetch_registered_agents()
 
-            # Calculate metrics for the header natively in the main loop
             broken_deps_count = sum(1 for s in skills if s.get("missing_requirements"))
             quarantined_count = get_quarantined_orphans_count()
-            open_gaps = get_open_gaps_count()             # <-- Added fetching
-            resolved_gaps = get_resolved_gaps_count()     # <-- Added fetching
+            open_gaps = get_open_gaps_count()
+            resolved_gaps = get_resolved_gaps_count()
 
-            # Wire the metrics into the main menu render
             render_header(
                 skill_count=len(skills),
                 agent_count=len(self.agents),
                 broken_deps_count=broken_deps_count,
                 orphan_count=quarantined_count,
-                open_gaps=open_gaps,                      # <-- Passed to component
-                resolved_gaps=resolved_gaps               # <-- Passed to component
+                open_gaps=open_gaps,
+                resolved_gaps=resolved_gaps,
             )
 
             console.print("\n[bold white]Main Menu:[/bold white]")
             console.print("  [1] 📚 Browse Skill Catalog (Interactive Views)")
-            console.print("  [2] 👤 Manage Agent Permission Matrix")
+            console.print("  [2] 🔐 Manage Agent Permissions & CBAC Contracts")
             console.print("  [3] 🛠️  Run Diagnostics & Manifest Maintenance Suite")
             console.print("  [4] ⚡ Inspect Open Skill Gaps (Forge Shortcut)")
             console.print("  [5] 📥 Ingest or Scaffold Skill Package")
@@ -343,7 +341,7 @@ class LibrarianTUI:
             if choice == "1":
                 view_catalog(self.agents, self.librarian)
             elif choice == "2":
-                view_catalog(self.agents, self.librarian, initial_filter="agent")
+                view_cbac_management_menu(self.agents, self.librarian)
             elif choice == "3":
                 self.run_diagnostics_suite()
             elif choice == "4":
@@ -357,6 +355,7 @@ class LibrarianTUI:
             elif choice.lower() == "q":
                 console.print("[bold cyan]Librarian session closed.[/bold cyan]")
                 break
+
 
 if __name__ == "__main__":
     try:

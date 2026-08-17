@@ -1,6 +1,6 @@
 """
 charon/config/paths.py
-System Version: v0.2.0 | File Revision: 1.6.0
+System Version: v0.2.0 | File Revision: 1.7.0
 
 Module: Application & Ecosystem XDG Path Resolver
 Defines canonical XDG-compliant storage paths for Charon background daemon runtime,
@@ -20,7 +20,17 @@ BASE_DIR = CHARON_PKG_DIR.parent                          # .../Charon
 
 # Internal Module Directories
 CONFIG_DIR = CHARON_PKG_DIR / "config"
-DEFINITIONS_DIR = CONFIG_DIR / "definitions"
+REGISTRY_DIR = CONFIG_DIR / "registry"
+
+# Explicit definition registry paths
+PERMISSION_GROUPS_JSON = REGISTRY_DIR / "permission_groups.json"
+PERMISSION_REGISTRY_JSON = REGISTRY_DIR / "permission_registry.json"
+ROLE_PERMISSION_GROUPS_JSON = REGISTRY_DIR / "role_permission_groups.json"
+SYSTEM_ACTIONS_JSON = REGISTRY_DIR / "system_actions.json"
+SKILL_REGISTRY_JSON = REGISTRY_DIR / "skill_registry.json"
+AGENT_REGISTRY_JSON = REGISTRY_DIR / "agent_registry.json"
+AGENT_SKILL_MAP_JSON = REGISTRY_DIR / "agent_skill_map.json"
+SYSTEM_ROLES_JSON = REGISTRY_DIR / "system_roles.json"
 
 # Move storage into core/skills
 CORE_DIR = CHARON_PKG_DIR / "core"
@@ -53,7 +63,6 @@ XDG_CACHE_HOME = Path(
 USER_CONFIG_DIR = XDG_CONFIG_HOME / "charon"
 CHARON_ENV_FILE = USER_CONFIG_DIR / "env"
 KICAD_DBL_PATH = USER_CONFIG_DIR / "partvault.kicad_dbl"
-SYSTEM_ACTIONS_FILE = DEFINITIONS_DIR / "system_actions.json"
 
 # Charon Runtime Data & Memory Storage
 CHARON_DATA_DIR = XDG_DATA_HOME / "charon"
@@ -107,7 +116,7 @@ def ensure_ecosystem_directories() -> None:
     WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
 
     # Internal Package Directories
-    DEFINITIONS_DIR.mkdir(parents=True, exist_ok=True)
+    REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     QUARANTINE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     PKG_STAGED_SKILLS_DIR.mkdir(parents=True, exist_ok=True)

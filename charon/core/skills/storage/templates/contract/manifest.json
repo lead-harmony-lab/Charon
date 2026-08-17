@@ -1,0 +1,30 @@
+{
+  "package": "",
+  "skill_type": "tool",
+  "version": "1.0.0",
+  "category": "Tool",
+  "status": "ACTIVE",
+  "description": "",
+  "author": "Charon Forge",
+  "system_requirements": [],
+  "actions": [
+    {
+      "action_name": "",
+      "skill_id": "",
+      "handler_name": "execute_action",
+      "description": "",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "example_param": {
+            "type": "string",
+            "description": "An example parameter to guide the tool's execution."
+          }
+        },
+        "required": []
+      },
+      "consumed_artifacts": [],
+      "produced_artifacts": []
+    }
+  ]
+}

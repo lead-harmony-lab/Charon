@@ -11,7 +11,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from charon.cli.database import get_plugin_actions, get_system_action_contract
+from charon.cli.librarian.db.contracts import get_system_action_contract
+from charon.cli.librarian.db.sync import get_plugin_actions
 from charon.cli.librarian.tui.inspector.helpers import (
     extract_action_desc,
     extract_handler_name,

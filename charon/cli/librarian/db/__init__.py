@@ -1,6 +1,6 @@
 """
 charon/cli/librarian/db/__init__.py
-System Version: v0.2.0 | File Revision: 2.2.0
+System Version: v0.2.0 | File Revision: 2.2.1
 
 Module: Public entry point for charon.cli.librarian.db sub-package.
 """
@@ -30,6 +30,7 @@ from .permissions import (
     resolve_skill_contract,
     revoke_agent_permission_db,
     set_agent_default_skill_db,
+    update_agent_default_action,
 )
 from .skills import (
     get_deficient_skills_db,
@@ -83,6 +84,7 @@ __all__ = [
     "grant_agent_permission_db",
     "revoke_agent_permission_db",
     "set_agent_default_skill_db",
+    "update_agent_default_action",
     # Skill Gap, Quarantine & Maintenance Operations
     "get_quarantined_orphans_count",
     "get_open_gaps_count",

@@ -1,0 +1,22 @@
+[
+  {
+    "group_id": "sys_core",
+    "display_name": "System Core Operations",
+    "description": "Permissions required for low-level process management, SQLite database mutations, and system state modifications."
+  },
+  {
+    "group_id": "filesystem_access",
+    "display_name": "Workspace Filesystem Access",
+    "description": "Read, write, and directory manipulation capabilities across local workspace paths."
+  },
+  {
+    "group_id": "network_comms",
+    "display_name": "Network & API Communications",
+    "description": "Outbound HTTP requests, external API dispatching, and remote socket connections."
+  },
+  {
+    "group_id": "agent_control",
+    "display_name": "Agent Lifecycle & Routing",
+    "description": "Capabilities to spawn sub-agents, mutate routing triggers, and manage dynamic skill invocation."
+  }
+]

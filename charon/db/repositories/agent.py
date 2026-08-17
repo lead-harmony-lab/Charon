@@ -1,6 +1,6 @@
 """
 charon/db/repositories/agent.py
-System Version: v0.6.2 | File Revision: 6.0.0
+System Version: v0.6.2 | File Revision: 6.1.0
 
 Module: Data Access Layer repository for agent configurations, capability descriptions,
 triage priority weights, system prompts, and action capability manifests.
@@ -9,6 +9,8 @@ Strictly relies on Database as SSOT with zero code-level fallback synthesis.
 
 import json
 import logging
+import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -23,10 +25,19 @@ class AgentRepository:
     def __init__(self, db_path: Union[str, Path]):
         self.db_path = str(db_path)
 
-    def ensure_schema(self) -> None:
+    @contextmanager
+    def _managed_conn(self, conn: Optional[sqlite3.Connection] = None, **kwargs):
+        """Yields the injected connection or provisions a new one from the pool."""
+        if conn:
+            yield conn
+        else:
+            with get_connection(self.db_path, **kwargs) as new_conn:
+                yield new_conn
+
+    def ensure_schema(self, conn: Optional[sqlite3.Connection] = None) -> None:
         """Initializes agent_registry table and executes schema migrations at startup."""
-        with get_connection(self.db_path) as conn:
-            conn.executescript("""
+        with self._managed_conn(conn) as db_conn:
+            db_conn.executescript("""
                 CREATE TABLE IF NOT EXISTS agent_registry (
                     agent_id TEXT PRIMARY KEY,
                     display_name TEXT NOT NULL,
@@ -43,7 +54,7 @@ class AgentRepository:
                 CREATE INDEX IF NOT EXISTS idx_agent_registry_is_active ON agent_registry(is_active);
             """)
 
-            cursor = conn.execute("PRAGMA table_info(agent_registry);")
+            cursor = db_conn.execute("PRAGMA table_info(agent_registry);")
             existing_columns = {row[1] for row in cursor.fetchall()}
 
             migrations = {
@@ -56,7 +67,7 @@ class AgentRepository:
                     logger.info(
                         f"[AgentRepository] Migrating schema: adding '{col_name}' column to agent_registry."
                     )
-                    conn.execute(
+                    db_conn.execute(
                         f"ALTER TABLE agent_registry ADD COLUMN {col_name} {col_type};"
                     )
 
@@ -92,7 +103,7 @@ class AgentRepository:
 
         return data
 
-    def resolve_agent_id(self, identifier: str) -> Optional[str]:
+    def resolve_agent_id(self, identifier: str, conn: Optional[sqlite3.Connection] = None) -> Optional[str]:
         """
         SSOT Identifier Resolver.
         Queries SQLite to map any raw identifier (agent_id, display_name, or system_role)
@@ -113,8 +124,8 @@ class AgentRepository:
                OR LOWER(sr.role_id) = LOWER(?)
             LIMIT 1;
         """
-        with get_connection(self.db_path, read_only=True) as conn:
-            cursor = conn.execute(query, (clean_id, clean_id, clean_id))
+        with self._managed_conn(conn, read_only=True) as db_conn:
+            cursor = db_conn.execute(query, (clean_id, clean_id, clean_id))
             row = cursor.fetchone()
             if row:
                 return str(row[0])
@@ -131,6 +142,7 @@ class AgentRepository:
     def upsert_agent(
         self,
         record: Optional[Dict[str, Any]] = None,
+        conn: Optional[sqlite3.Connection] = None,
         **kwargs: Any,
     ) -> bool:
         """Inserts or updates an agent record in the agent_registry table."""
@@ -173,12 +185,12 @@ class AgentRepository:
                 is_active=EXCLUDED.is_active,
                 updated_at=CURRENT_TIMESTAMP;
         """
-        with get_connection(self.db_path) as conn:
-            conn.execute(query, rec)
+        with self._managed_conn(conn) as db_conn:
+            db_conn.execute(query, rec)
         logger.info(f"[AgentRepository] Upserted agent record for '{rec['agent_id']}'.")
         return True
 
-    def update_manifest(self, agent_id: str, update_data: Dict[str, Any]) -> bool:
+    def update_manifest(self, agent_id: str, update_data: Dict[str, Any], conn: Optional[sqlite3.Connection] = None) -> bool:
         """Persists updated capability prompts, weights, triggers, or statuses to DB."""
         fields = []
         params = []
@@ -215,18 +227,18 @@ class AgentRepository:
 
         query = f"UPDATE agent_registry SET {', '.join(fields)} WHERE agent_id = ?"
 
-        with get_connection(self.db_path) as conn:
-            cursor = conn.execute(query, params)
+        with self._managed_conn(conn) as db_conn:
+            cursor = db_conn.execute(query, params)
             if cursor.rowcount == 0:
                 logger.warning(f"[AgentRepository] Agent '{agent_id}' not found for update.")
                 return False
         logger.info(f"[AgentRepository] Updated manifest for agent '{agent_id}'.")
         return True
 
-    def set_tool_status(self, agent_id: str, tool_identifier: str, enabled: bool) -> bool:
+    def set_tool_status(self, agent_id: str, tool_identifier: str, enabled: bool, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Enables or revokes an agent capability in agent_skill_map."""
-        with get_connection(self.db_path, row_factory=True) as conn:
-            cursor = conn.execute(
+        with self._managed_conn(conn, row_factory=True) as db_conn:
+            cursor = db_conn.execute(
                 "SELECT skill_id FROM skill_registry WHERE action_name = ? OR skill_id = ? LIMIT 1;",
                 (tool_identifier, tool_identifier),
             )
@@ -240,12 +252,12 @@ class AgentRepository:
             skill_id = row["skill_id"]
 
             if enabled:
-                conn.execute(
+                db_conn.execute(
                     "INSERT INTO agent_skill_map (agent_id, skill_id) VALUES (?, ?) ON CONFLICT DO NOTHING;",
                     (agent_id, skill_id),
                 )
             else:
-                conn.execute(
+                db_conn.execute(
                     "DELETE FROM agent_skill_map WHERE agent_id = ? AND skill_id = ?;",
                     (agent_id, skill_id),
                 )
@@ -254,25 +266,25 @@ class AgentRepository:
         )
         return True
 
-    def delete_agent(self, agent_id: str) -> bool:
+    def delete_agent(self, agent_id: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         """Deletes an agent record from the database."""
-        with get_connection(self.db_path) as conn:
-            cursor = conn.execute("DELETE FROM agent_registry WHERE agent_id = ?;", (agent_id,))
+        with self._managed_conn(conn) as db_conn:
+            cursor = db_conn.execute("DELETE FROM agent_registry WHERE agent_id = ?;", (agent_id,))
             return cursor.rowcount > 0
 
-    def clear_all_agents(self) -> None:
+    def clear_all_agents(self, conn: Optional[sqlite3.Connection] = None) -> None:
         """Clears all agents from agent_registry."""
-        with get_connection(self.db_path) as conn:
-            conn.execute("DELETE FROM agent_registry;")
+        with self._managed_conn(conn) as db_conn:
+            db_conn.execute("DELETE FROM agent_registry;")
 
     # =========================================================================
     # 3. READ & MANIFEST QUERY OPERATIONS (STRICT DB TRUTH)
     # =========================================================================
 
-    def get_active_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
+    def get_active_agent(self, agent_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[Dict[str, Any]]:
         """Retrieves active agent metadata and system prompt by agent_id."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
+        with self._managed_conn(conn, read_only=True, row_factory=True) as db_conn:
+            cursor = db_conn.execute(
                 """
                 SELECT agent_id, display_name, description, default_action,
                        system_prompt, priority_weight, override_triggers, is_active
@@ -284,18 +296,18 @@ class AgentRepository:
             row = cursor.fetchone()
             return self._parse_agent_row(row) if row else None
 
-    def get_active_agent_ids(self) -> List[str]:
+    def get_active_agent_ids(self, conn: Optional[sqlite3.Connection] = None) -> List[str]:
         """Retrieves a list of all active agent_ids registered in the system."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
+        with self._managed_conn(conn, read_only=True, row_factory=True) as db_conn:
+            cursor = db_conn.execute(
                 "SELECT agent_id FROM agent_registry WHERE is_active = 1 ORDER BY agent_id ASC;"
             )
             return [str(row["agent_id"]) for row in cursor.fetchall()]
 
-    def get_all_active_agents(self) -> List[Dict[str, Any]]:
+    def get_all_active_agents(self, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
         """Retrieves all active agent dicts from the database."""
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(
+        with self._managed_conn(conn, read_only=True, row_factory=True) as db_conn:
+            cursor = db_conn.execute(
                 """
                 SELECT agent_id, display_name, description, system_prompt, default_action,
                        priority_weight, override_triggers, is_active
@@ -306,7 +318,7 @@ class AgentRepository:
             )
             return [self._parse_agent_row(row) for row in cursor.fetchall()]
 
-    def get_all_manifests(self, active_only: bool = True) -> Dict[str, Dict[str, Any]]:
+    def get_all_manifests(self, active_only: bool = True, conn: Optional[sqlite3.Connection] = None) -> Dict[str, Dict[str, Any]]:
         """Retrieves registered agent manifests strictly from agent_skill_map bindings."""
         where_clause = "WHERE a.is_active = 1" if active_only else ""
         query = f"""
@@ -330,8 +342,8 @@ class AgentRepository:
             {where_clause}
             ORDER BY a.priority_weight DESC, a.agent_id ASC;
         """
-        with get_connection(self.db_path, read_only=True, row_factory=True) as conn:
-            cursor = conn.execute(query)
+        with self._managed_conn(conn, read_only=True, row_factory=True) as db_conn:
+            cursor = db_conn.execute(query)
             rows = cursor.fetchall()
 
             manifests: Dict[str, Dict[str, Any]] = {}
@@ -388,7 +400,7 @@ class AgentRepository:
 
             return manifests
 
-    def get_manifest(self, agent_id: str) -> Optional[Dict[str, Any]]:
+    def get_manifest(self, agent_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[Dict[str, Any]]:
         """Fetches a single agent manifest strictly using explicit database relationships."""
-        manifests = self.get_all_manifests(active_only=False)
+        manifests = self.get_all_manifests(active_only=False, conn=conn)
         return manifests.get(agent_id)

@@ -1,8 +1,9 @@
 """
 charon/cli/librarian/tui/components.py
-System Version: v0.2.0 | File Revision: 2.4.0
+System Version: v0.2.1 | File Revision: 2.5.0
 
-Module: System Version: v0.2.0 | File Revision: 2.1.0
+Module: UI component renderers for Librarian control panel header, staged previews, and skill tables.
+Updated header banner to reflect comprehensive CBAC system governance and skill orchestration.
 """
 
 from typing import Any, Dict, List
@@ -17,6 +18,7 @@ from charon.cli.librarian.ingestion import (
 )
 
 console = Console()
+
 
 def render_header(
     skill_count: int,
@@ -49,8 +51,8 @@ def render_header(
     )
 
     elements = [
-        "[bold cyan]🏛️  CHARON SKILL LIBRARIAN CONTROL PANEL[/bold cyan]",
-        "[dim]Interactive Governance & Permission Navigator[/dim]\n",
+        "[bold cyan]🏛️  CHARON SYSTEM GOVERNANCE & CAPABILITY CONTROL CENTER[/bold cyan]",
+        "[dim]Comprehensive CBAC Policy Engine & Dynamic Skill Orchestrator[/dim]\n",
         grid,
     ]
 
@@ -94,7 +96,6 @@ def render_staged_skills_preview() -> List[Dict[str, Any]]:
         header_style="bold yellow",
         border_style="cyan",
     )
-    # Added Index Column
     table.add_column("#", justify="right", style="dim")
     table.add_column("Identifier / Pathway", style="bold cyan")
     table.add_column("Type", style="dim white")
@@ -109,7 +110,6 @@ def render_staged_skills_preview() -> List[Dict[str, Any]]:
         elif "Missing" in status or "Incomplete" in status or "Unmanifested" in status:
             status = f"[bold red]⚠️  {status}[/bold red]"
 
-        # Added idx string to row rendering
         table.add_row(str(idx), item.get("name", "Unknown"), item.get("type", "Unknown"), status)
 
     console.print("\n", table, "\n")
