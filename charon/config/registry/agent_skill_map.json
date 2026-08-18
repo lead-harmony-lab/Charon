@@ -1,14 +1,6 @@
 [
   {
     "agent_id": "planner",
-    "skill_id": "synthesize_execution_plan",
-    "_relations": {
-      "agent_id": "agent_registry.agent_id",
-      "skill_id": "skill_registry.skill_id"
-    }
-  },
-  {
-    "agent_id": "planner",
     "skill_id": "wc_planner_workspace",
     "_relations": {
       "agent_id": "agent_registry.agent_id",

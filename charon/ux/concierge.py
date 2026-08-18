@@ -1,11 +1,12 @@
 """
 charon/ux/concierge.py
-System Version: v2.0.0
+System Version: v2.0.1
 
 Module: Post-execution proactive concierge assistant for Charon.
 Provides LLM-driven proactive follow-up proposals using strict Pydantic structured outputs.
 """
 
+import json
 import logging
 import re
 from typing import Any, Dict, Optional, Set
@@ -114,16 +115,20 @@ class ConciergeService:
         full_corpus = f"{user_query} {execution_result} {blackboard_artifacts}"
 
         try:
-            # 3. Request Structured Output (Assuming client supports native structured outputs)
-            response_data = await self.client.generate_structured(
+            # 3. Request Structured Output via Ollama Native API
+            response = await self.client.generate(
                 model=self.model_name,
                 system=CONCIERGE_SYSTEM_PROMPT,
                 prompt=user_content,
-                response_format=ConciergeProposal.model_json_schema()
+                format=ConciergeProposal.model_json_schema(),
+                options={"temperature": 0.2}
             )
 
-            if not response_data:
+            if not response or not response.get("response"):
                 return None
+
+            # Parse the raw JSON string returned by Ollama
+            response_data = json.loads(response["response"])
 
             # 4. Hydrate and Validate via Pydantic
             proposal = ConciergeProposal.model_validate(

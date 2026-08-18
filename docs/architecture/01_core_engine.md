@@ -46,7 +46,7 @@ The Core Engine provides the primary execution pipeline for Charon, translating 
 
 ### Core Engine Subsystem Reference
 
-* **`OrchestrationEngine` (`engine.py`):** High-level orchestration manager handling multi-step task planning, sequential step execution, `$STEP_X_OUTPUT` dynamic variable resolution, manual agent overrides, and self-healing exception handling.
+* **`OrchestrationEngine` (`orchestration.py`):** High-level orchestration manager handling multi-step task planning, sequential step execution, `$STEP_X_OUTPUT` dynamic variable resolution, manual agent overrides, and self-healing exception handling.
 * **`SessionGateway` (`session.py`):** Drives conversational context assembly, triggers double-pass intent parsing, injects vector store context rules, updates memory buffers, and generates thematic acknowledgments.
 * **`IntentParser` (`parser.py`):** Executes the double-pass LLM routing and structured payload extraction process using local `llama3.1` inference.
 * **`AgentDispatcher` (`dispatcher.py`):** Resolves agent enum definitions to concrete module classes (`_resolve_agent`), performs parameter fallback sanitization, auto-commits passive memory candidates, and manages agent output chaining.

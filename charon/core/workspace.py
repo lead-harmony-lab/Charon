@@ -1,6 +1,6 @@
 """
 charon/core/workspace.py
-System Version: v0.3.3 | File Revision: 2.0.0
+System Version: v0.3.4 | File Revision: 2.1.0
 
 Module: Isolated Task Workspace Manager.
 Manages scoped directory sandboxes for execution tasks, preventing directory traversal
@@ -13,9 +13,9 @@ import shutil
 from typing import List, Optional, Union
 
 try:
-    from charon.config.paths import DATA_DIR
+    from charon.config.paths import WORKSPACES_DIR
 except ImportError:
-    from charon.config import DATA_DIR
+    from charon.config import WORKSPACES_DIR
 
 logger = logging.getLogger("Charon.Core.Workspace")
 
@@ -29,7 +29,7 @@ class WorkspaceManager:
     """Manages scoped task directory creation, file staging, and path isolation."""
 
     def __init__(self, root_dir: Optional[Path] = None) -> None:
-        self.root_dir: Path = (root_dir or (DATA_DIR / "workspaces")).resolve()
+        self.root_dir: Path = (root_dir or WORKSPACES_DIR).resolve()
         self.root_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"[WORKSPACE] Initialized sandbox root at: {self.root_dir}")
 
@@ -71,7 +71,6 @@ class WorkspaceManager:
         workspace = self.get_task_workspace(task_id, create=True)
         target_path = (workspace / relative_filename).resolve()
 
-        # Enforce boundary containment strictly against THIS task's workspace
         self._verify_path_contained(target_path, boundary=workspace)
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,10 +135,14 @@ class WorkspaceManager:
         ]
 
     def cleanup_workspace(self, task_id: str) -> bool:
-        """Delete task workspace directory and all contained assets."""
+        """Delete task workspace directory and all contained assets safely."""
         try:
             workspace = self.get_task_workspace(task_id, create=False)
-            if workspace.exists():
+            # Guardrail: Reject deletion if workspace evaluates to the root boundary
+            if workspace == self.root_dir:
+                raise WorkspaceSecurityError("Refusing to delete root workspace directory.")
+
+            if workspace.exists() and workspace.is_dir():
                 shutil.rmtree(workspace)
                 logger.info(f"[WORKSPACE] Purged task workspace directory for '{task_id}'")
                 return True

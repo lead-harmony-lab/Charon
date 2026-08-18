@@ -15,7 +15,7 @@
     {
       "action_name": "sys_synthesize_execution_plan",
       "skill_id": "wc_planner_workspace",
-      "handler_name": "PlannerWorkContract",
+      "handler_name": "PlannerPolicyExecutionContainer",
       "description": "Default execution envelope for the system_planner. Accepts a raw task payload and contextual tools, returning a structured PlanArtifact DAG.",
       "required_permissions": [
         "contract:execute"

@@ -4439,7 +4439,7 @@ import uvicorn
 
 from charon.config.logging import setup_logging
 from charon.config.paths import ensure_ecosystem_directories
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.core.registry import SkillGapRegistry
 from charon.gateway.core import CharonDaemon
 from charon.gateway.middleware import APIKeyMiddleware
@@ -4503,6 +4503,7 @@ async def lifespan(app: FastAPI):
         logger.info(
             "[Charon.Daemon] AgentDispatcher injected with ui_telemetry_bridge callback."
         )
+
     # =====================================================================
 
     def bridge_telemetry_event(event) -> None:
@@ -4790,7 +4791,7 @@ from charon.config import (
     ensure_ecosystem_directories,
 )
 from charon.core.concierge import ConciergeService
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.core.ledger import ExecutionLedger
 from charon.core.queue import PersistentTaskQueue
 from charon.core.session import SessionGateway
@@ -4885,12 +4886,12 @@ class CharonDaemon:
     """Central orchestrator daemon managing persistent queues, state tables, and dispatch execution."""
 
     def __init__(
-        self,
-        engine: Optional[OrchestrationEngine] = None,
-        heavy_model: str = DEFAULT_HEAVY_MODEL,
-        triage_model: str = DEFAULT_TRIAGE_MODEL,
-        db_path: Optional[Union[str, Path]] = None,
-        concierge_min_confidence: float = DEFAULT_CONCIERGE_MIN_CONFIDENCE,
+            self,
+            engine: Optional[OrchestrationEngine] = None,
+            heavy_model: str = DEFAULT_HEAVY_MODEL,
+            triage_model: str = DEFAULT_TRIAGE_MODEL,
+            db_path: Optional[Union[str, Path]] = None,
+            concierge_min_confidence: float = DEFAULT_CONCIERGE_MIN_CONFIDENCE,
     ):
         ensure_ecosystem_directories()
         self.db_path: Path = Path(db_path) if db_path else PROJECT_MEMORY_DIR
@@ -4946,11 +4947,11 @@ class CharonDaemon:
         return await self.telemetry.verify_engine(retries=retries, delay=delay)
 
     async def evaluate_and_emit_concierge(
-        self,
-        user_input: str,
-        result_text: str,
-        completed_action: str = "",
-        params: Optional[Dict[str, Any]] = None,
+            self,
+            user_input: str,
+            result_text: str,
+            completed_action: str = "",
+            params: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Flexible Concierge evaluator with dynamic parameter inspection and authorization guards."""
         if not self.concierge or not self.emitter:

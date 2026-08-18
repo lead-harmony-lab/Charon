@@ -21,6 +21,7 @@ Requires-Dist: paho-mqtt>=2.1.0
 Requires-Dist: beautifulsoup4>=4.15.0
 Requires-Dist: pynvml>=13.0.1
 Requires-Dist: platformio>=5.0.4
+Requires-Dist: litellm>=1.83.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.1.0; extra == "dev"

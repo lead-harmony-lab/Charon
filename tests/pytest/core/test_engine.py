@@ -4,7 +4,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.intent import AgentEnum, RoutingPayload
 
 
@@ -40,7 +40,7 @@ ANY_EXTRACTION = AnyExtractionMatcher()
 
 def test_init_default_orchestrator():
     """Tests initializing OrchestrationEngine with default Orchestrator construction."""
-    with patch("charon.core.engine.Orchestrator") as mock_orch_class:
+    with patch("charon.core.orchestration.py.Orchestrator") as mock_orch_class:
         mock_instance = MagicMock()
         mock_orch_class.return_value = mock_instance
 

@@ -15,6 +15,7 @@ paho-mqtt>=2.1.0
 beautifulsoup4>=4.15.0
 pynvml>=13.0.1
 platformio>=5.0.4
+litellm>=1.83.0
 
 [dev]
 pytest>=8.0.0

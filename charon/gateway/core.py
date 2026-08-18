@@ -1,6 +1,6 @@
 """
 charon/gateway/core.py
-System Version: v0.1.1 | File Revision: 2.1.2
+System Version: v0.1.1 | File Revision: 2.1.4
 
 Module: Charon Core Daemon Orchestrator.
 
@@ -22,9 +22,9 @@ from charon.config import (
     ensure_ecosystem_directories,
 )
 from charon.ux.concierge import ConciergeService
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.telemetry.ledger import ExecutionLedger
-from charon.core.coordinator.journal import CoordinatorJournal
+from charon.gateway.journal import GatewayJournal
 from charon.core.session import SessionGateway
 from charon.core.state import StateManager, TaskStatus
 from charon.core.workspace import WorkspaceManager
@@ -42,9 +42,10 @@ class DaemonLogInterceptor(logging.Handler):
     and converts structural log events into real-time WebSocket progress frames.
     """
 
-    def __init__(self, daemon: "CharonDaemon"):
+    def __init__(self, daemon: "CharonDaemon", main_loop: asyncio.AbstractEventLoop):
         super().__init__()
         self.daemon = daemon
+        self.main_loop = main_loop
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -103,11 +104,13 @@ class DaemonLogInterceptor(logging.Handler):
                 data=data,
             )
 
-            # Schedule emission on current event loop without blocking execution
+            # Schedule emission on the main event loop across thread boundaries without blocking
             try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self.daemon.emitter.emit_targeted(event))
-            except RuntimeError:
+                asyncio.run_coroutine_threadsafe(
+                    self.daemon.emitter.emit_targeted(event),
+                    self.main_loop
+                )
+            except Exception:
                 pass
         except Exception:
             self.handleError(record)
@@ -117,23 +120,26 @@ class CharonDaemon:
     """Central orchestrator daemon managing persistent journals, state tables, and dispatch execution."""
 
     def __init__(
-            self,
-            engine: Optional[OrchestrationEngine] = None,
-            heavy_model: str = DEFAULT_HEAVY_MODEL,
-            triage_model: str = DEFAULT_TRIAGE_MODEL,
-            db_path: Optional[Union[str, Path]] = None,
-            concierge_min_confidence: float = DEFAULT_CONCIERGE_MIN_CONFIDENCE,
+        self,
+        engine: Optional[OrchestrationEngine] = None,
+        heavy_model: str = DEFAULT_HEAVY_MODEL,
+        triage_model: str = DEFAULT_TRIAGE_MODEL,
+        db_path: Optional[Union[str, Path]] = None,
+        concierge_min_confidence: float = DEFAULT_CONCIERGE_MIN_CONFIDENCE,
     ):
         ensure_ecosystem_directories()
         self.db_path: Path = Path(db_path) if db_path else PROJECT_MEMORY_DIR
+
+        # Explicit readiness flag used by API routes to check availability
+        self.is_ready: bool = False
 
         # Initialize SQLite State, Ledger, and Workspace Managers
         self.state_mgr = StateManager()
         self.ledger = ExecutionLedger()
         self.workspace_mgr = WorkspaceManager()
 
-        # Replaced PersistentTaskQueue with CoordinatorJournal
-        self.journal = CoordinatorJournal(state_manager=self.state_mgr)
+        # Replaced CoordinatorJournal with GatewayJournal
+        self.journal = GatewayJournal(state_manager=self.state_mgr)
 
         if engine:
             self.engine = engine
@@ -172,8 +178,14 @@ class CharonDaemon:
             state_manager=self.state_mgr,
         )
 
+        # Retrieve the main event loop to safely pass to the background logger
+        try:
+            self.main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.main_loop = asyncio.get_event_loop()
+
         # Attach real-time log interceptor to root logger hierarchy
-        self.log_interceptor = DaemonLogInterceptor(self)
+        self.log_interceptor = DaemonLogInterceptor(self, self.main_loop)
         logging.getLogger().addHandler(self.log_interceptor)
 
     @property
@@ -276,6 +288,8 @@ class CharonDaemon:
             logger.warning("Inference engine unavailable. Retrying verification in 10s...")
             await asyncio.sleep(10)
 
+        logger.info("Inference engine verification complete. Gateway daemon active.")
+
         # Recover pending or interrupted tasks from SQLite state DB upon daemon startup
         if hasattr(self.journal, "initialize_and_recover"):
             recovered_count = await self.journal.initialize_and_recover()
@@ -283,6 +297,21 @@ class CharonDaemon:
                 f"Charon daemon persistent journal processor operational. "
                 f"Recovered {recovered_count} task(s) from persistent state storage."
             )
+
+        # Update readiness flag after engine check and recovery sequence resolve
+        self.is_ready = True
+        logger.info("Daemon state updated: is_ready = True")
+
+        # Emit gateway initialization complete event
+        await self.emitter.emit_targeted(
+            WSEvent(
+                event_type="gateway_ready",
+                data={
+                    "status": "ready",
+                    "message": "Engine check complete. Task queue initialized and ready to receive requests."
+                },
+            )
+        )
 
         while True:
             try:
@@ -342,6 +371,9 @@ class CharonDaemon:
                                 event_type="gatekeeper_string_response",
                                 data={"approval_id": active_id, "decision": dec},
                             )
+
+                        # FIX 3: Acknowledge the user's command before continuing
+                        await self.emitter.emit_completed(f"[Authorization {dec}]")
                         continue
 
                 # 3. Standard Request Execution Phase
@@ -412,39 +444,50 @@ class CharonDaemon:
                     routing_hint=routing_hint_payload,
                 )
 
-                if result and not str(result).startswith("[Awaiting Authorization]"):
+                # FIX 1 & 2: Structural conditionals logic mapping the event emitter
+                if result:
+                    if not str(result).startswith("[Awaiting Authorization]"):
+                        if task_id:
+                            await self.state_mgr.update_status(task_id, TaskStatus.COMPLETED)
+                            await self.ledger.log_event(
+                                task_id=task_id,
+                                event_type="task_completed",
+                                data={"result_summary": str(result)[:300]},
+                            )
+                        if hasattr(self.orchestrator, "memory"):
+                            self.orchestrator.memory.add_system_message(str(result))
+
+                        await self.evaluate_and_emit_concierge(
+                            user_input=user_input,
+                            result_text=result,
+                            completed_action=agent_override_str or "task_execution",
+                            params=item if isinstance(item, dict) else item.__dict__ if hasattr(item, "__dict__") else None,
+                        )
+
+                        # Emit standard success
+                        await self.emitter.emit_completed(result)
+
+                    else:
+                        if task_id:
+                            await self.state_mgr.update_status(
+                                task_id,
+                                TaskStatus.AWAITING_APPROVAL,
+                                approval_id=getattr(self.gatekeeper, "active_approval_id", None),
+                            )
+                            await self.ledger.log_event(
+                                task_id=task_id,
+                                event_type="task_intercepted",
+                                data={"reason": result},
+                            )
+
+                        # FIX 1: Actually emit the authorization request to the user
+                        await self.emitter.emit_completed(result)
+                else:
+                    # FIX 2: Catch-all for engine returning None or empty strings
+                    msg = "[System Notice] Engine returned an empty response."
                     if task_id:
-                        await self.state_mgr.update_status(task_id, TaskStatus.COMPLETED)
-                        await self.ledger.log_event(
-                            task_id=task_id,
-                            event_type="task_completed",
-                            data={"result_summary": str(result)[:300]},
-                        )
-                    if hasattr(self.orchestrator, "memory"):
-                        self.orchestrator.memory.add_system_message(str(result))
-
-                    # Invoke Concierge follow-up evaluator BEFORE task completion event closes WS listener
-                    await self.evaluate_and_emit_concierge(
-                        user_input=user_input,
-                        result_text=result,
-                        completed_action=agent_override_str or "task_execution",
-                        params=item if isinstance(item, dict) else item.__dict__ if hasattr(item, "__dict__") else None,
-                    )
-
-                    await self.emitter.emit_completed(result)
-
-                elif result and str(result).startswith("[Awaiting Authorization]"):
-                    if task_id:
-                        await self.state_mgr.update_status(
-                            task_id,
-                            TaskStatus.AWAITING_APPROVAL,
-                            approval_id=getattr(self.gatekeeper, "active_approval_id", None),
-                        )
-                        await self.ledger.log_event(
-                            task_id=task_id,
-                            event_type="task_intercepted",
-                            data={"reason": result},
-                        )
+                        await self.state_mgr.update_status(task_id, TaskStatus.FAILED, error_message=msg)
+                    await self.emitter.emit_completed(msg)
 
             except asyncio.CancelledError:
                 raise
@@ -470,6 +513,7 @@ class CharonDaemon:
         Gracefully terminate engine sub-components, halt in-flight agent tasks,
         and close persistent database connections.
         """
+        self.is_ready = False
         logger.info("Initiating OrchestrationEngine shutdown sequence...")
 
         # 1. Halt the DAG Executor (Stops new nodes from being dispatched)

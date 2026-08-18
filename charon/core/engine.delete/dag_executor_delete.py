@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from charon.core.engine.self_healing import SelfHealingHandler
+from charon.core.orchestration.self_healing import SelfHealingHandler
 from charon.core.ledger import ExecutionLedger
 from charon.core.session import SessionGateway
 from charon.core.skills.librarian import SkillLibrarian

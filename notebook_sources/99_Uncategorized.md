@@ -20629,7 +20629,7 @@ and self-healing diagnostic recovery across chained agent executions.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.intent import AgentEnum, RoutingPayload
 
 
@@ -20736,7 +20736,7 @@ async def test_full_dag_execution_with_self_healing_recovery():
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.intent import AgentEnum, RoutingPayload
 
 
@@ -20765,6 +20765,7 @@ class AnyExtractionMatcher:
     def __eq__(self, other):
         return True
 
+
 ANY_EXTRACTION = AnyExtractionMatcher()
 
 
@@ -20772,7 +20773,7 @@ ANY_EXTRACTION = AnyExtractionMatcher()
 
 def test_init_default_orchestrator():
     """Tests initializing OrchestrationEngine with default Orchestrator construction."""
-    with patch("charon.core.engine.Orchestrator") as mock_orch_class:
+    with patch("charon.core.orchestration.py.Orchestrator") as mock_orch_class:
         mock_instance = MagicMock()
         mock_orch_class.return_value = mock_instance
 
@@ -21068,7 +21069,7 @@ Unit tests for OrchestrationEngine self-healing recovery pipeline.
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.intent import AgentEnum, IntentExtraction, RoutingPayload
 
 

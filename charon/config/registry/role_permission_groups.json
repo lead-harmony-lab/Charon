@@ -1,30 +1,6 @@
 [
   {
-    "role_name": "sys_admin",
-    "group_id": "sys_core",
-    "_relations": {
-      "role_name": "system_roles.role_name",
-      "group_id": "permission_groups.group_id"
-    }
-  },
-  {
-    "role_name": "sys_admin",
-    "group_id": "filesystem_access",
-    "_relations": {
-      "role_name": "system_roles.role_name",
-      "group_id": "permission_groups.group_id"
-    }
-  },
-  {
-    "role_name": "sys_admin",
-    "group_id": "network_comms",
-    "_relations": {
-      "role_name": "system_roles.role_name",
-      "group_id": "permission_groups.group_id"
-    }
-  },
-  {
-    "role_name": "sys_admin",
+    "role_name": "system_planner",
     "group_id": "agent_control",
     "_relations": {
       "role_name": "system_roles.role_name",
@@ -32,7 +8,7 @@
     }
   },
   {
-    "role_name": "task_executor",
+    "role_name": "system_planner",
     "group_id": "filesystem_access",
     "_relations": {
       "role_name": "system_roles.role_name",
@@ -40,8 +16,224 @@
     }
   },
   {
-    "role_name": "task_executor",
+    "role_name": "system_planner",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_engineer",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_engineer",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_engineer",
     "group_id": "network_comms",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_engineer",
+    "group_id": "agent_control",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_generalist",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_generalist",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_generalist",
+    "group_id": "network_comms",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_generalist",
+    "group_id": "agent_control",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_fallback",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_fallback",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_fallback",
+    "group_id": "network_comms",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_scout",
+    "group_id": "network_comms",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_scout",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_cleaner",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_cleaner",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_archivist",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_spark",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_spark",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_machinist",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_machinist",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_quartermaster",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_quartermaster",
+    "group_id": "network_comms",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_steward",
+    "group_id": "network_comms",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_steward",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_overseer",
+    "group_id": "sys_core",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_overseer",
+    "group_id": "filesystem_access",
+    "_relations": {
+      "role_name": "system_roles.role_name",
+      "group_id": "permission_groups.group_id"
+    }
+  },
+  {
+    "role_name": "system_overseer",
+    "group_id": "agent_control",
     "_relations": {
       "role_name": "system_roles.role_name",
       "group_id": "permission_groups.group_id"

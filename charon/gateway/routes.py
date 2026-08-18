@@ -64,9 +64,11 @@ async def health_check(request: Request):
     """Returns runtime state, active connection count, and task queue depth."""
     daemon = getattr(request.app.state, "daemon", None)
     queue_depth = 0
-    if daemon and hasattr(daemon, "queue") and hasattr(daemon.queue, "qsize"):
+
+    # Update: Check 'journal' instead of 'queue'
+    if daemon and hasattr(daemon, "journal") and hasattr(daemon.journal, "qsize"):
         try:
-            queue_depth = daemon.queue.qsize()
+            queue_depth = daemon.journal.qsize()
         except Exception:
             queue_depth = 0
 
@@ -83,15 +85,17 @@ async def health_check(request: Request):
 async def submit_task(request_data: TaskRequest, request: Request):
     """REST ingress endpoint for queuing execution tasks."""
     daemon = getattr(request.app.state, "daemon", None)
-    if not daemon or not hasattr(daemon, "queue"):
+
+    if not daemon or not getattr(daemon, "is_ready", False) or not hasattr(daemon, "journal"):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Daemon or Task Queue is currently initializing.",
+            detail="Daemon or Task Journal is currently initializing.",
         )
 
     task_id = f"task_{uuid.uuid4().hex[:8]}"
 
-    await daemon.queue.put({
+    # Use record_and_enqueue to write to SQLite and buffer in memory
+    await daemon.journal.record_and_enqueue({
         "task_id": task_id,
         "client_id": request_data.client_id,
         "prompt": request_data.prompt,
@@ -331,8 +335,9 @@ async def websocket_endpoint(
                 elif action == "submit_task":
                     task_id = f"task_{uuid.uuid4().hex[:8]}"
                     effective_client_id = client_id or msg.get("client_id")
-                    if daemon and hasattr(daemon, "queue"):
-                        await daemon.queue.put({
+
+                    if daemon and hasattr(daemon, "journal"):
+                        await daemon.journal.record_and_enqueue({
                             "task_id": task_id,
                             "client_id": effective_client_id,
                             "prompt": msg.get("prompt", ""),

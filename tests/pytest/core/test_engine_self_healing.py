@@ -5,7 +5,7 @@ Unit tests for OrchestrationEngine self-healing recovery pipeline.
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.intent import AgentEnum, IntentExtraction, RoutingPayload
 
 

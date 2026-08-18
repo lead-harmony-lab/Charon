@@ -6,10 +6,10 @@ Module: charon.core.engine package.
 Exports OrchestrationEngine alongside sub-modules.
 """
 
-from charon.core.engine.dag_executor import DAGPlanExecutor
-from charon.core.engine.engine import OrchestrationEngine
-from charon.core.engine.self_healing import SelfHealingHandler
-from charon.core.engine.synthesizer import OutputSynthesizer
+from charon.core.orchestration.dag_executor import DAGPlanExecutor
+from charon.core.orchestration.engine import OrchestrationEngine
+from charon.core.orchestration.self_healing import SelfHealingHandler
+from charon.core.orchestration.synthesizer import OutputSynthesizer
 
 __all__ = [
     "OrchestrationEngine",

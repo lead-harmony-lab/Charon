@@ -62,6 +62,8 @@ class SkillRepository:
                     action_name TEXT NOT NULL UNIQUE,
                     version TEXT NOT NULL DEFAULT '1.0.0',
                     category TEXT DEFAULT 'General',
+                    skill_type TEXT DEFAULT 'NATIVE',
+                    domain TEXT DEFAULT 'General',
                     description TEXT NOT NULL DEFAULT '',
                     parameters TEXT DEFAULT '{}',
                     system_requirements TEXT NOT NULL DEFAULT '[]',
@@ -95,6 +97,8 @@ class SkillRepository:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_skill_registry_status ON skill_registry(status);
+                CREATE INDEX IF NOT EXISTS idx_skill_registry_type ON skill_registry(skill_type);
+                CREATE INDEX IF NOT EXISTS idx_skill_registry_domain ON skill_registry(domain);
                 CREATE INDEX IF NOT EXISTS idx_skill_permissions_skill ON skill_permissions(skill_id);
                 CREATE INDEX IF NOT EXISTS idx_agent_skill_map_agent ON agent_skill_map(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_agent_skill_map_skill ON agent_skill_map(skill_id);
@@ -215,6 +219,8 @@ class SkillRepository:
 
         rec.setdefault("version", "1.0.0")
         rec.setdefault("category", "General")
+        rec.setdefault("skill_type", "NATIVE")
+        rec.setdefault("domain", "General")
         rec.setdefault("description", "")
         rec.setdefault("status", "QUARANTINED")
         rec.setdefault("quarantine_reason", None)
@@ -237,11 +243,11 @@ class SkillRepository:
 
         query = """
             INSERT INTO skill_registry (
-                skill_id, action_name, version, category, description,
+                skill_id, action_name, version, category, skill_type, domain, description,
                 parameters, system_requirements, consumed_artifacts, produced_artifacts,
                 entry_file_path, handler_name, status, quarantine_reason, is_global
             ) VALUES (
-                :skill_id, :action_name, :version, :category, :description,
+                :skill_id, :action_name, :version, :category, :skill_type, :domain, :description,
                 :parameters, :system_requirements, :consumed_artifacts, :produced_artifacts,
                 :entry_file_path, :handler_name, :status, :quarantine_reason, :is_global
             )
@@ -249,6 +255,8 @@ class SkillRepository:
                 action_name=EXCLUDED.action_name,
                 version=EXCLUDED.version,
                 category=EXCLUDED.category,
+                skill_type=EXCLUDED.skill_type,
+                domain=EXCLUDED.domain,
                 description=EXCLUDED.description,
                 parameters=EXCLUDED.parameters,
                 system_requirements=EXCLUDED.system_requirements,
@@ -386,6 +394,32 @@ class SkillRepository:
             perm_map = self._get_permissions_map_for_skills(c, skill_ids)
             return [self._parse_skill_row(row, c, perm_map) for row in rows]
 
+    def get_skills_by_type(
+        self,
+        skill_type: str,
+        active_only: bool = False,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetches skills matching the specified skill_type.
+
+        If active_only is True, filters to only ACTIVE skills.
+        """
+        query = "SELECT * FROM skill_registry WHERE skill_type = ?"
+        params: List[Any] = [skill_type]
+        if active_only:
+            query += " AND status = 'ACTIVE'"
+        query += ";"
+
+        with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
+            cursor = c.execute(query, params)
+            rows = cursor.fetchall()
+            skill_ids = [r["skill_id"] for r in rows]
+            perm_map = self._get_permissions_map_for_skills(c, skill_ids)
+            return [self._parse_skill_row(row, c, perm_map) for row in rows]
+
+    get_skills_by_skill_type = get_skills_by_type
+
     def get_unassigned_skills(self, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
         """
         Fetches skills that are ready (ACTIVE or STAGED) but not currently
@@ -407,7 +441,7 @@ class SkillRepository:
         """Retrieves an active skill manifest directly by action trigger name or skill_id."""
         query = """
             SELECT 
-                skill_id, action_name, version, category, description,
+                skill_id, action_name, version, category, skill_type, domain, description,
                 parameters, system_requirements, consumed_artifacts, produced_artifacts,
                 entry_file_path, handler_name, status, quarantine_reason, is_global
             FROM skill_registry 

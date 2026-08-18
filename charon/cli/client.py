@@ -1,6 +1,6 @@
 """
 charon/cli/client.py
-System Version: v0.1.0 | File Revision: 1.2.1
+System Version: v0.1.0 | File Revision: 1.2.2
 
 Module: Daemon integration client managing HTTP REST and WebSocket streaming.
 """
@@ -141,6 +141,8 @@ class CharonClient:
                                 self.spinner.update(display_text)
                         else:
                             chunk = data.get("message") or data.get("content", "")
+                            if isinstance(chunk, dict):
+                                chunk = json.dumps(chunk, indent=2)
                             if chunk:
                                 # Only set streamed_any_chunk for actual response streaming events
                                 if event_type in ["content_chunk", "task_stream"]:
@@ -251,9 +253,18 @@ class CharonClient:
                             or data.get("content", "")
                         )
 
+                        if isinstance(summary, dict):
+                            if "constraint_revision" in summary:
+                                summary = (
+                                    summary["constraint_revision"].get("failure_summary")
+                                    or json.dumps(summary, indent=2)
+                                )
+                            else:
+                                summary = json.dumps(summary, indent=2)
+
                         if summary and not streamed_any_chunk:
                             console.print("\n[bold cyan]🛎️ CHARON:[/bold cyan] ", end="")
-                            render_response(summary)
+                            render_response(str(summary))
                         else:
                             console.print()
                         break
@@ -262,6 +273,8 @@ class CharonClient:
                     elif event_type in ["task_error", "error"]:
                         self.spinner.stop()
                         error_msg = data.get("error") or data.get("message", "An unknown error occurred.")
+                        if isinstance(error_msg, dict):
+                            error_msg = json.dumps(error_msg, indent=2)
                         console.print(f"\n[bold red][System Error]: {error_msg}[/bold red]")
                         success = False
                         break

@@ -1,10 +1,10 @@
 """
 charon/core/coordinator/engine.py
-System Version: v1.0.0 | File Revision: 10.2.0
+System Version: v1.2.1 | File Revision: 10.6.0
 
 Module: Core Reflection Engine and Multi-Intent Coordinator Facade.
 Refactored for strict Zero-Trust Execution, DB-backed state management,
-Ephemeral Contract Key minting, and stateless ConstraintRevision failure mapping.
+RoleResolver-driven pre-audit normalization, and ephemeral contract minting.
 """
 
 import asyncio
@@ -12,11 +12,13 @@ import concurrent.futures
 import inspect
 import json
 import logging
+import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from charon.agents.base import BaseAgent
+from charon.config.paths import WORKSPACES_DIR
 from charon.core.contracts import (
     ContractResponse,
     DiagnosticArtifact,
@@ -24,6 +26,8 @@ from charon.core.contracts import (
     GapType,
 )
 from charon.core.coordinator.constraints import build_constraint_revision
+from charon.core.skills import SkillLibrarian
+from charon.core.skills.roles import RoleResolutionError
 from charon.db.repositories.coordinator import CoordinatorStateRepository
 from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
@@ -70,8 +74,19 @@ class Coordinator:
         self.agents = agents or {}
 
         # Phase 4: System Pruning (The Sweeper)
-        # Execute background cleanup on init to prevent DB bloat
-        self.db.sweep_stale_tasks(days_old=7)
+        swept_task_ids = self.db.sweep_stale_tasks(days_old=7)
+        for swept_id in swept_task_ids:
+            self._purge_task_workspace(swept_id)
+
+    def _purge_task_workspace(self, task_id: str) -> None:
+        """Helper to safely remove task workspace artifacts from disk."""
+        task_workspace = WORKSPACES_DIR / task_id
+        if task_workspace.exists() and task_workspace.is_dir():
+            try:
+                shutil.rmtree(task_workspace)
+                logger.info(f"[CLEANUP] Purged workspace directory for task: {task_id}")
+            except Exception as e:
+                logger.error(f"[CLEANUP] Failed to purge workspace for task {task_id}: {e}")
 
     def register_agent(self, agent_id: str, agent_instance: BaseAgent) -> None:
         self.agents[agent_id] = agent_instance
@@ -82,14 +97,20 @@ class Coordinator:
         for task_row in tasks:
             self.run_task_lifecycle(task_row["task_id"])
 
-    def run_task_lifecycle(self, task_id: str) -> None:
+    def run_task_lifecycle(
+        self,
+        task_id: str,
+        user_input: Optional[str] = None,
+        system_topology: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Manages the full Zero-Trust lifecycle for a single task:
         1. Planning -> 2. The Key Maker -> 3. Execution -> 4. The Burn
         """
         telemetry_bus.emit(
             TraceEvent(
-                event_type=TraceEventType.SYSTEM,
+                event_type=TraceEventType.INITIALIZATION,
                 agent_name="Coordinator",
                 action="task_lifecycle_start",
                 details={"task_id": task_id},
@@ -97,7 +118,6 @@ class Coordinator:
         )
 
         try:
-            # Re-fetch latest state to avoid race conditions
             tasks = [t for t in self.db.get_pending_tasks() if t["task_id"] == task_id]
             if not tasks:
                 return
@@ -105,8 +125,14 @@ class Coordinator:
 
             # Phase 1: Task Ingestion & Planning (The Blueprint)
             plan_json = task["plan_json"]
-            if not plan_json or task["status"] in ('PENDING', 'PLANNING'):
-                plan_json = self._invoke_system_planner(task_id, task["prompt"])
+            if not plan_json or task["status"] in ("PENDING", "PLANNING"):
+                prompt = user_input or task.get("prompt", "")
+                plan_json = self._invoke_system_planner(
+                    task_id,
+                    prompt,
+                    system_topology=system_topology,
+                    metadata=metadata,
+                )
                 self.db.update_task_plan(task_id, plan_json)
             else:
                 plan_json = json.loads(plan_json) if isinstance(plan_json, str) else plan_json
@@ -124,27 +150,154 @@ class Coordinator:
             )
 
         finally:
-            # Phase 4: Immediate Key Revocation (The Burn)
-            # GUARANTEE: No matter how the loop exits, keys are destroyed.
+            # Phase 4: Immediate Key Revocation & Filesystem Cleanup (The Burn)
             logger.info(f"[COORDINATOR] Triggering The Burn for task: {task_id}")
             self.db.burn_task_contracts(task_id)
+            self._purge_task_workspace(task_id)
 
-    def _invoke_system_planner(self, task_id: str, prompt: str) -> Dict[str, Any]:
-        """Invokes the system_planner PEC to generate the declarative DAG blueprint."""
-        planner = self.agents.get("system_planner")
+    def _invoke_system_planner(
+        self,
+        task_id: str,
+        prompt: str,
+        system_topology: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Invokes the planner PEC to generate the declarative DAG blueprint."""
+        librarian = SkillLibrarian.get_instance()
+
+        # Resolve canonical planner ID through system_roles
+        try:
+            canonical_planner_id = librarian.resolve_agent_id_for_role("planner")
+        except RoleResolutionError:
+            canonical_planner_id = "system_planner"
+
+        planner = self.agents.get(canonical_planner_id) or self.agents.get("system_planner") or self.agents.get("planner")
         if not planner:
-            raise RuntimeError("CRITICAL: system_planner agent is not registered.")
+            raise RuntimeError(f"CRITICAL: Planner agent '{canonical_planner_id}' is not registered.")
 
-        logger.info(f"[COORDINATOR] Generating Blueprint for task {task_id}...")
-        payload = {"prompt": prompt, "task_id": task_id}
+        logger.info(f"[COORDINATOR] Generating Blueprint for task {task_id} via '{canonical_planner_id}'...")
+
+        planner_role = getattr(planner, "role_name", None) or canonical_planner_id
+        planner_skill = librarian.get_default_action_for_role(planner_role)
+        if not planner_skill:
+            raise RuntimeError(f"CRITICAL: No default action configured for planner role '{planner_role}'.")
+
+        # 1. Fetch ALL tool skills from DB to provide context to the Planner
+        global_tool_catalog = librarian.get_execution_tool_catalog(
+            role_name=None,
+            skill_type="tool",
+            as_dict=True,
+        )
+
+        # 2. Delegation Authority Boundary Extraction
+        planner_authorized_tools: List[str] = []
+        if isinstance(global_tool_catalog, list):
+            for item in global_tool_catalog:
+                if isinstance(item, dict):
+                    sk_id = item.get("skill_id")
+                    act_name = item.get("action_name") or item.get("name") or item.get("action")
+                    if sk_id:
+                        planner_authorized_tools.append(str(sk_id))
+                    if act_name:
+                        planner_authorized_tools.append(str(act_name))
+                else:
+                    sk_id = getattr(item, "skill_id", None)
+                    act_name = (
+                        getattr(item, "action_name", None)
+                        or getattr(item, "name", None)
+                        or getattr(item, "action", None)
+                    )
+                    if sk_id:
+                        planner_authorized_tools.append(str(sk_id))
+                    if act_name:
+                        planner_authorized_tools.append(str(act_name))
+
+        elif isinstance(global_tool_catalog, dict):
+            for key, val in global_tool_catalog.items():
+                if isinstance(val, dict):
+                    sk_id = val.get("skill_id")
+                    act_name = val.get("action_name") or key
+                    if sk_id:
+                        planner_authorized_tools.append(str(sk_id))
+                    if act_name:
+                        planner_authorized_tools.append(str(act_name))
+                else:
+                    planner_authorized_tools.append(str(key))
+
+        planner_authorized_tools = list(dict.fromkeys(planner_authorized_tools))
+
+        # 3. Mint Ephemeral Contract for Planner using canonical ID
+        contract_id = self.db.mint_ephemeral_contract(
+            task_id=task_id,
+            agent_id=canonical_planner_id,
+            skill_id=planner_skill,
+            authorized_tools=planner_authorized_tools,
+        )
+
+        active_topology = system_topology if system_topology is not None else librarian.get_system_topology()
+
+        payload = {
+            "prompt": prompt,
+            "task_id": task_id,
+            "active_contract_id": contract_id,
+            "skill_catalog": global_tool_catalog,
+            "authorized_tools": planner_authorized_tools,
+            "system_topology": active_topology,
+            "metadata": metadata or {},
+        }
+
+        catalog_count = len(global_tool_catalog) if isinstance(global_tool_catalog, (dict, list)) else 0
+        topology_count = len(active_topology) if isinstance(active_topology, list) else 0
+
+        logger.info(
+            f"[COORDINATOR.PLANNER_PAYLOAD] Invoking Planner (Task: {task_id}, Contract: {contract_id}, "
+            f"Catalog Tools: {catalog_count}, Topology Nodes: {topology_count}, "
+            f"Authorized Tools: {len(planner_authorized_tools)})"
+        )
+
         plan_artifact = _exec_sync_or_async(planner.execute_task, payload=payload)
 
-        # Duck-type conversion to dict if it's a Pydantic model
-        return plan_artifact.model_dump() if hasattr(plan_artifact, "model_dump") else dict(plan_artifact)
+        # 5. Strict failure handling for DiagnosticArtifacts
+        is_diagnostic = False
+        error_msg = "Planner returned a Diagnostic Artifact"
+
+        artifact_type = (
+            plan_artifact.get("artifact_type")
+            if isinstance(plan_artifact, dict)
+            else getattr(plan_artifact, "artifact_type", None)
+        )
+        status = str(
+            plan_artifact.get("status")
+            if isinstance(plan_artifact, dict)
+            else getattr(plan_artifact, "status", "")
+        )
+        has_gap = "gap_type" in plan_artifact if isinstance(plan_artifact, dict) else hasattr(plan_artifact, "gap_type")
+
+        if artifact_type == "diagnostic" or "FAILED" in status or has_gap:
+            is_diagnostic = True
+            if isinstance(plan_artifact, dict):
+                error_msg = plan_artifact.get("failure_summary") or plan_artifact.get("error") or error_msg
+            else:
+                error_msg = (
+                    getattr(plan_artifact, "failure_summary", None)
+                    or getattr(plan_artifact, "error", None)
+                    or error_msg
+                )
+
+        if is_diagnostic:
+            raise RuntimeError(f"Planning Phase Failed: {error_msg}")
+
+        return plan_artifact if isinstance(plan_artifact, dict) else plan_artifact.model_dump()
 
     def _execute_plan_loop(self, task_id: str, task_state: Any, plan_json: Dict[str, Any]) -> None:
         """Iterates through the DAG blueprint, minting keys and executing."""
-        steps = plan_json.get("steps", [])
+        librarian = SkillLibrarian.get_instance()
+        steps = plan_json.get("nodes", plan_json.get("steps", []))
+
+        if not steps:
+            raise RuntimeError(
+                "Task execution aborted: Blueprint generated 0 executable steps (CBAC/Validation failure)."
+            )
         current_index = task_state["current_step_index"]
 
         step_count = 0
@@ -152,14 +305,51 @@ class Coordinator:
 
         while current_index < len(steps) and step_count < MAX_LOOP_LIMIT:
             step_node = steps[current_index]
-            target_agent = step_node.get("agent_id")
-            target_skill = step_node.get("skill_id")
-            parameters = step_node.get("parameters", {})
+
+            # 1. Extract step requirements
+            if isinstance(step_node, dict):
+                target_skill = step_node.get("target_skill") or step_node.get("skill_id")
+                target_agent = step_node.get("target_agent") or step_node.get("agent_id")
+                parameters = step_node.get("arguments") or step_node.get("parameters") or {}
+            else:
+                target_skill = getattr(step_node, "target_skill", None) or getattr(step_node, "skill_id", None)
+                target_agent = getattr(step_node, "target_agent", None) or getattr(step_node, "agent_id", None)
+                parameters = getattr(step_node, "arguments", None) or getattr(step_node, "parameters", {}) or {}
+
+            # 2. Domain Resolution: Resolve skill default agent if unassigned
+            if target_skill and not target_agent:
+                target_agent = librarian.get_agent_for_skill(target_skill)
+
+            # 3. DB-Backed Pre-Audit Role Resolution (CRITICAL FIX)
+            # Resolve target_agent to canonical agent_id BEFORE Zero-Trust Level 0 Audit
+            if target_agent:
+                try:
+                    canonical_id = librarian.resolve_agent_id_for_role(target_agent)
+                    if canonical_id:
+                        target_agent = canonical_id
+                except RoleResolutionError:
+                    logger.warning(f"[COORDINATOR] Unmapped role alias '{target_agent}' at step {current_index}.")
+
+            # 4. Guard against unresolvable bindings
+            if not target_agent or not target_skill:
+                reason = f"ZERO-TRUST VIOLATION: Unresolvable agent/skill binding at step {current_index} (Agent='{target_agent}', Skill='{target_skill}')."
+                logger.critical(f"[COORDINATOR] {reason}")
+                constraint = build_constraint_revision({
+                    "failed_step": current_index,
+                    "failed_action": target_skill,
+                    "message": reason,
+                })
+                self.db.update_task_status(
+                    task_id,
+                    "REJECTED",
+                    {"constraint_revision": constraint.model_dump()},
+                )
+                return
 
             # ---------------------------------------------------------
             # Phase 2: THE KEY MAKER PHASE (Zero-Trust Minting)
             # ---------------------------------------------------------
-            # LEVEL 0: Strict DB Audit (Base Capability + Legal Authority)
+            # LEVEL 0: Strict DB Audit using canonical target_agent
             if not self.db.audit_level_0_permission_strict(target_agent, target_skill):
                 reason = f"ZERO-TRUST VIOLATION: '{target_agent}' lacks strict authority for '{target_skill}'."
                 logger.critical(f"[COORDINATOR] {reason}")
@@ -175,21 +365,21 @@ class Coordinator:
                 )
                 return
 
-            # LEVEL 1: Mint Ephemeral Contract
+            # LEVEL 1: Mint Ephemeral Contract against canonical ID
             contract_id = self.db.mint_ephemeral_contract(
                 task_id=task_id,
                 agent_id=target_agent,
-                skill_id=target_skill
+                skill_id=target_skill,
             )
 
             # ---------------------------------------------------------
             # Phase 3: AGENT EXECUTION & STATE TRACKING
             # ---------------------------------------------------------
             agent_instance = self.agents.get(target_agent)
-            if not agent_instance or not hasattr(agent_instance, "execute_task"):
-                raise NotImplementedError(f"Agent {target_agent} missing valid Work Contract.")
 
-            # Inject the minted authority into the payload
+            if not agent_instance or not hasattr(agent_instance, "execute_task"):
+                raise NotImplementedError(f"Agent '{target_agent}' missing valid Work Contract.")
+
             execution_payload = dict(parameters)
             execution_payload["authorized_tools"] = [target_skill]
             execution_payload["active_contract_id"] = contract_id
@@ -199,7 +389,6 @@ class Coordinator:
                 logger.info(f"[COORDINATOR] Executing step {current_index} via {target_agent} -> {target_skill}")
                 artifact_result = _exec_sync_or_async(agent_instance.execute_task, payload=execution_payload)
 
-                # Check for Diagnostic/Failure Artifacts
                 if hasattr(artifact_result, "gap_type"):
                     constraint = build_constraint_revision(artifact_result)
                     logger.warning(f"[COORDINATOR] Step Execution Failed: {constraint.failure_summary}")
@@ -213,7 +402,6 @@ class Coordinator:
                     )
                     return
 
-                # Record success
                 final_results[f"step_{current_index}"] = (
                     artifact_result.model_dump() if hasattr(artifact_result, "model_dump") else dict(artifact_result)
                 )
@@ -240,18 +428,14 @@ class Coordinator:
                         agent_name=target_agent,
                         action=target_skill,
                         duration_ms=duration_ms,
-                        details={"contract_id": contract_id, "step_index": current_index}
+                        details={"contract_id": contract_id, "step_index": current_index},
                     )
                 )
 
-            # Advance State
             current_index += 1
             step_count += 1
-
-            # Flush incremental state to DB via repository interface
             self.db.advance_task_step(task_id, current_index)
 
-        # Loop completion handling
         if current_index >= len(steps):
             self.db.update_task_status(task_id, "COMPLETED", results_json=final_results)
             logger.info(f"[COORDINATOR] Task {task_id} COMPLETED successfully.")

@@ -26,6 +26,7 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "pynvml>=13.0.1",
     "platformio>=5.0.4",
+    "litellm>=1.83.0",
 ]
 
 [project.optional-dependencies]

@@ -1,11 +1,12 @@
 """
 charon/core/skills/librarian.py
-System Version: v2.0.0
+System Version: v2.1.2
 
 Module: Central registry, hybrid DB/disk discovery hub, dynamic query bus, and authorization desk.
 Combines RoleResolver, SkillIndexer, SkillQuery, and SkillExecutor mixins.
-Integrates CBAC Schema V2 authorization, PermissionRepository, system_actions lookups, and Quarantine State controls.
-Enforces strict fail-fast role and system action resolution against database registry with dynamic defaults.
+Integrates CBAC Schema V2 authorization, PermissionRepository, and Quarantine State controls.
+Enforces strict fail-fast role resolution against database registry with dynamic defaults.
+Updated: Implements Scenario A Planner Delegation Catalog resolution & DB cross-referenced role resolution.
 """
 
 import logging
@@ -96,87 +97,73 @@ class SkillLibrarian(
     # Skill Action Lookup & Authorization API
     # =========================================================================
 
-    def resolve_system_action(self, reserved_key: str, conn: Optional[sqlite3.Connection] = None) -> str:
-        """Resolves an abstract system action key (e.g., 'sys_synthesis') to its active database action_name SSOT.
-
-        Fails fast if the key is missing, unbound, or unmapped in the database.
-        """
-        if not reserved_key:
-            raise ValueError("[FAIL-FAST] System action key cannot be empty.")
-
-        try:
-            if conn:
-                cursor = conn.execute(
-                    "SELECT action_name FROM system_actions WHERE reserved_key = ?;",
-                    (reserved_key,),
-                )
-                row = cursor.fetchone()
-            else:
-                with sqlite3.connect(self.db_path) as temp_conn:
-                    cursor = temp_conn.execute(
-                        "SELECT action_name FROM system_actions WHERE reserved_key = ?;",
-                        (reserved_key,),
-                    )
-                    row = cursor.fetchone()
-
-            if not row or not row[0]:
-                raise RuntimeError(
-                    f"[FAIL-FAST] Mandatory system action key '{reserved_key}' is not mapped to an active skill in system_actions."
-                )
-
-            return str(row[0])
-
-        except Exception as err:
-            logger.error(f"[SkillLibrarian] Error resolving system action '{reserved_key}': {err}")
-            raise
+    def get_agent_for_skill(
+        self, skill_id: str, conn: Optional[sqlite3.Connection] = None
+    ) -> Optional[str]:
+        """Resolves the primary default agent assigned or authorized to execute a given skill."""
+        if not skill_id:
+            return None
+        candidates = self.get_roles_for_action(skill_id, conn=conn)
+        return candidates[0] if candidates else None
 
     def get_action_manifest(
         self, action: str, role_name: Optional[str] = None, conn: Optional[sqlite3.Connection] = None
     ) -> Optional[Dict[str, Any]]:
-        """Retrieves action details/manifest for a given skill trigger after validating authorization.
-
-        Gracefully returns None if role resolution fails or skill is unauthorized.
-        """
+        """Retrieves action details/manifest for a given skill trigger after validating authorization."""
         if not action:
             return None
 
-        # Validate role authorization if role name/ID provided
         if role_name:
             try:
                 canonical_role = self.resolve_agent_id_for_role(role_name, conn=conn)
-                if not self.is_skill_available(action, canonical_role, conn=conn):
+                if not self.is_skill_available(action, canonical_role):
                     return None
             except RoleResolutionError:
                 logger.debug(f"[SkillLibrarian] Unmapped role '{role_name}' for action '{action}'.")
                 return None
 
-        # Resolve skill action metadata from query mixin or repository
-        details = self.get_action_details(action, conn=conn)
+        details = self.get_action_details(action)
         if details:
             return details
 
         return self.repo.get_skill_by_action(action, conn=conn)
 
-    def get_roles_for_action(self, action_name: str, conn: Optional[sqlite3.Connection] = None) -> List[str]:
-        """Resolves candidate role IDs authorized to perform an ACTIVE action capability contract.
-
-        Delegates directly to SkillRepository SSOT query.
-        """
+    def get_roles_for_action(
+        self, action_name: str, conn: Optional[sqlite3.Connection] = None
+    ) -> List[str]:
+        """Resolves candidate role IDs authorized to perform an ACTIVE capability contract by skill_id or action_name."""
         if not action_name:
             return []
+
+        target = action_name.strip()
+        query = """
+            SELECT DISTINCT asm.agent_id
+            FROM agent_skill_map asm
+            INNER JOIN skill_registry sr ON asm.skill_id = sr.skill_id
+            WHERE (asm.skill_id = ? OR sr.action_name = ?)
+              AND sr.status = 'ACTIVE'
+        """
         try:
-            return self.repo.get_agents_for_action(action_name.strip(), conn=conn)
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (target, target))
+                rows = cursor.fetchall()
+            else:
+                with sqlite3.connect(self.db_path) as db_conn:
+                    cursor = db_conn.cursor()
+                    cursor.execute(query, (target, target))
+                    rows = cursor.fetchall()
+            return [row[0] for row in rows if row[0]]
         except Exception as err:
             logger.error(
-                f"[SkillLibrarian] Error resolving candidate roles for action '{action_name}': {err}"
+                f"[SkillLibrarian] Error resolving candidate roles for target '{action_name}': {err}"
             )
             return []
 
-    def list_available_actions(self, role_name: str, conn: Optional[sqlite3.Connection] = None) -> List[str]:
-        """Retrieves all active action capability names granted to a role alias.
-
-        Resolves role aliases to canonical IDs before querying SSOT state.
-        """
+    def list_available_actions(
+        self, role_name: str, conn: Optional[sqlite3.Connection] = None
+    ) -> List[str]:
+        """Retrieves all active action capability names granted to a role alias."""
         if not role_name:
             return []
         try:
@@ -194,24 +181,133 @@ class SkillLibrarian(
             return []
 
     # =========================================================================
-    # Manifest Control API
+    # Execution Tool Catalog API
     # =========================================================================
 
-    def get_role_default_action(self, role_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[str]:
-        """Retrieves the default interface action (Work Contract) for a role.
+    def get_execution_tool_catalog(
+            self,
+            role_name: Optional[str] = None,
+            skill_type: Optional[str] = None,
+            active_only: bool = True,
+            as_dict: bool = True,
+            conn: Optional[sqlite3.Connection] = None,
+    ) -> Union[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+        """Fetches the execution tool catalog based on current DB state.
 
-        Resolves canonical role ID via RoleResolverMixin and queries cached manifests.
+        Under Scenario A, orchestration roles bypass single-agent physical mapping
+        restrictions to expose all active system capabilities across the network.
         """
+        raw_skills: List[Dict[str, Any]] = []
+
+        if role_name:
+            try:
+                # Resolve the provided role_name to its ephemeral agent ID
+                canonical_role = self.resolve_agent_id_for_role(role_name, conn=conn)
+
+                # Perform lookup against system_roles to obtain the ephemeral agent ID
+                # currently acting as the system_planner
+                system_planner_id = self.resolve_agent_id_for_role("system_planner", conn=conn)
+
+                # Scenario A: Evaluate if the requested agent is currently acting as the system_planner
+                if canonical_role == system_planner_id:
+                    if active_only:
+                        raw_skills = self.repo.get_all_active_skills(conn=conn)
+                    else:
+                        raw_skills = self.repo.get_all_skills(conn=conn)
+                else:
+                    raw_skills = self.repo.get_skills_for_agent(canonical_role, conn=conn)
+            except RoleResolutionError as rre:
+                logger.warning(
+                    f"[SkillLibrarian] Role resolution failed for tool catalog lookup '{role_name}': {rre}"
+                )
+                return {} if as_dict else []
+            except Exception as err:
+                logger.error(
+                    f"[SkillLibrarian] Failed to fetch tools for role '{role_name}': {err}"
+                )
+                return {} if as_dict else []
+        else:
+            try:
+                if skill_type and skill_type.upper() not in ("*", "ALL", "ANY"):
+                    raw_skills = self.repo.get_skills_by_type(
+                        skill_type, active_only=active_only, conn=conn
+                    )
+                elif active_only:
+                    raw_skills = self.repo.get_all_active_skills(conn=conn)
+                else:
+                    raw_skills = self.repo.get_all_skills(conn=conn)
+            except Exception as err:
+                logger.error(
+                    f"[SkillLibrarian] Failed to fetch execution tool catalog: {err}"
+                )
+                return {} if as_dict else []
+
+        # Filter skills by active status and skill_type classification
+        filtered_skills: List[Dict[str, Any]] = []
+        target_type = (
+            skill_type.upper()
+            if skill_type and skill_type.upper() not in ("*", "ALL", "ANY")
+            else None
+        )
+
+        for skill in raw_skills:
+            if active_only and not skill.get("is_active") and skill.get("status") != "ACTIVE":
+                continue
+            if target_type:
+                stype = str(skill.get("skill_type", "")).upper()
+                # Accept standard variants when matching EXECUTION type
+                if target_type == "EXECUTION" and stype in ("EXECUTION", "NATIVE", "DYNAMIC", "PYTHON", "SYSTEM", ""):
+                    pass
+                elif stype != target_type:
+                    continue
+            filtered_skills.append(skill)
+
+        if as_dict:
+            catalog: Dict[str, Dict[str, Any]] = {}
+            for skill in filtered_skills:
+                key = skill.get("action_name") or skill.get("skill_id")
+                if key:
+                    catalog[key] = skill
+            return catalog
+
+        return filtered_skills
+
+    get_tool_catalog = get_execution_tool_catalog
+    get_execution_tools = get_execution_tool_catalog
+
+    # =========================================================================
+    # Manifest Control & System Topology API
+    # =========================================================================
+
+    def get_system_topology(self, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
+        """Builds a comprehensive manifest of all active agents and their bound capabilities."""
+        topology = []
+
+        for agent_id, manifest in self._manifest_cache.items():
+            if str(manifest.get("status", "ACTIVE")).upper() != "ACTIVE":
+                continue
+
+            bound_capabilities = self.list_available_actions(agent_id, conn=conn)
+
+            topology.append({
+                "agent_id": agent_id,
+                "skill_id": manifest.get("default_action"),
+                "role": manifest.get("role", "system_agent"),
+                "description": manifest.get("description", f"Execute tasks requiring {agent_id} capabilities."),
+                "bound_capabilities": bound_capabilities
+            })
+
+        return topology
+
+    def get_role_default_action(self, role_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[str]:
+        """Retrieves the default interface action (Work Contract) for a role."""
         manifest = self.get_agent_manifest(role_id, conn=conn)
         if manifest and "default_action" in manifest:
             return str(manifest["default_action"])
         return None
 
     def get_default_action_for_role(self, role_name: str, conn: Optional[sqlite3.Connection] = None) -> str:
-        """Resolves and returns the default action_name (Work Contract) for a given system role.
-
-        Fails fast if role_name cannot be resolved to an active role in SQLite.
-        """
+        """Resolves and returns the default action_name for a given system role."""
         role_id = self.resolve_agent_id_for_role(role_name, conn=conn)
 
         agent_manifest = self.get_agent_manifest(role_id, conn=conn) or {}
@@ -233,14 +329,11 @@ class SkillLibrarian(
             )
 
     def get_all_agent_manifests(self) -> Dict[str, Dict[str, Any]]:
-        """Returns all cached role manifests. (In-memory lookup, no DB connection required)"""
+        """Returns all cached role manifests."""
         return self._manifest_cache
 
     def get_agent_manifest(self, role_id: str, conn: Optional[sqlite3.Connection] = None) -> Optional[Dict[str, Any]]:
-        """Retrieves a single manifest by resolving target via RoleResolverMixin.
-
-        Fails fast if role_id is an unmapped role.
-        """
+        """Retrieves a single manifest by resolving target via RoleResolverMixin."""
         if not role_id:
             return None
         try:

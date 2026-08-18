@@ -1,63 +1,88 @@
 """
 charon/core/session.py
-System Version: v0.4.1 | File Revision: 4.1.0
+System Version: v0.6.0 | File Revision: 6.0.0
 
 Module: Core session gateway for Charon.
 Manages session memory and serves as the declarative ingest boundary for the Core Engine.
-Adheres to the Work Contract paradigm by delegating routing and capability evaluation
-to the downstream Engine and SkillLibrarian.
+Fully backed by SQLite for Zero-Trust session recovery and execution auditing.
 """
 
+import json
 import logging
+import sqlite3
 import uuid
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
-from charon.core.coordinator.journal import CoordinatorJournal, JournalEntry
+from charon.config.paths import STATE_DB_PATH
 from charon.core.skills import SkillLibrarian
 from charon.utils.memory import ConversationBuffer
 
 if TYPE_CHECKING:
-    from charon.core.engine import OrchestrationEngine
+    from charon.core.orchestration import OrchestrationEngine
 
 logger = logging.getLogger("Charon.Core.Session")
 
 
 class SessionGateway:
-    """The front desk managing session memory and ingest pass-through to execution chains."""
+    """The front desk managing DB-backed session memory and ingest pass-through."""
 
     def __init__(
         self,
         engine: Optional["OrchestrationEngine"] = None,
-        journal: Optional[CoordinatorJournal] = None,
         librarian: Optional[SkillLibrarian] = None,
+        journal: Optional[Any] = None,      # <-- Add this parameter
+        client_id: str = "session_gateway"
     ):
         self.librarian = librarian or SkillLibrarian.get_instance()
-        self.journal = journal or CoordinatorJournal()
+        self.db_path = STATE_DB_PATH / "charon_state.db"
+        self.client_id = client_id
+        self.journal = journal              # <-- Store the journal reference
+
+        # Initialize and hydrate memory from SQLite
         self.memory = ConversationBuffer(max_turns=5)
+        self._hydrate_memory()
 
         if engine is None:
-            # Lazy import to break the circular dependency at runtime
-            from charon.core.engine import OrchestrationEngine
-            self.engine = OrchestrationEngine(
-                librarian=self.librarian,
-            )
+            from charon.core.orchestration import OrchestrationEngine
+            self.engine = OrchestrationEngine(librarian=self.librarian)
         else:
             self.engine = engine
 
-    def _resolve_role_id(self, role_name: str) -> str:
-        """Resolves a system role name to a dynamic database ID via SkillLibrarian."""
-        if hasattr(self.librarian, "resolve_agent_id_for_role"):
-            resolved = self.librarian.resolve_agent_id_for_role(role_name)
-            if resolved:
-                return resolved
-        if hasattr(self.librarian, "resolve_agent_id"):
-            resolved = self.librarian.resolve_agent_id(role_name)
-            if resolved:
-                return resolved
-        return role_name
+    # ==========================================
+    # MEMORY PERSISTENCE (ZERO-TRUST STATE)
+    # ==========================================
+
+    def _hydrate_memory(self) -> None:
+        """Loads the most recent conversation history from the database on startup."""
+        query = "SELECT memory_json FROM session_state WHERE client_id = ?;"
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(query, (self.client_id,)).fetchone()
+                if row and row[0]:
+                    history = json.loads(row[0])
+                    # Assuming ConversationBuffer has a way to set history.
+                    # If not, you may need to append them individually.
+                    if hasattr(self.memory, "history"):
+                        self.memory.history = history
+                    logger.info(f"Hydrated {len(history)} past turns for client: {self.client_id}")
+        except Exception as e:
+            logger.error(f"Failed to hydrate memory for {self.client_id}: {e}")
+
+    def _persist_memory(self) -> None:
+        """Flushes the current in-memory buffer to SQLite."""
+        history = self.memory.get_history() if hasattr(self.memory, "get_history") else []
+        query = """
+            INSERT INTO session_state (client_id, memory_json, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(client_id) DO UPDATE SET 
+                memory_json = excluded.memory_json,
+                updated_at = CURRENT_TIMESTAMP;
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(query, (self.client_id, json.dumps(history)))
 
     def record_turn(self, user_input: str, system_response: str) -> None:
-        """Saves a completed interaction turn into short-term conversation history memory."""
+        """Saves a turn to the buffer and immediately persists to DB."""
         if not system_response:
             return
 
@@ -67,49 +92,70 @@ class SessionGateway:
             self.memory.add_turn(user_input, resp_str)
         elif hasattr(self.memory, "append") and callable(getattr(self.memory, "append")):
             self.memory.append({"user": user_input, "assistant": resp_str})
-        else:
-            logger.warning("ConversationBuffer lacks add_turn/append method. Turn not recorded.")
+
+        # Lock it into the database
+        self._persist_memory()
+
+    # ==========================================
+    # TASK INGESTION
+    # ==========================================
+
+    def _initialize_task_in_db(self, task_id: str, prompt: str, context: list) -> None:
+        """
+        Directly writes the initial PENDING task state to the database,
+        including a snapshot of the context to guarantee execution auditing.
+        """
+        query = """
+            INSERT INTO task_state (
+                task_id, client_id, prompt, status, current_step_index, context_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'PENDING', 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(query, (task_id, self.client_id, prompt, json.dumps(context)))
 
     async def submit_task(
         self,
         user_input: str,
-        target_role: Optional[str] = None,
-        client_id: Optional[str] = "session_gateway"
+        target_role: Optional[str] = None
     ) -> Any:
-        """
-        Ingests a high-level user objective, enqueues it via the CoordinatorJournal,
-        and kicks off the Engine execution loop.
-        """
+        """Ingests a task, establishes the state truth, and triggers execution."""
         task_id = f"task-{uuid.uuid4().hex[:8]}"
 
-        # 1. Create a strictly typed payload for the Journal
-        entry = JournalEntry(
-            task_id=task_id,
-            prompt=user_input,
-            target_role=self._resolve_role_id(target_role) if target_role else None,
-            client_id=client_id,
-            context_history=self.memory.get_history() if hasattr(self.memory, "get_history") else []
-        )
+        # Resolve roles and capture the current memory state
+        resolved_role = self._resolve_role_id(target_role) if target_role else None
+        current_context = self.memory.get_history() if hasattr(self.memory, "get_history") else []
 
-        # 2. Enqueue the declarative task
-        await self.journal.enqueue(entry)
-        logger.info(f"Task ingested and journaled: {task_id}")
+        # 1. Establish the Source of Truth in SQLite
+        try:
+            self._initialize_task_in_db(task_id, user_input, current_context)
+            logger.info(f"Task {task_id} ingested for client {self.client_id}")
+        except Exception as e:
+            logger.error(f"Failed to initialize task {task_id} in DB: {e}")
+            raise RuntimeError(f"Task ingestion failed: {e}")
 
-        # 3. Delegate execution entirely to the Coordinator Engine
+        # 2. Delegate execution entirely to the Coordinator Engine
         final_result = await self.engine.process_request(
             user_input=user_input,
-            agent_override=target_role,
-            task_id=task_id
+            agent_override=resolved_role,
+            task_id=task_id,
+            context=current_context
         )
 
-        # 4. Record the turn for future context
+        # 3. Record and persist the turn
         self.record_turn(user_input, final_result)
         return final_result
 
+    def _resolve_role_id(self, role_name: str) -> str:
+        if hasattr(self.librarian, "resolve_agent_id_for_role"):
+            resolved = self.librarian.resolve_agent_id_for_role(role_name)
+            if resolved: return resolved
+        if hasattr(self.librarian, "resolve_agent_id"):
+            resolved = self.librarian.resolve_agent_id(role_name)
+            if resolved: return resolved
+        return role_name
+
     def get_role_manifest(self, role_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Retrieves the high-level capability manifest for a system role.
-        """
         resolved_id = self._resolve_role_id(role_name)
         if hasattr(self.librarian, "get_agent_manifest"):
             return self.librarian.get_agent_manifest(resolved_id)

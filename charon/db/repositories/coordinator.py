@@ -1,6 +1,6 @@
 """
 charon/db/repositories/coordinator.py
-System Version: v0.1.0 | File Revision: 1.0.0
+System Version: v0.2.1 | File Revision: 1.2.1
 
 Repository bridging the Coordinator Engine to the zero-trust SQLite state.
 Handles task polling, Level 0 capability audits, Level 1 contract minting,
@@ -9,11 +9,11 @@ and zero-trust ephemeral key revocation (The Burn & Sweeper).
 
 import json
 import logging
+import sqlite3
 import uuid
-from typing import Any, Dict, List, Optional
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# Adjust import based on your actual config path structure
 from charon.db.connection import get_connection
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,9 @@ class CoordinatorStateRepository:
         with get_connection(self.db_path) as conn:
             conn.execute(query, (json.dumps(plan_json), task_id))
 
-    def update_task_status(self, task_id: str, status: str, results_json: Optional[Dict] = None) -> None:
+    def update_task_status(
+        self, task_id: str, status: str, results_json: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Updates terminal states and stores final results."""
         query = """
             UPDATE task_state 
@@ -66,24 +68,6 @@ class CoordinatorStateRepository:
     # ==========================================
     # 2. THE KEY MAKER (ZERO-TRUST MINTING)
     # ==========================================
-    def audit_level_0_permission(self, agent_id: str, skill_id: str) -> bool:
-        """
-        THE LAW: Validates capability via strict CBAC mapping.
-        Verifies that the agent's assigned role belongs to a permission group
-        that explicitly grants access to the requested skill.
-        """
-        query = """
-            SELECT 1 
-            FROM system_roles sr
-            JOIN role_permission_groups rpg ON sr.role_name = rpg.role_name
-            JOIN permission_registry pr ON rpg.group_id = pr.group_id
-            JOIN skill_permissions sp ON pr.perm_id = sp.perm_id
-            WHERE sr.agent_id = ? AND sp.skill_id = ?;
-        """
-        with get_connection(self.db_path, read_only=True) as conn:
-            result = conn.execute(query, (agent_id, skill_id)).fetchone()
-            return bool(result)
-
     def audit_level_0_permission_strict(self, agent_id: str, skill_id: str) -> bool:
         """
         THE LAW (STRICT): Verifies base physical capability AND legal role authority.
@@ -100,12 +84,18 @@ class CoordinatorStateRepository:
               AND sp.skill_id = ?;
         """
         with get_connection(self.db_path, read_only=True) as conn:
-            result = conn.execute(query, (agent_id, skill_id)).fetchone()
+            # Bind skill_id twice to fulfill both asm.skill_id and sp.skill_id placeholders
+            result = conn.execute(query, (agent_id, skill_id, skill_id)).fetchone()
             return bool(result)
 
     def mint_ephemeral_contract(
-            self, task_id: str, agent_id: str, skill_id: str,
-            rate_limit: int = 10, token_bound: int = 8000
+        self,
+        task_id: str,
+        agent_id: str,
+        skill_id: str,
+        authorized_tools: Optional[List[str]] = None,
+        rate_limit: int = 10,
+        token_bound: int = 8000,
     ) -> str:
         """
         THE CONTRACT: Mints a temporary key binding an agent to a tool for a specific task.
@@ -113,43 +103,103 @@ class CoordinatorStateRepository:
         contract_id = f"cnt_{uuid.uuid4().hex[:12]}"
         contract_name = f"AutoMint_{agent_id}_{skill_id}"
 
+        scope_limits_json = json.dumps({
+            "authorized_tools": authorized_tools or []
+        })
+
         query = """
             INSERT INTO contract_policies (
                 contract_id, contract_name, task_id, agent_id, skill_id, 
-                rate_limit_rpm, token_boundary, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1);
+                scope_limits, rate_limit_rpm, token_boundary, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1);
         """
+
         with get_connection(self.db_path) as conn:
-            conn.execute(query, (
-                contract_id, contract_name, task_id, agent_id, skill_id,
-                rate_limit, token_bound
-            ))
+            conn.execute(
+                query,
+                (
+                    contract_id,
+                    contract_name,
+                    task_id,
+                    agent_id,
+                    skill_id,
+                    scope_limits_json,
+                    rate_limit,
+                    token_bound,
+                ),
+            )
             logger.info(f"Minted ephemeral contract {contract_id} for {agent_id} -> {skill_id}")
             return contract_id
 
     # ==========================================
     # 3. THE BURN & PRUNING ENGINE
     # ==========================================
-    def burn_task_contracts(self, task_id: str) -> None:
+    def burn_task_contracts(self, task_id: str) -> int:
         """
         THE BURN: Instantly revokes all keys associated with a task when it completes/fails.
+        Returns the count of revoked contract policies.
         """
         query = "DELETE FROM contract_policies WHERE task_id = ?;"
         with get_connection(self.db_path) as conn:
             cursor = conn.execute(query, (task_id,))
-            if cursor.rowcount > 0:
-                logger.info(f"Burned {cursor.rowcount} ephemeral contracts for task {task_id}.")
+            revoked_count = cursor.rowcount
+            if revoked_count > 0:
+                logger.info(f"Burned {revoked_count} ephemeral contracts for task {task_id}.")
+            return revoked_count
 
-    def sweep_stale_tasks(self, days_old: int = 7) -> int:
+    def sweep_stale_tasks(self, days_old: int = 7) -> List[str]:
         """
-        THE SWEEPER: Deletes old tasks. Due to PRAGMA foreign_keys = ON,
-        this automatically cascades and wipes out orphaned contract_policies.
+        THE SWEEPER: Identifies and deletes terminal/stale task records updated prior to threshold.
+        Due to PRAGMA foreign_keys = ON, cascading deletes wipe orphaned contract_policies.
+        Also scrubs orphaned conversation contexts from session_state.
+
+        Returns:
+            List[str]: Identifiers of purged tasks so orchestrators can execute
+                       matching filesystem workspace cleanups.
         """
-        query = "DELETE FROM task_state WHERE updated_at <= date('now', ?);"
-        modifier = f"-{days_old} days"
+        time_modifier = f"-{days_old} days"
+
+        # 1. Sweep stale tasks
+        select_tasks = """
+            SELECT task_id FROM task_state 
+            WHERE status IN ('COMPLETED', 'FAILED', 'REJECTED', 'CANCELLED')
+              AND updated_at <= date('now', ?);
+        """
+        delete_tasks = """
+            DELETE FROM task_state 
+            WHERE status IN ('COMPLETED', 'FAILED', 'REJECTED', 'CANCELLED')
+              AND updated_at <= date('now', ?);
+        """
+
+        # 2. Sweep stale sessions
+        delete_sessions = """
+            DELETE FROM session_state 
+            WHERE updated_at <= date('now', ?);
+        """
 
         with get_connection(self.db_path) as conn:
-            cursor = conn.execute(query, (modifier,))
-            if cursor.rowcount > 0:
-                logger.info(f"Sweeper purged {cursor.rowcount} stale tasks older than {days_old} days.")
-            return cursor.rowcount
+            cursor = conn.cursor()
+
+            # Execute Task Sweep
+            cursor.execute(select_tasks, (time_modifier,))
+            swept_task_ids = [row[0] for row in cursor.fetchall()]
+
+            if swept_task_ids:
+                cursor.execute(delete_tasks, (time_modifier,))
+                logger.info(
+                    f"[SWEEPER] Purged {len(swept_task_ids)} stale tasks older than {days_old} days from state DB."
+                )
+
+            # Execute Session Sweep
+            try:
+                cursor.execute(delete_sessions, (time_modifier,))
+                swept_sessions_count = cursor.rowcount
+                if swept_sessions_count > 0:
+                    logger.info(
+                        f"[SWEEPER] Purged {swept_sessions_count} orphaned client sessions older than {days_old} days."
+                    )
+            except sqlite3.OperationalError as e:
+                # Failsafe in case sweep runs before the table is migrated
+                logger.warning(f"[SWEEPER] Skipped session sweep (table might be missing): {e}")
+
+            return swept_task_ids

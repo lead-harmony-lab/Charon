@@ -7,13 +7,12 @@ Houses base agent classes, execution contracts, and agent lifecycle utilities.
 Updated to support the Work Contract (Default Action) execution paradigm.
 """
 
-from charon.agents.base import BaseAgent, CapabilityType, SkillContract, BaseWorkContract
+from charon.agents.base import BaseAgent, CapabilityType, SkillContract
 from charon.agents.runtime import RuntimeAgent
 
 __all__ = [
     "BaseAgent",
     "CapabilityType",
     "SkillContract",
-    "BaseWorkContract",
     "RuntimeAgent"
 ]

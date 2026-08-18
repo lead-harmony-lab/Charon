@@ -4382,10 +4382,10 @@ Module: charon.core.engine package.
 Exports OrchestrationEngine alongside sub-modules.
 """
 
-from charon.core.engine.dag_executor import DAGPlanExecutor
-from charon.core.engine.engine import OrchestrationEngine
-from charon.core.engine.self_healing import SelfHealingHandler
-from charon.core.engine.synthesizer import OutputSynthesizer
+from charon.core.orchestration.dag_executor import DAGPlanExecutor
+from charon.core.orchestration.engine import OrchestrationEngine
+from charon.core.orchestration.self_healing import SelfHealingHandler
+from charon.core.orchestration.synthesizer import OutputSynthesizer
 
 __all__ = [
     "OrchestrationEngine",
@@ -4416,7 +4416,7 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from charon.core.engine.self_healing import SelfHealingHandler
+from charon.core.orchestration.self_healing import SelfHealingHandler
 from charon.core.ledger import ExecutionLedger
 from charon.core.session import SessionGateway
 from charon.core.skills.librarian import SkillLibrarian
@@ -4430,14 +4430,14 @@ class DAGPlanExecutor:
     """Decomposes multi-step tasks into DAG sequences and executes them with parallel resolution."""
 
     def __init__(
-        self,
-        orchestrator: SessionGateway,
-        self_healing_handler: SelfHealingHandler,
-        gatekeeper: Optional[Any] = None,
-        state_mgr: Optional[StateManager] = None,
-        ledger: Optional[ExecutionLedger] = None,
-        emitter: Optional[Any] = None,
-        librarian: Optional[SkillLibrarian] = None,
+            self,
+            orchestrator: SessionGateway,
+            self_healing_handler: SelfHealingHandler,
+            gatekeeper: Optional[Any] = None,
+            state_mgr: Optional[StateManager] = None,
+            ledger: Optional[ExecutionLedger] = None,
+            emitter: Optional[Any] = None,
+            librarian: Optional[SkillLibrarian] = None,
     ):
         self.orchestrator = orchestrator
         self.self_healing = self_healing_handler
@@ -4462,12 +4462,12 @@ class DAGPlanExecutor:
         return (1, str(norm))
 
     async def execute_plan_sequence(
-        self,
-        raw_prompt: str,
-        routing: Optional[RoutingPayload],
-        stream_cb: Optional[Callable[[str], None]] = None,
-        task_id: Optional[str] = None,
-        fallback_single_turn_cb: Optional[Callable[..., Any]] = None,
+            self,
+            raw_prompt: str,
+            routing: Optional[RoutingPayload],
+            stream_cb: Optional[Callable[[str], None]] = None,
+            task_id: Optional[str] = None,
+            fallback_single_turn_cb: Optional[Callable[..., Any]] = None,
     ) -> str:
         """Requests task decomposition from the planning agent and executes the resulting DAG."""
         logger.info("Initiating multi-step task decomposition via the planning agent...")
@@ -4579,13 +4579,13 @@ class DAGPlanExecutor:
 
                     # Short-circuit downstream execution if prerequisite failed or was blocked
                     if isinstance(dep_output, str) and any(
-                        dep_output.startswith(p)
-                        for p in (
-                            "[Authorization Denied]",
-                            "[Authorization Error]",
-                            "[Dependency Error]",
-                            "[Runtime Error]",
-                        )
+                            dep_output.startswith(p)
+                            for p in (
+                                    "[Authorization Denied]",
+                                    "[Authorization Error]",
+                                    "[Dependency Error]",
+                                    "[Runtime Error]",
+                            )
                     ):
                         step_result = (
                             f"[Dependency Error]: Step {step_num} ({resolved_agent_id}::{action}) "
@@ -4768,10 +4768,10 @@ class DAGPlanExecutor:
         )
 
     def _resolve_step_references(
-        self,
-        parameters: Any,
-        history: List[Dict[str, Any]],
-        max_output_chars: int = 2000,
+            self,
+            parameters: Any,
+            history: List[Dict[str, Any]],
+            max_output_chars: int = 2000,
     ) -> Any:
         """Recursively replaces $STEP_X_OUTPUT placeholders using completed dependency history."""
         if not history or parameters is None:
@@ -4834,9 +4834,9 @@ import inspect
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
-from charon.core.engine.dag_executor import DAGPlanExecutor
-from charon.core.engine.self_healing import SelfHealingHandler
-from charon.core.engine.synthesizer import OutputSynthesizer
+from charon.core.orchestration.dag_executor import DAGPlanExecutor
+from charon.core.orchestration.self_healing import SelfHealingHandler
+from charon.core.orchestration.synthesizer import OutputSynthesizer
 from charon.core.ledger import ExecutionLedger
 from charon.core.session import SessionGateway
 from charon.core.skills import SkillLibrarian
@@ -4859,13 +4859,13 @@ class OrchestrationEngine:
     """High-level Orchestration Engine facade for Charon."""
 
     def __init__(
-        self,
-        orchestrator: Optional[SessionGateway] = None,
-        heavy_model: str = "llama3.1",
-        triage_model: str = "llama3.1",
-        state_manager: Optional[StateManager] = None,
-        ledger: Optional[ExecutionLedger] = None,
-        librarian: Optional[SkillLibrarian] = None,
+            self,
+            orchestrator: Optional[SessionGateway] = None,
+            heavy_model: str = "llama3.1",
+            triage_model: str = "llama3.1",
+            state_manager: Optional[StateManager] = None,
+            ledger: Optional[ExecutionLedger] = None,
+            librarian: Optional[SkillLibrarian] = None,
     ):
         self.librarian = librarian or SkillLibrarian.get_instance()
 
@@ -4964,16 +4964,17 @@ class OrchestrationEngine:
             logger.warning(f"[ENGINE] Failed to resolve agent input '{agent_input}': {err}")
 
         # 3. Fallback to default system generalist
-        logger.warning(f"[ENGINE] Unrecognized or invalid agent override '{agent_input}'. Falling back to default generalist.")
+        logger.warning(
+            f"[ENGINE] Unrecognized or invalid agent override '{agent_input}'. Falling back to default generalist.")
         return self._get_agent_for_role("system_generalist")
 
     def bind_gateway_context(
-        self,
-        gatekeeper: Optional[Any] = None,
-        emitter: Optional[Any] = None,
-        concierge: Optional[Any] = None,
-        state_manager: Optional[StateManager] = None,
-        ledger: Optional[ExecutionLedger] = None,
+            self,
+            gatekeeper: Optional[Any] = None,
+            emitter: Optional[Any] = None,
+            concierge: Optional[Any] = None,
+            state_manager: Optional[StateManager] = None,
+            ledger: Optional[ExecutionLedger] = None,
     ) -> None:
         """Bind Gateway contexts and propagate them to sub-modules."""
         self.gatekeeper = gatekeeper
@@ -4992,12 +4993,12 @@ class OrchestrationEngine:
         self.dag_executor.emitter = self.emitter
 
     async def process_request(
-        self,
-        user_input: str,
-        stream_cb: Optional[Callable[[str], None]] = None,
-        agent_override: Optional[str] = None,
-        task_id: Optional[str] = None,
-        routing_hint: Optional[Dict[str, Any]] = None,
+            self,
+            user_input: str,
+            stream_cb: Optional[Callable[[str], None]] = None,
+            agent_override: Optional[str] = None,
+            task_id: Optional[str] = None,
+            routing_hint: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Primary execution lifecycle controller."""
         raw_prompt = user_input.strip()
@@ -5128,10 +5129,10 @@ class OrchestrationEngine:
 
         # 5. Engine-Level Concierge Proactive Evaluation
         if (
-            self.concierge
-            and self.emitter
-            and result
-            and not result.startswith(("[Awaiting Authorization]", "[Authorization Denied]", "[System Error]"))
+                self.concierge
+                and self.emitter
+                and result
+                and not result.startswith(("[Awaiting Authorization]", "[Authorization Denied]", "[System Error]"))
         ):
             try:
                 action_name = getattr(routing, "action", None) or "general_response"
@@ -5162,11 +5163,11 @@ class OrchestrationEngine:
         return result
 
     async def _execute_single_turn(
-        self,
-        raw_prompt: str,
-        agent: str,
-        stream_cb: Optional[Callable[[str], None]] = None,
-        task_id: Optional[str] = None,
+            self,
+            raw_prompt: str,
+            agent: str,
+            stream_cb: Optional[Callable[[str], None]] = None,
+            task_id: Optional[str] = None,
     ) -> str:
         """Executes a single-turn agent interaction."""
         resolved_agent = self._validate_and_resolve_agent(agent)

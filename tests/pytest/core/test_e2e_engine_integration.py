@@ -7,7 +7,7 @@ and self-healing diagnostic recovery across chained agent executions.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from charon.core.engine import OrchestrationEngine
+from charon.core.orchestration import OrchestrationEngine
 from charon.intent import AgentEnum, RoutingPayload
 
 

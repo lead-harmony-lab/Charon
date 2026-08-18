@@ -1,13 +1,8 @@
 """
 charon/daemon.py
-System Version: v0.1.0 | File Revision: 1.5.0
+System Version: v0.1.2 | File Revision: 1.7.1
 
 Module: Charon Daemon (`charond`) - Gateway Entry Point.
-
-Wires FastAPI network routes, static dashboard serving, persistent queue processing,
-state SQLite tables, execution workspace handling, live telemetry bus forwarding,
-SkillGapRegistry integration, agent progress callbacks, and proactive task heartbeats
-to the central OrchestrationEngine execution loop.
 """
 
 import asyncio
@@ -22,8 +17,7 @@ import uvicorn
 
 from charon.config.logging import setup_logging
 from charon.config.paths import ensure_ecosystem_directories
-from charon.core.engine import OrchestrationEngine
-from charon.core.coordinator.registry import SkillGapRegistry
+from charon.core.orchestration import OrchestrationEngine
 from charon.gateway.core import CharonDaemon
 from charon.gateway.middleware import APIKeyMiddleware
 from charon.gateway.models import WSEvent
@@ -37,20 +31,34 @@ setup_logging()
 
 logger = logging.getLogger("Charon.Daemon")
 
-# 2. Initialize engine, gateway daemon wrapper, and central gap registry
+# 2. Initialize engine and gateway daemon wrapper
 llm_client = ollama.AsyncClient(host=OLLAMA_HOST)
 
 # Inject the client into the core engine
 engine = OrchestrationEngine(llm_client=llm_client)
 daemon = CharonDaemon(engine=engine)
-gap_registry = SkillGapRegistry.get_instance()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
-        "Initializing Charon FastAPI Gateway, Core Engine, Gap Registry, and Persistent Journal..."
+        "[Charon.Daemon] Initializing Charon FastAPI Gateway, Core Engine, and Persistent Journal..."
     )
+
+    # 1. Await daemon/journal initialization prior to exposing state and serving traffic
+    if hasattr(daemon, "initialize"):
+        await daemon.initialize()
+    elif hasattr(daemon, "journal") and hasattr(daemon.journal, "initialize"):
+        await daemon.journal.initialize()
+
+    # FIX: Explicitly bind Gateway contexts back to OrchestrationEngine & Coordinator
+    engine.bind_gateway_context(
+        emitter=getattr(daemon, "emitter", None),
+        concierge=getattr(daemon, "concierge", None),
+        state_manager=getattr(daemon, "state_mgr", None),
+        ledger=getattr(daemon, "ledger", None),
+    )
+    logger.info("[Charon.Daemon] Gateway context successfully bound to OrchestrationEngine.")
 
     # Expose runtime instances on FastAPI app.state for HTTP and WS route handlers
     app.state.daemon = daemon
@@ -62,39 +70,44 @@ async def lifespan(app: FastAPI):
     app.state.ledger = daemon.ledger
     app.state.workspace_mgr = daemon.workspace_mgr
     app.state.queue = daemon.journal
-    app.state.gap_registry = gap_registry
+
+    # Set explicit readiness flag on daemon context
+    if hasattr(daemon, "is_ready"):
+        daemon.is_ready = True
 
     # Bridge central TelemetryBus & Agent Progress Callbacks -> Daemon WebSocket Emitter
     loop = asyncio.get_running_loop()
 
-    # =====================================================================
-    # ---> Direct UI Telemetry Bridge for Injected Agent Callbacks <---
+    # Direct UI Telemetry Bridge for Injected Agent Callbacks
     def ui_telemetry_bridge(payload: dict) -> None:
         """Callback injected into agents to push live progress updates directly to the GNOME HUD via WebSocket."""
         try:
+            logger.debug(f"[Daemon.Bridge] Telemetry payload received: {payload.get('type')}")
             ws_event = WSEvent.model_construct(
                 event_type=payload.get("type", "task_progress"),
                 agent_name=payload.get("agent_name", "System"),
                 client_id="desktop_concierge",
                 data=payload.get("data", {}),
             )
-            # Safely drop the synchronous agent update onto the async WS queue across thread boundary
             asyncio.run_coroutine_threadsafe(manager.broadcast(ws_event), loop)
         except Exception as err:
             logger.error(f"[Daemon] UI Telemetry Bridge error: {err}")
 
-    # Inject the callback into the Dispatcher so it gets bound to every resolved Agent
-    if hasattr(engine, "dispatcher") and engine.dispatcher:
+    # Inject the callback into the Coordinator paradigm
+    if hasattr(engine, "coordinator") and engine.coordinator:
+        engine.coordinator.agent_telemetry_callback = ui_telemetry_bridge
+        logger.info(
+            "[Charon.Daemon] Coordinator injected with ui_telemetry_bridge callback."
+        )
+    elif hasattr(engine, "dispatcher") and engine.dispatcher:
         engine.dispatcher.agent_telemetry_callback = ui_telemetry_bridge
         logger.info(
             "[Charon.Daemon] AgentDispatcher injected with ui_telemetry_bridge callback."
         )
-    # =====================================================================
 
     def bridge_telemetry_event(event) -> None:
         """Callback that forwards internal TelemetryBus TraceEvents and Gap Alerts to WebSocket emitter."""
         try:
-            # 1. Normalize the event payload (handles both Pydantic models and raw dicts)
             if hasattr(event, "model_dump"):
                 event_dict = event.model_dump(mode="json")
             elif hasattr(event, "dict"):
@@ -104,7 +117,6 @@ async def lifespan(app: FastAPI):
             else:
                 event_dict = vars(event)
 
-            # Safely extract dictionaries and normalize Enum values
             details = event_dict.get("details") or {}
             safe_details = {str(k): str(v) for k, v in details.items()}
 
@@ -116,7 +128,6 @@ async def lifespan(app: FastAPI):
             )
             agent_name_str = event_dict.get("agent_name", "Coordinator")
 
-            # 2. Construct the WSEvent
             ws_event = WSEvent.model_construct(
                 event_type="telemetry_trace",
                 task_id=str(details.get("task_id", "system")),
@@ -133,33 +144,11 @@ async def lifespan(app: FastAPI):
                 },
             )
 
-            # 3. Broadcast to all active clients (including the telemetry viewer)
             asyncio.run_coroutine_threadsafe(
                 manager.broadcast(ws_event),
                 loop,
             )
 
-            # Proactive Skill Blueprint Ready Broadcast
-            if details.get("has_blueprint"):
-                blueprint_event = WSEvent.model_construct(
-                    event_type="skill_blueprint_ready",
-                    task_id=str(details.get("task_id", "system")),
-                    client_id="telemetry_viewer",
-                    agent_name=agent_name_str,
-                    data={
-                        "agent_name": agent_name_str,
-                        "action": event_dict.get("action"),
-                        "pending_blueprints": len(
-                            gap_registry.get_pending_blueprints()
-                        ),
-                        "message": "Recurring skill gap threshold met. SkillBlueprint ready for code generation.",
-                    },
-                )
-                asyncio.run_coroutine_threadsafe(
-                    manager.broadcast(blueprint_event), loop
-                )
-
-            # Diagnostic Gap Detected Broadcast
             if details.get("diagnostics"):
                 gap_event = WSEvent.model_construct(
                     event_type="skill_gap_detected",
@@ -181,10 +170,9 @@ async def lifespan(app: FastAPI):
                 f"[Daemon] FATAL Telemetry bridge error: {err}", exc_info=True
             )
 
-    # Register subscription handler to live telemetry bus
     telemetry_bus.subscribe(bridge_telemetry_event)
     logger.info(
-        "[Charon.Daemon] TelemetryBus subscriber & SkillGap notifier bridged to WebSocket Emitter."
+        "[Charon.Daemon] TelemetryBus subscriber bridged to WebSocket Emitter."
     )
 
     async def active_task_heartbeat_worker():
@@ -195,18 +183,19 @@ async def lifespan(app: FastAPI):
                 if hasattr(daemon, "get_active_tasks"):
                     active_tasks = daemon.get_active_tasks()
                     for task in active_tasks:
-                        await daemon.emitter.emit(
-                            event_type="task_heartbeat",
-                            task_id=task.get("id"),
-                            client_id=task.get("client_id"),
-                            data={
-                                "status": task.get("status", "processing"),
-                                "active_agent": task.get(
-                                    "assigned_agent", "Orchestrator"
-                                ),
-                                "elapsed_seconds": task.get("elapsed", 0),
-                            },
-                        )
+                        if hasattr(daemon, "emitter") and daemon.emitter:
+                            await daemon.emitter.emit(
+                                event_type="task_heartbeat",
+                                task_id=task.get("id"),
+                                client_id=task.get("client_id"),
+                                data={
+                                    "status": task.get("status", "processing"),
+                                    "active_agent": task.get(
+                                        "assigned_agent", "Orchestrator"
+                                    ),
+                                    "elapsed_seconds": task.get("elapsed", 0),
+                                },
+                            )
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -214,48 +203,54 @@ async def lifespan(app: FastAPI):
                     f"Task heartbeat worker encountered an anomaly: {e}"
                 )
 
-    # Spawn background task workers
+    # -------------------------------------------------------------
+    # Crash handler wrapper for asyncio background tasks
+    # -------------------------------------------------------------
+    def _handle_task_crash(task: asyncio.Task) -> None:
+        try:
+            if not task.cancelled() and task.exception():
+                logger.critical(
+                    f"[Charon.Daemon] Background Task '{task.get_name()}' crashed fatally: {task.exception()}",
+                    exc_info=task.exception()
+                )
+        except asyncio.CancelledError:
+            pass
+
+    # Spawn background task workers with crash handlers
     queue_task = asyncio.create_task(
         daemon.process_queue(), name="queue_worker"
     )
+    queue_task.add_done_callback(_handle_task_crash)
+
     overseer_task = asyncio.create_task(
         daemon.start_overseer_reporter(interval=30), name="overseer_reporter"
     )
+    overseer_task.add_done_callback(_handle_task_crash)
+
     heartbeat_task = asyncio.create_task(
         active_task_heartbeat_worker(), name="task_heartbeat_worker"
     )
+    heartbeat_task.add_done_callback(_handle_task_crash)
 
+    logger.info("[Charon.Daemon] Gateway and Task Queue fully ready for task ingestion.")
     yield
 
-    # =====================================================================
-    # ---> TEARDOWN SEQUENCE <---
-    # =====================================================================
-    logger.info(
-        "Shutting down Charon Daemon background tasks and core subsystems..."
-    )
-
-    # 1. Unsubscribe from global telemetry bus to prevent memory leaks/dangling callbacks
+    # Teardown
+    logger.info("[Charon.Daemon] Shutting down Charon Daemon background tasks and core subsystems...")
     if hasattr(telemetry_bus, "unsubscribe"):
         telemetry_bus.unsubscribe(bridge_telemetry_event)
-        logger.info("[Charon.Daemon] Unsubscribed from TelemetryBus.")
 
-    # 2. Cancel the background worker loops
     queue_task.cancel()
     overseer_task.cancel()
     heartbeat_task.cancel()
     await asyncio.gather(
         queue_task, overseer_task, heartbeat_task, return_exceptions=True
     )
-    logger.info("[Charon.Daemon] Async background workers halted.")
 
-    # 3. Trigger Core Engine / Daemon graceful shutdown
     if hasattr(engine, "shutdown"):
         await engine.shutdown()
-        logger.info(
-            "[Charon.Daemon] Core OrchestrationEngine safely shut down."
-        )
 
-    logger.info("Charon Daemon shutdown complete.")
+    logger.info("[Charon.Daemon] Daemon shutdown complete.")
 
 
 app = FastAPI(
@@ -265,7 +260,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Middleware Configuration
 app.add_middleware(APIKeyMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -275,10 +269,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# REST & WebSocket API Routes
 app.include_router(api_router)
-
-# Mount Static Dashboard Interface
 app.mount(
     "/dashboard",
     StaticFiles(directory="charon/gateway/static/dashboard", html=True),
