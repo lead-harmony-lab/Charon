@@ -212,3 +212,19 @@ class RoleRepository:
                 query,
                 (role_name, agent_id, description, 1 if is_mandatory else 0, 1 if is_system_core else 0),
             )
+
+    def get_agent_for_role(self, role_name: str, conn: Optional[sqlite3.Connection] = None) -> Optional[str]:
+        """
+        Directly retrieves the agent_id assigned to a specific role_name in system_roles.
+        Returns None if the role does not exist or has no assigned agent.
+        """
+        if not role_name or not str(role_name).strip():
+            return None
+
+        query = "SELECT agent_id FROM system_roles WHERE role_name = ? LIMIT 1;"
+        with self._managed_conn(conn, read_only=True, row_factory=True) as db_conn:
+            cursor = db_conn.execute(query, (str(role_name).strip(),))
+            row = cursor.fetchone()
+            if row and row["agent_id"]:
+                return str(row["agent_id"])
+        return None

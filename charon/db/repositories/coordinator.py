@@ -1,10 +1,10 @@
 """
 charon/db/repositories/coordinator.py
-System Version: v0.2.1 | File Revision: 1.2.1
+System Version: v0.2.1 | File Revision: 1.3.0
 
 Repository bridging the Coordinator Engine to the zero-trust SQLite state.
 Handles task polling, Level 0 capability audits, Level 1 contract minting,
-and zero-trust ephemeral key revocation (The Burn & Sweeper).
+Just-In-Time (JIT) contract expansion, and zero-trust ephemeral key revocation (The Burn & Sweeper).
 """
 
 import json
@@ -65,6 +65,18 @@ class CoordinatorStateRepository:
         with get_connection(self.db_path) as conn:
             conn.execute(query, (status, results_str, task_id))
 
+    def advance_task_step(self, task_id: str, step_index: int) -> None:
+        """
+        Advances the current step index of an active task to track DAG progression.
+        """
+        query = """
+            UPDATE task_state 
+            SET current_step_index = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = ?;
+        """
+        with get_connection(self.db_path) as conn:
+            conn.execute(query, (step_index, task_id))
+
     # ==========================================
     # 2. THE KEY MAKER (ZERO-TRUST MINTING)
     # ==========================================
@@ -84,7 +96,6 @@ class CoordinatorStateRepository:
               AND sp.skill_id = ?;
         """
         with get_connection(self.db_path, read_only=True) as conn:
-            # Bind skill_id twice to fulfill both asm.skill_id and sp.skill_id placeholders
             result = conn.execute(query, (agent_id, skill_id, skill_id)).fetchone()
             return bool(result)
 
@@ -132,7 +143,66 @@ class CoordinatorStateRepository:
             return contract_id
 
     # ==========================================
-    # 3. THE BURN & PRUNING ENGINE
+    # 3. JUST-IN-TIME (JIT) EXPANSION
+    # ==========================================
+    def request_jit_extension(self, contract_id: str, requested_skill: str) -> bool:
+        """
+        JIT CONTRACT EXPANSION: Dynamically appends a skill to an active contract's scope_limits,
+        provided the calling agent satisfies Level 0 CBAC permission audits for the requested tool.
+        """
+        query_contract = """
+            SELECT agent_id, scope_limits 
+            FROM contract_policies 
+            WHERE contract_id = ? AND is_active = 1;
+        """
+        with get_connection(self.db_path, read_only=True) as conn:
+            row = conn.execute(query_contract, (contract_id,)).fetchone()
+
+        if not row:
+            logger.warning(f"[JIT] Expansion failed: Active contract '{contract_id}' not found.")
+            return False
+
+        agent_id = row[0]
+        scope_limits_raw = row[1]
+
+        # 1. Level 0 CBAC capability audit
+        if not self.audit_level_0_permission_strict(agent_id, requested_skill):
+            logger.warning(
+                f"[JIT] Scope expansion DENIED: Agent '{agent_id}' lacks Level 0 permissions for '{requested_skill}'."
+            )
+            return False
+
+        # 2. Extract and check existing authorized tools
+        try:
+            scope_limits = json.loads(scope_limits_raw) if scope_limits_raw else {}
+        except json.JSONDecodeError:
+            scope_limits = {}
+
+        authorized_tools: List[str] = scope_limits.get("authorized_tools", [])
+
+        if requested_skill in authorized_tools:
+            return True  # Already authorized
+
+        # 3. Append skill and persist expanded contract
+        authorized_tools.append(requested_skill)
+        scope_limits["authorized_tools"] = authorized_tools
+
+        update_query = """
+            UPDATE contract_policies 
+            SET scope_limits = ? 
+            WHERE contract_id = ?;
+        """
+        with get_connection(self.db_path) as conn:
+            conn.execute(update_query, (json.dumps(scope_limits), contract_id))
+
+        logger.info(
+            f"[JIT] Contract {contract_id} dynamically expanded. "
+            f"Agent '{agent_id}' granted access to '{requested_skill}'."
+        )
+        return True
+
+    # ==========================================
+    # 4. THE BURN & PRUNING ENGINE
     # ==========================================
     def burn_task_contracts(self, task_id: str) -> int:
         """

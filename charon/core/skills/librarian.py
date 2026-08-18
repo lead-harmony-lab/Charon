@@ -116,8 +116,18 @@ class SkillLibrarian(
         if role_name:
             try:
                 canonical_role = self.resolve_agent_id_for_role(role_name, conn=conn)
-                if not self.is_skill_available(action, canonical_role):
-                    return None
+                planner_agent_id = self.role_repo.get_agent_for_role("system_planner", conn=conn)
+
+                # 1. System Planner bypass: Planner must be able to read schemas for all tools
+                if planner_agent_id and canonical_role == planner_agent_id:
+                    pass
+                else:
+                    # 2. Check authorization using get_roles_for_action (handles both skill_id and action_name)
+                    authorized_roles = self.get_roles_for_action(action, conn=conn)
+                    if canonical_role not in authorized_roles:
+                        # Fallback for quarantine/custom overrides inside is_skill_available
+                        if hasattr(self, "is_skill_available") and not self.is_skill_available(action, canonical_role):
+                            return None
             except RoleResolutionError:
                 logger.debug(f"[SkillLibrarian] Unmapped role '{role_name}' for action '{action}'.")
                 return None
@@ -126,7 +136,13 @@ class SkillLibrarian(
         if details:
             return details
 
-        return self.repo.get_skill_by_action(action, conn=conn)
+        skill_data = self.repo.get_skill_by_action(action, conn=conn)
+        if skill_data:
+            return skill_data
+
+        # 3. Fallback: Caller passed a skill_id instead of an action_name. Resolve via catalog index.
+        catalog = self.get_execution_tool_catalog(active_only=False, as_dict=True, conn=conn)
+        return catalog.get(action)
 
     def get_roles_for_action(
         self, action_name: str, conn: Optional[sqlite3.Connection] = None
@@ -192,30 +208,31 @@ class SkillLibrarian(
             as_dict: bool = True,
             conn: Optional[sqlite3.Connection] = None,
     ) -> Union[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
-        """Fetches the execution tool catalog based on current DB state.
-
-        Under Scenario A, orchestration roles bypass single-agent physical mapping
-        restrictions to expose all active system capabilities across the network.
-        """
+        """Fetches execution tool catalog with detailed diagnostic trace logging."""
         raw_skills: List[Dict[str, Any]] = []
 
         if role_name:
             try:
-                # Resolve the provided role_name to its ephemeral agent ID
-                canonical_role = self.resolve_agent_id_for_role(role_name, conn=conn)
+                caller_agent_id = self.resolve_agent_id_for_role(role_name, conn=conn)
+                planner_agent_id = self.role_repo.get_agent_for_role("system_planner", conn=conn)
 
-                # Perform lookup against system_roles to obtain the ephemeral agent ID
-                # currently acting as the system_planner
-                system_planner_id = self.resolve_agent_id_for_role("system_planner", conn=conn)
+                logger.debug(
+                    f"[SkillLibrarian.Trace] Role lookup '{role_name}' -> "
+                    f"caller_agent_id='{caller_agent_id}', planner_agent_id='{planner_agent_id}'"
+                )
 
-                # Scenario A: Evaluate if the requested agent is currently acting as the system_planner
-                if canonical_role == system_planner_id:
-                    if active_only:
-                        raw_skills = self.repo.get_all_active_skills(conn=conn)
-                    else:
-                        raw_skills = self.repo.get_all_skills(conn=conn)
+                if planner_agent_id and caller_agent_id == planner_agent_id:
+                    logger.info(f"[SkillLibrarian.Trace] Agent '{caller_agent_id}' matched system_planner. Fetching global catalog.")
+                    raw_skills = self.repo.get_all_active_skills(conn=conn) if active_only else self.repo.get_all_skills(conn=conn)
                 else:
-                    raw_skills = self.repo.get_skills_for_agent(canonical_role, conn=conn)
+                    logger.debug(f"[SkillLibrarian.Trace] Querying agent_skill_map for caller_agent_id='{caller_agent_id}'")
+                    raw_skills = self.repo.get_skills_for_agent(caller_agent_id, conn=conn)
+
+                logger.info(
+                    f"[SkillLibrarian.Trace] Retrieved {len(raw_skills)} raw skill record(s) for caller_agent_id='{caller_agent_id}': "
+                    f"{[(s.get('skill_id'), s.get('action_name')) for s in raw_skills]}"
+                )
+
             except RoleResolutionError as rre:
                 logger.warning(
                     f"[SkillLibrarian] Role resolution failed for tool catalog lookup '{role_name}': {rre}"
@@ -252,22 +269,35 @@ class SkillLibrarian(
 
         for skill in raw_skills:
             if active_only and not skill.get("is_active") and skill.get("status") != "ACTIVE":
+                logger.debug(f"[SkillLibrarian.Trace] Filtering out inactive skill: {skill.get('skill_id')}")
                 continue
             if target_type:
                 stype = str(skill.get("skill_type", "")).upper()
-                # Accept standard variants when matching EXECUTION type
                 if target_type == "EXECUTION" and stype in ("EXECUTION", "NATIVE", "DYNAMIC", "PYTHON", "SYSTEM", ""):
                     pass
                 elif stype != target_type:
+                    logger.debug(f"[SkillLibrarian.Trace] Filtering out skill type mismatch ({stype} != {target_type}): {skill.get('skill_id')}")
                     continue
             filtered_skills.append(skill)
 
+        # Dual index by action_name and skill_id
         if as_dict:
             catalog: Dict[str, Dict[str, Any]] = {}
             for skill in filtered_skills:
-                key = skill.get("action_name") or skill.get("skill_id")
-                if key:
-                    catalog[key] = skill
+                action_key = skill.get("action_name")
+                skill_id_key = skill.get("skill_id")
+
+                if action_key:
+                    catalog[action_key] = skill
+                if skill_id_key:
+                    catalog[skill_id_key] = skill
+
+                logger.debug(
+                    f"[SkillLibrarian.Trace] Indexed skill: skill_id='{skill_id_key}', "
+                    f"action_name='{action_key}' into catalog keys."
+                )
+
+            logger.info(f"[SkillLibrarian.Trace] Final catalog key count: {len(catalog)}. Keys: {list(catalog.keys())}")
             return catalog
 
         return filtered_skills

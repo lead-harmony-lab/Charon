@@ -1,10 +1,10 @@
 """
 charon/core/skills/storage/dynamic/core.system.engineer/plugin.py
-System Version: v1.0.0 | File Revision: 3.1.0
+System Version: v1.0.0 | File Revision: 3.4.0
 
 Exports the EngineerPolicyExecutionContainer for dynamic instantiation by the RuntimeAgent.
 Implements dynamic self-healing code execution using qwen2.5-coder within
-the Zero-Trust CBAC Paradigm.
+the Zero-Trust CBAC Paradigm and JIT Ephemeral Expansion Envelope.
 """
 
 import asyncio
@@ -60,7 +60,7 @@ class EngineerPolicyExecutionContainer(BaseContractPolicy):
     """
     The execution envelope for the system_engineer role.
     Loads qwen2.5-coder to synthesize, execute, and self-heal Python code solutions,
-    channeling peripheral tool calls through CBAC chokepoints in BaseAgent.
+    channeling peripheral tool calls through strict CBAC skill_id chokepoints in BaseAgent.
     """
 
     def __init__(
@@ -77,6 +77,7 @@ class EngineerPolicyExecutionContainer(BaseContractPolicy):
             ledger=ledger,
         )
 
+        self.tool_executor = tool_executor
         self.artifact_schema = EngineeringArtifact
         self.model_name = "qwen2.5-coder:latest"
         self._telemetry_callback: Optional[Callable] = None
@@ -115,6 +116,14 @@ class EngineerPolicyExecutionContainer(BaseContractPolicy):
         code_match = re.search(r"```(?:python)?\s*(.*?)\s*```", raw_response, re.DOTALL)
         return code_match.group(1).strip() if code_match else raw_response.strip()
 
+    def _resolve_skill_id(self, authorized_tools: List[Any], keyword: str, default: str) -> str:
+        """Helper to extract strict skill_ids based on allowed lists"""
+        for t in authorized_tools:
+            t_id = t.get("skill_id", "") if isinstance(t, dict) else str(t)
+            if keyword in t_id:
+                return t_id
+        return default
+
     def execute(
         self,
         task_payload: Dict[str, Any],
@@ -152,13 +161,19 @@ class EngineerPolicyExecutionContainer(BaseContractPolicy):
         timeout = float(task_payload.get("timeout", 15.0))
         python_cmd = task_payload.get("python_cmd", "python3")
 
+        # ---------------------------------------------------------
+        # Strict CBAC Resolution: Using exact skill_ids
+        # ---------------------------------------------------------
+        run_skill_id = self._resolve_skill_id(authorized_tools, "run", "sk_engineer_run_script")
+        audit_skill_id = self._resolve_skill_id(authorized_tools, "audit", "sk_engineer_audit_artifacts")
+
         safe_problem = self._sanitize_payload(str(problem))
         feedback = ""
         last_output = ""
         client = ollama.Client()
 
-        # LEVEL 1 LOCK: Injecting authorized tools directly into the system prompt
-        allowed_tools_str = ", ".join([t.get("name", "unknown") for t in authorized_tools if isinstance(t, dict)]) if authorized_tools else "None"
+        # LEVEL 1 LOCK: Injecting authorized tool IDs directly into the system prompt
+        allowed_tools_str = ", ".join([t.get("skill_id", str(t)) for t in authorized_tools]) if authorized_tools else "None"
         dynamic_system_prompt = self.base_system_prompt + f"\n5. AUTHORIZED TOOLS: You are strictly limited to invoking: {allowed_tools_str}."
 
         for attempt in range(1, max_attempts + 1):
@@ -195,16 +210,15 @@ class EngineerPolicyExecutionContainer(BaseContractPolicy):
                     feedback = "Inference engine returned empty script block."
                     continue
 
-                # EXECUTION TRIPWIRE: Calls BaseAgent.execute_sub_skill via self.tool_executor
+                # Execution Tripwire: Strictly utilizing skill_id mapping (triggers JIT extension if needed)
                 exec_result = self.tool_executor(
-                    action="run_script_in_subprocess",
+                    skill_id=run_skill_id,
                     parameters={
                         "code": code,
                         "cwd": target_dir,
                         "python_cmd": python_cmd,
                         "timeout": timeout,
-                    },
-                    raw_prompt="Self-healing script execution step",
+                    }
                 )
 
                 if isinstance(exec_result, dict):
@@ -217,10 +231,10 @@ class EngineerPolicyExecutionContainer(BaseContractPolicy):
                 last_output = output
 
                 if is_success:
+                    # Audit Verification: Strictly utilizing skill_id mapping
                     audit_result = self.tool_executor(
-                        action="audit_written_artifacts",
-                        parameters={"code": code, "cwd": target_dir},
-                        raw_prompt="Workspace artifact audit step",
+                        skill_id=audit_skill_id,
+                        parameters={"code": code, "cwd": target_dir}
                     )
 
                     audit_ok = True
@@ -257,9 +271,9 @@ class EngineerPolicyExecutionContainer(BaseContractPolicy):
 
                 feedback = output
 
-            # LEVEL 2/3 LOCK: Catching the DB restriction and escalating to Gatekeeper
-            except PermissionDeniedError as e:
-                logger.warning(f"[{self.agent_id}] CBAC Boundary Breach. Escalating to Gatekeeper: {e}")
+            # LEVEL 2/3 LOCK: Catching both CBAC & Zero-Trust Ephemeral rejections for Gatekeeper escalation
+            except (PermissionDeniedError, PermissionError) as e:
+                logger.warning(f"[{self.agent_id}] CBAC / Zero-Trust Boundary Breach. Escalating to Gatekeeper: {e}")
 
                 if not self.gatekeeper:
                     feedback = f"Permission Denied. No Gatekeeper attached to handle escalation. {e}"
@@ -268,7 +282,7 @@ class EngineerPolicyExecutionContainer(BaseContractPolicy):
                 manifest, action_name, approval_id = self.gatekeeper.intercept_task(
                     agent=self.agent_id,
                     extraction=None,
-                    user_raw_input=f"Attempted restricted action: run_script_in_subprocess\nReason: {e}"
+                    user_raw_input=f"Attempted restricted action: {run_skill_id}\nReason: {e}"
                 )
 
                 # SYNC/ASYNC BRIDGE: Pausing synchronous container to await GNOME shell IPC

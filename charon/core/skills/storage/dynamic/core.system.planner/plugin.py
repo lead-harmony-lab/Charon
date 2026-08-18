@@ -1,10 +1,10 @@
 """
 charon/core/skills/storage/dynamic/core.system.planner/plugin.py
-System Version: v1.0.0 | File Revision: 3.3.4
+System Version: v1.0.0 | File Revision: 3.4.0
 
 Exports the PlannerPolicyExecutionContainer for dynamic instantiation by the RuntimeAgent.
 Implements Zero-Trust CBAC planning, constraint ingestion, dynamic grammar sampling, and strict DAG construction.
-Integrates SkillLibrarian for strict agent-capability resolution.
+Integrates SkillLibrarian for strict agent-capability resolution and JIT envelope enforcement.
 """
 
 import asyncio
@@ -256,7 +256,8 @@ class PlannerPolicyExecutionContainer(BaseContractPolicy):
             f"\n\nSTRICT TOOL SELECTION RULES:\n"
             f"1. You MUST select 'target_skill' EXCLUSIVELY from this exact allowed set: [{delegatable_tools_str}].\n"
             f"2. Selection of ANY tool string outside [{delegatable_tools_str}] is strictly illegal and will trigger systemic failure.\n"
-            f"3. Every node MUST set 'target_agent' strictly to an agent ID from [{available_agents_str}].\n\n"
+            f"3. Every node MUST set 'target_agent' strictly to an agent ID from [{available_agents_str}].\n"
+            f"4. You MUST include a 'user_query' or 'task' key inside the 'arguments' dictionary for every node to provide the downstream agent with its instruction.\n\n"
             f"Target Schema:\n{clean_schema}\n\n"
             f"EXPECTED OUTPUT STRUCTURE EXAMPLE:\n"
             f"{{\n"
@@ -267,7 +268,7 @@ class PlannerPolicyExecutionContainer(BaseContractPolicy):
             f'      "target_agent": "{example_agent}",\n'
             f'      "target_skill": "{example_tool}",\n'
             f'      "dependencies": [],\n'
-            f'      "arguments": {{"script_body": "import datetime\\nprint(datetime.datetime.now())"}}\n'
+            f'      "arguments": {{"user_query": "Write and execute a Python script to display the current system time."}}\n'
             f'    }}\n'
             f'  ]\n'
             f"}}\n"
@@ -340,8 +341,8 @@ class PlannerPolicyExecutionContainer(BaseContractPolicy):
 
             return valid_artifact
 
-        except PermissionDeniedError as e:
-            logger.warning(f"[{self.agent_id}] CBAC Delegation Boundary Breach. Escalating to Gatekeeper: {e}")
+        except (PermissionDeniedError, PermissionError) as e:
+            logger.warning(f"[{self.agent_id}] CBAC / Zero-Trust Delegation Boundary Breach. Escalating to Gatekeeper: {e}")
 
             if not self.gatekeeper:
                 return self._run_error_analysis(e, raw_llm_output)

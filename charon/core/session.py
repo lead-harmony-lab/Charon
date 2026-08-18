@@ -1,6 +1,6 @@
 """
 charon/core/session.py
-System Version: v0.6.0 | File Revision: 6.0.0
+System Version: v0.6.0 | File Revision: 6.0.1
 
 Module: Core session gateway for Charon.
 Manages session memory and serves as the declarative ingest boundary for the Core Engine.
@@ -9,12 +9,12 @@ Fully backed by SQLite for Zero-Trust session recovery and execution auditing.
 
 import json
 import logging
-import sqlite3
 import uuid
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from charon.config.paths import STATE_DB_PATH
 from charon.core.skills import SkillLibrarian
+from charon.db.connection import get_connection  # <-- Imported centralized connection manager
 from charon.utils.memory import ConversationBuffer
 
 if TYPE_CHECKING:
@@ -30,13 +30,13 @@ class SessionGateway:
         self,
         engine: Optional["OrchestrationEngine"] = None,
         librarian: Optional[SkillLibrarian] = None,
-        journal: Optional[Any] = None,      # <-- Add this parameter
+        journal: Optional[Any] = None,
         client_id: str = "session_gateway"
     ):
         self.librarian = librarian or SkillLibrarian.get_instance()
-        self.db_path = STATE_DB_PATH / "charon_state.db"
+        self.db_path = STATE_DB_PATH  # <-- Fixed: STATE_DB_PATH already includes the filename
         self.client_id = client_id
-        self.journal = journal              # <-- Store the journal reference
+        self.journal = journal
 
         # Initialize and hydrate memory from SQLite
         self.memory = ConversationBuffer(max_turns=5)
@@ -56,12 +56,11 @@ class SessionGateway:
         """Loads the most recent conversation history from the database on startup."""
         query = "SELECT memory_json FROM session_state WHERE client_id = ?;"
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            # <-- Fixed: Using get_connection
+            with get_connection(self.db_path) as conn:
                 row = conn.execute(query, (self.client_id,)).fetchone()
-                if row and row[0]:
-                    history = json.loads(row[0])
-                    # Assuming ConversationBuffer has a way to set history.
-                    # If not, you may need to append them individually.
+                if row and row["memory_json"]:  # Dictionary access thanks to row_factory
+                    history = json.loads(row["memory_json"])
                     if hasattr(self.memory, "history"):
                         self.memory.history = history
                     logger.info(f"Hydrated {len(history)} past turns for client: {self.client_id}")
@@ -78,7 +77,8 @@ class SessionGateway:
                 memory_json = excluded.memory_json,
                 updated_at = CURRENT_TIMESTAMP;
         """
-        with sqlite3.connect(self.db_path) as conn:
+        # <-- Fixed: Using get_connection
+        with get_connection(self.db_path) as conn:
             conn.execute(query, (self.client_id, json.dumps(history)))
 
     def record_turn(self, user_input: str, system_response: str) -> None:
@@ -111,7 +111,8 @@ class SessionGateway:
             )
             VALUES (?, ?, ?, 'PENDING', 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
         """
-        with sqlite3.connect(self.db_path) as conn:
+        # <-- Fixed: Using get_connection
+        with get_connection(self.db_path) as conn:
             conn.execute(query, (task_id, self.client_id, prompt, json.dumps(context)))
 
     async def submit_task(

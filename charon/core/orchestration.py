@@ -1,11 +1,12 @@
 """
 charon/core/orchestration.py
-System Version: v2.2.0 | File Revision: 2.4.2
+System Version: v2.2.0 | File Revision: 2.4.3
 
 Module: Main Orchestration Engine facade for Charon.
 Refactored for the Active Execution Envelope paradigm.
 Delegates strictly to the Coordinator for execution and the Concierge for UX proposals.
-Updated: Direct SkillLibrarian encapsulation for agent hydration and tool discovery with comprehensive diagnostic logging.
+Updated: Direct SkillLibrarian encapsulation for agent hydration and tool discovery with comprehensive diagnostic logging
+and DB payload result extraction.
 """
 
 import inspect
@@ -31,14 +32,14 @@ REQUIRED_SYSTEM_ROLES: Tuple[str, ...] = (
 
 class OrchestrationEngine:
     def __init__(
-            self,
-            llm_client: Optional[Any] = None,
-            heavy_model: str = "llama3.1",
-            triage_model: str = "llama3.1",
-            state_manager: Optional[StateManager] = None,
-            ledger: Optional[ExecutionLedger] = None,
-            librarian: Optional[SkillLibrarian] = None,
-            gatekeeper: Optional[Any] = None,
+        self,
+        llm_client: Optional[Any] = None,
+        heavy_model: str = "llama3.1",
+        triage_model: str = "llama3.1",
+        state_manager: Optional[StateManager] = None,
+        ledger: Optional[ExecutionLedger] = None,
+        librarian: Optional[SkillLibrarian] = None,
+        gatekeeper: Optional[Any] = None,
     ):
         logger.info(
             f"[ENGINE] Initializing OrchestrationEngine (heavy_model='{heavy_model}', "
@@ -55,15 +56,19 @@ class OrchestrationEngine:
         self._verify_required_system_roles()
 
         logger.debug(f"[ENGINE] Initializing Coordinator with STATE_DB_PATH='{STATE_DB_PATH}'")
-        self.coordinator = Coordinator(db_path=STATE_DB_PATH)
 
-        # Inject the required ingredients into the Coordinator for JIT hydration
-        self.coordinator.heavy_model = heavy_model
-        self.coordinator.gatekeeper = self.gatekeeper
+        # Pass dependencies explicitly during instantiation
+        self.coordinator = Coordinator(
+            db_path=STATE_DB_PATH,
+            gatekeeper=self.gatekeeper,
+            ledger=self.ledger,
+            heavy_model=heavy_model,
+        )
+
         if self.llm_client:
             self.coordinator.llm_client = self.llm_client
 
-        logger.info("[ENGINE] OrchestrationEngine initialization complete. Delegating hydration to Coordinator.")
+        logger.info("[ENGINE] OrchestrationEngine initialization complete.")
 
     def _verify_required_system_roles(self) -> None:
         """Verifies that all required system roles can be resolved by SkillLibrarian."""
@@ -231,10 +236,15 @@ class OrchestrationEngine:
                 "[ENGINE.PATHWAY] Coordinator.run_task_lifecycle completed successfully."
             )
 
-            # 3. Result Extraction via TaskBlackboard
+            # 3. Result Extraction via TaskBlackboard (Unwrapping "result" key)
             logger.debug(f"[ENGINE.PATHWAY] Fetching results from TaskBlackboard for task_id: {task_id}")
             completed_blackboard = TaskBlackboard(STATE_DB_PATH, task_id)
-            result = completed_blackboard._get_results_payload()
+            raw_payload = completed_blackboard._get_results_payload()
+
+            if isinstance(raw_payload, dict) and "result" in raw_payload:
+                result = raw_payload["result"]
+            else:
+                result = raw_payload
 
             logger.info(f"[ENGINE.PATHWAY] Final result resolved from blackboard: {str(result)[:100]}...")
 

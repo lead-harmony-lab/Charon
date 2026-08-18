@@ -1,11 +1,11 @@
 """
 charon/agents/runtime.py
-System Version: v1.0.0 | File Revision: 3.3.0
+System Version: v1.0.0 | File Revision: 3.4.0
 
 Universal Data-Driven Agent Runtime.
 Instantiated dynamically by the Router using metadata stored in SQLite agent_registry.
 Acts as the hardware container that binds CBAC roles and executes an assigned Work Contract,
-wrapped inside the BaseAgent Zero-Trust Ephemeral Envelope.
+wrapped inside the BaseAgent Zero-Trust Ephemeral Envelope with JIT Extension support.
 """
 
 import importlib
@@ -48,6 +48,7 @@ class RuntimeAgent(BaseAgent):
             agent_id=agent_id,
             role_name=role_name,
             ledger=kwargs.get("ledger"),
+            coordinator_repo=kwargs.get("coordinator_repo"),
         )
 
         self.name = display_name or self.agent_id.capitalize()
@@ -111,7 +112,7 @@ class RuntimeAgent(BaseAgent):
                 raise ImportError(f"Could not load spec for {class_name} at {path_obj}")
 
             module = importlib.util.module_from_spec(spec)
-            sys.modules[class_name] = module # Register in sys.modules
+            sys.modules[class_name] = module  # Register in sys.modules
             spec.loader.exec_module(module)
 
             ContractClass = getattr(module, class_name)

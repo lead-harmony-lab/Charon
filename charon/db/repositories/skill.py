@@ -649,3 +649,28 @@ class SkillRepository:
         with self._get_or_create_connection(conn, read_only=True, row_factory=True) as c:
             cursor = c.execute(query, (agent_id,))
             return [str(row["skill_id"]) for row in cursor.fetchall()]
+
+    def get_role_permissions(self, role_identifier: str) -> List[Dict[str, Any]]:
+        """
+        Retrieves all allowed permissions and scope patterns assigned to a system role.
+        Dynamically maps agent_id to role_name via system_roles if an agent ID is passed.
+        """
+        query = """
+            SELECT DISTINCT pr.perm_id, pr.scope_pattern
+            FROM role_permission_groups rpg
+            JOIN system_roles sr ON rpg.role_name = sr.role_name
+            JOIN permission_registry pr ON rpg.group_id = pr.group_id
+            WHERE sr.role_name = ? OR sr.agent_id = ?
+        """
+
+        with get_connection(self.db_path, read_only=True) as conn:
+            cursor = conn.execute(query, (role_identifier, role_identifier))
+            rows = cursor.fetchall()
+
+            return [
+                {
+                    "perm_id": row["perm_id"],
+                    "scope_pattern": row["scope_pattern"]
+                }
+                for row in rows
+            ]

@@ -1,16 +1,17 @@
 """
 charon/agents/base.py
-System Version: v1.0.0 | File Revision: 4.2.0
+System Version: v1.0.0 | File Revision: 4.3.1
 
 Module: Core BaseAgent interface defining unified probing, health checks,
 declarative manifest capabilities, dynamic skill lookup via SkillLibrarian SSOT,
-and strict Zero-Trust Ephemeral Contract enforcement (The Interceptor).
+and strict Zero-Trust Ephemeral Contract enforcement with JIT Expansion (The Interceptor).
 """
 
 from abc import ABC, abstractmethod
 import logging
 import shutil
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 from pydantic import BaseModel
 
@@ -41,8 +42,8 @@ class BaseAgent(ABC):
     """Abstract Base Class for all Charon Policy Execution Containers (PECs).
 
     Enforces strict Zero-Trust Ephemeral Contracts minted by the Coordinator.
-    Actively intercepts, filters, and hides tools not explicitly authorized
-    for the current task execution turn.
+    Actively intercepts, filters, hides, and dynamically expands tool access
+    via JIT negotiation for authorized capabilities.
     """
 
     name: str = "BaseAgent"
@@ -62,9 +63,11 @@ class BaseAgent(ABC):
         agent_id: Optional[str] = None,
         role_name: Optional[str] = None,
         ledger: Optional[ExecutionLedger] = None,
+        coordinator_repo: Optional[Any] = None,
     ) -> None:
         self.librarian = librarian or SkillLibrarian.get_instance()
         self.ledger = ledger or ExecutionLedger()
+        self.coordinator_repo = coordinator_repo
 
         if agent_id:
             self.agent_id = agent_id
@@ -82,6 +85,23 @@ class BaseAgent(ABC):
         self.cbac_middleware = CBACPermissionMiddleware(repo=repo) if repo else None
         self._telemetry_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 
+    def _get_coordinator_repo(self) -> Optional[Any]:
+        """Lazy resolver for CoordinatorStateRepository if not explicitly injected."""
+        if self.coordinator_repo:
+            return self.coordinator_repo
+
+        if self.librarian:
+            db_path = getattr(self.librarian, "db_path", None)
+            if not db_path and hasattr(self.librarian, "repo"):
+                db_path = getattr(self.librarian.repo, "db_path", None)
+
+            if db_path:
+                from charon.db.repositories.coordinator import CoordinatorStateRepository
+                self.coordinator_repo = CoordinatorStateRepository(db_path=Path(db_path))
+                return self.coordinator_repo
+
+        return None
+
     # ==========================================
     # ZERO-TRUST EXECUTION ENVELOPE
     # ==========================================
@@ -92,7 +112,7 @@ class BaseAgent(ABC):
         Intercepts the Key Maker payload, locks authorized tools, and wraps execution.
         """
         self._active_contract_id = payload.get("active_contract_id")
-        self._authorized_tools = payload.get("authorized_tools", [])
+        self._authorized_tools = list(payload.get("authorized_tools", []))
 
         if not self._active_contract_id:
             raise ValueError(
@@ -133,24 +153,55 @@ class BaseAgent(ABC):
 
     def execute_sub_skill(
         self,
-        action: str,
-        parameters: Dict[str, Any],
+        skill_id: str,
+        parameters: Optional[Dict[str, Any]] = None,
         raw_prompt: str = "",
         execution_context: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> Union[str, Dict[str, Any]]:
         """
         THE INTERCEPTOR: Isolated dispatcher used by agents to execute tools.
-        Strictly enforces the active ephemeral contract before Librarian checkout.
+        Enforces active contract bounds, performs JIT expansion on demand if CBAC allows,
+        and proceeds to Librarian checkout.
         """
+        # Safely handle if the caller passed `arguments=` instead of `parameters=`
+        parameters = parameters or kwargs.get("arguments", {})
+
         if not self.librarian:
             raise RuntimeError(f"[{self.name}] SkillLibrarian not initialized.")
 
-        # ZERO-TRUST INTERCEPTOR (Strict Ephemeral Check)
-        if action not in self._authorized_tools:
-            raise PermissionError(
-                f"ZERO-TRUST VIOLATION: '{self.agent_id}' attempted to execute unauthorized tool '{action}'. "
-                f"Active contract '{self._active_contract_id}' strictly limits access to: {self._authorized_tools}"
-            )
+        # ZERO-TRUST INTERCEPTOR (Strict Ephemeral Check with JIT Fallback)
+        if skill_id not in self._authorized_tools:
+            coord_repo = self._get_coordinator_repo()
+            jit_granted = False
+
+            if self._active_contract_id and coord_repo:
+                try:
+                    logger.info(
+                        f"[{self.name}] Tool '{skill_id}' outside active contract. Requesting JIT expansion..."
+                    )
+                    jit_granted = coord_repo.request_jit_extension(
+                        contract_id=self._active_contract_id,
+                        requested_skill=skill_id
+                    )
+                except Exception as e:
+                    logger.warning(f"[{self.name}] Exception during JIT contract expansion: {e}")
+
+            if jit_granted:
+                self._authorized_tools.append(skill_id)
+                self.report_trace(
+                    event_type="JIT_CONTRACT_EXPANSION",
+                    details={"contract_id": self._active_contract_id, "granted_skill": skill_id}
+                )
+                logger.info(
+                    f"[{self.name}] JIT Contract Expansion GRANTED for '{skill_id}' "
+                    f"under contract '{self._active_contract_id}'."
+                )
+            else:
+                raise PermissionError(
+                    f"ZERO-TRUST VIOLATION: '{self.agent_id}' attempted to execute unauthorized tool '{skill_id}'. "
+                    f"Active contract '{self._active_contract_id}' strictly limits access to: {self._authorized_tools}"
+                )
 
         # Base Legal Check (Level 0 Fallback)
         if self.cbac_middleware:
@@ -160,16 +211,16 @@ class BaseAgent(ABC):
 
             self.cbac_middleware.validate_execution(
                 role_name=self.role_name,
-                skill_id=action,
+                skill_id=skill_id,
                 execution_context=ctx,
             )
 
         # Checkout & Execute
-        handler = self.librarian.check_out_skill(action, self.agent_id)
+        handler = self.librarian.check_out_skill(skill_id, self.agent_id)
         if not handler:
-            raise ValueError(f"[FAIL-FAST] Dynamic skill '{action}' is not registered.")
+            raise ValueError(f"[FAIL-FAST] Dynamic skill '{skill_id}' is not registered.")
 
-        logger.info(f"[{self.name}] Ephemeral & CBAC Passed. Executing '{action}'.")
+        logger.info(f"[{self.name}] Ephemeral & CBAC Passed. Executing '{skill_id}'.")
         return handler(agent_name=self.name, parameters=parameters, raw_prompt=raw_prompt)
 
     # ==========================================

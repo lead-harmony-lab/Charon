@@ -1,30 +1,31 @@
 """
 charon/core/skills/storage/staged/core.system.code_runner/plugin.py
-System Version: v0.2.1 | File Revision: 2.1.0
+System Version: v0.2.1 | File Revision: 3.0.0
 
 Peripheral tool handler providing sandboxed Python execution and artifact auditing.
+Optimized for strict CBAC skill_id routing via manifest.json.
 """
 
+import json
 import logging
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 logger = logging.getLogger("Charon.Skills.CodeRunner")
 
 
-def run_script_in_subprocess(params: Dict[str, Any]) -> Dict[str, Any]:
+def run_script_in_subprocess(parameters: Dict[str, Any]) -> Dict[str, Any]:
     """
     Executes Python script string inside a temporary file within target workspace directory.
-    Synchronous wrapper matching standard tool handler signature.
     """
-    code = params.get("code", "")
-    cwd = params.get("cwd", ".")
-    python_cmd = params.get("python_cmd", "python3")
-    timeout = float(params.get("timeout", 15.0))
+    code = parameters.get("code", "")
+    cwd = parameters.get("cwd", ".")
+    python_cmd = parameters.get("python_cmd", "python3")
+    timeout = float(parameters.get("timeout", 15.0))
 
     if not code.strip():
         return {
@@ -33,10 +34,9 @@ def run_script_in_subprocess(params: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     os.makedirs(cwd, exist_ok=True)
-    tmp_path: Optional[str] = None
+    tmp_path = None
 
     try:
-        # Write temporary file in target workspace
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", dir=cwd, delete=False) as tmp_file:
             tmp_file.write(code)
             tmp_path = tmp_file.name
@@ -53,10 +53,8 @@ def run_script_in_subprocess(params: Dict[str, Any]) -> Dict[str, Any]:
         stderr = proc.stderr.strip()
         combined_output = f"{stdout}\n{stderr}".strip() if stderr else stdout
 
-        is_success = (proc.returncode == 0)
-
         return {
-            "is_success": is_success,
+            "is_success": (proc.returncode == 0),
             "return_code": proc.returncode,
             "output": combined_output or "Script executed successfully with no stdout/stderr output.",
         }
@@ -76,7 +74,6 @@ def run_script_in_subprocess(params: Dict[str, Any]) -> Dict[str, Any]:
             "output": f"Subprocess execution failed with system error: {str(e)}",
         }
     finally:
-        # Safe cleanup of temporary script execution artifact
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
@@ -84,14 +81,13 @@ def run_script_in_subprocess(params: Dict[str, Any]) -> Dict[str, Any]:
                 pass
 
 
-def audit_written_artifacts(params: Dict[str, Any]) -> Dict[str, Any]:
+def HT_audit_written_artifacts(parameters: Dict[str, Any]) -> Dict[str, Any]:
     """
     Inspects written code for high-risk operations and validates workspace state.
     """
-    code = params.get("code", "")
-    cwd = params.get("cwd", ".")
+    code = parameters.get("code", "")
+    cwd = parameters.get("cwd", ".")
 
-    # Regex patterns to catch both single/double quotes and variable spacing
     forbidden_patterns = [
         r"shutil\.rmtree\(\s*['\"]/['\"]\s*,",
         r"os\.system\(\s*['\"]rm\s+-rf",
@@ -119,22 +115,36 @@ def audit_written_artifacts(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def execute_action(
-    action_name: str,
-    parameters: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
-    agent_name: str = "",
-    raw_prompt: str = "",
+    skill_id: str,
+    parameters: Dict[str, Any],
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """
-    Standard dispatch router compatible with both legacy params calls
-    and BaseAgent.execute_sub_skill keyword routing.
+    Optimal dispatch router strictly aligned with CBAC manifest skill_ids.
     """
-    resolved_params = parameters if parameters is not None else (params or {})
+    manifest_path = Path(__file__).parent / "manifest.json"
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception as e:
+        logger.error(f"[CodeRunner] Failed to load manifest.json: {e}")
+        raise ValueError(f"Skill '{skill_id}' could not be routed because manifest.json is missing or invalid.")
 
-    if action_name == "run_script_in_subprocess":
-        return run_script_in_subprocess(resolved_params)
-    elif action_name == "audit_written_artifacts":
-        return audit_written_artifacts(resolved_params)
+    handler_name = None
+    for action in manifest.get("actions", []):
+        if skill_id == action.get("skill_id"):
+            handler_name = action.get("handler_name")
+            break
 
-    raise ValueError(f"Action '{action_name}' is not supported by skill 'core.system.code_runner'.")
+    if not handler_name:
+        raise ValueError(
+            f"Skill ID '{skill_id}' is not registered in the manifest for package '{manifest.get('package', 'unknown')}'."
+        )
+
+    if handler_name not in globals():
+        raise NotImplementedError(
+            f"Handler function '{handler_name}' is declared in manifest.json but missing in plugin.py."
+        )
+
+    handler_func = globals()[handler_name]
+    return handler_func(parameters)

@@ -1,10 +1,11 @@
 """
 charon/core/coordinator/engine.py
-System Version: v1.2.1 | File Revision: 10.6.0
+System Version: v1.2.2 | File Revision: 10.7.0
 
 Module: Core Reflection Engine and Multi-Intent Coordinator Facade.
 Refactored for strict Zero-Trust Execution, DB-backed state management,
-RoleResolver-driven pre-audit normalization, and ephemeral contract minting.
+RoleResolver-driven pre-audit normalization, ephemeral contract minting,
+and Just-In-Time (JIT) Agent Container Hydration.
 """
 
 import asyncio
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from charon.agents.base import BaseAgent
+from charon.agents.runtime import RuntimeAgent  # Required for JIT Hydration
 from charon.config.paths import WORKSPACES_DIR
 from charon.core.contracts import (
     ContractResponse,
@@ -30,6 +32,8 @@ from charon.core.skills import SkillLibrarian
 from charon.core.skills.roles import RoleResolutionError
 from charon.db.repositories.coordinator import CoordinatorStateRepository
 from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
+from charon.gateway.gatekeeper import GatekeeperManager
+from charon.telemetry.ledger import ExecutionLedger
 
 logger = logging.getLogger("charon.core.coordinator")
 
@@ -66,12 +70,63 @@ def _exec_sync_or_async(func: Any, *args: Any, **kwargs: Any) -> Any:
     return result
 
 
+def resolve_user_facing_output(blackboard: Dict[str, Any]) -> str:
+    """
+    Extracts user-facing stdout or results from blackboard step artifacts,
+    preventing raw Pydantic JSON metadata dumps to the client emitter.
+    """
+    if not isinstance(blackboard, dict):
+        return str(blackboard)
+
+    # Short-circuit if output has already been resolved to a result string
+    if "result" in blackboard and isinstance(blackboard["result"], str):
+        return blackboard["result"]
+
+    # Unwrap nested blackboard if wrapped in DB envelope
+    if "blackboard" in blackboard and isinstance(blackboard["blackboard"], dict):
+        blackboard = blackboard["blackboard"]
+
+    results = []
+
+    for step_id, data in blackboard.items():
+        if isinstance(data, dict):
+            # 1. Handle EngineeringArtifact results (pull raw stdout)
+            if "execution_output" in data and data["execution_output"]:
+                results.append(data["execution_output"].strip())
+            # 2. Fallback to final code if stdout was empty
+            elif "final_code" in data and data["final_code"]:
+                results.append(f"```python\n{data['final_code'].strip()}\n```")
+            # 3. Handle DiagnosticArtifact results
+            elif "diagnostics" in data:
+                results.append(str(data["diagnostics"]))
+            elif "failure_summary" in data and data["failure_summary"]:
+                results.append(str(data["failure_summary"]))
+            else:
+                results.append(str(data))
+        else:
+            results.append(str(data))
+
+    return "\n\n".join(results) if results else "Task executed successfully."
+
+
 class Coordinator:
     """The Zero-Trust Execution Engine governing the Charon execution loop."""
 
-    def __init__(self, db_path: Path, agents: Optional[Dict[str, BaseAgent]] = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        agents: Optional[Dict[str, BaseAgent]] = None,
+        gatekeeper: Optional[GatekeeperManager] = None,
+        ledger: Optional[ExecutionLedger] = None,
+        heavy_model: str = "llama3.1",
+    ) -> None:
         self.db = CoordinatorStateRepository(db_path)
         self.agents = agents or {}
+
+        # Inject Orchestrator dependencies
+        self.gatekeeper = gatekeeper
+        self.ledger = ledger
+        self.heavy_model = heavy_model
 
         # Phase 4: System Pruning (The Sweeper)
         swept_task_ids = self.db.sweep_stale_tasks(days_old=7)
@@ -90,6 +145,50 @@ class Coordinator:
 
     def register_agent(self, agent_id: str, agent_instance: BaseAgent) -> None:
         self.agents[agent_id] = agent_instance
+
+    def _hydrate_agent(self, agent_id: str, role_name: Optional[str] = None) -> BaseAgent:
+        """Just-In-Time (JIT) provisioning of Policy Execution Containers."""
+        # Return if already hydrated in this lifecycle
+        if agent_id in self.agents:
+            return self.agents[agent_id]
+
+        librarian = SkillLibrarian.get_instance()
+
+        logger.debug(f"[COORDINATOR] Hydrating Work Contract for '{agent_id}'...")
+        agent_meta = librarian.get_agent_manifest(agent_id) or {}
+
+        contract = (
+            agent_meta.get("default_action")
+            or agent_meta.get("default_action_contract")
+            or f"{agent_id}_contract"
+        )
+        display_name = agent_meta.get("display_name", agent_id.replace("_", " ").title())
+        description = agent_meta.get("description", f"Automated RuntimeAgent for {agent_id}.")
+        priority = agent_meta.get("priority_weight", 1.0)
+
+        # Pull dependencies injected by the Orchestrator (or default them)
+        heavy_model = getattr(self, "heavy_model", "llama3.1")
+        gatekeeper = getattr(self, "gatekeeper", None)
+        ledger = getattr(self, "ledger", None)
+
+        agent_instance = RuntimeAgent(
+            agent_id=agent_id,
+            default_action_contract=contract,
+            role_name=role_name or agent_meta.get("role", agent_id),
+            display_name=display_name,
+            description=description,
+            priority_weight=priority,
+            heavy_model=heavy_model,
+            librarian=librarian,
+            gatekeeper=gatekeeper,
+            ledger=ledger,
+        )
+
+        # Cache the container for the duration of this Coordinator's lifecycle
+        self.register_agent(agent_id, agent_instance)
+        logger.info(f"[COORDINATOR] Successfully provisioned Work Contract for '{agent_id}'.")
+
+        return agent_instance
 
     def process_pending_tasks(self) -> None:
         """Entry point for background worker: polls DB and executes."""
@@ -171,9 +270,8 @@ class Coordinator:
         except RoleResolutionError:
             canonical_planner_id = "system_planner"
 
-        planner = self.agents.get(canonical_planner_id) or self.agents.get("system_planner") or self.agents.get("planner")
-        if not planner:
-            raise RuntimeError(f"CRITICAL: Planner agent '{canonical_planner_id}' is not registered.")
+        # Dynamically provision the planner via JIT
+        planner = self._hydrate_agent(canonical_planner_id, role_name="planner")
 
         logger.info(f"[COORDINATOR] Generating Blueprint for task {task_id} via '{canonical_planner_id}'...")
 
@@ -320,7 +418,7 @@ class Coordinator:
             if target_skill and not target_agent:
                 target_agent = librarian.get_agent_for_skill(target_skill)
 
-            # 3. DB-Backed Pre-Audit Role Resolution (CRITICAL FIX)
+            # 3. DB-Backed Pre-Audit Role Resolution
             # Resolve target_agent to canonical agent_id BEFORE Zero-Trust Level 0 Audit
             if target_agent:
                 try:
@@ -375,10 +473,13 @@ class Coordinator:
             # ---------------------------------------------------------
             # Phase 3: AGENT EXECUTION & STATE TRACKING
             # ---------------------------------------------------------
-            agent_instance = self.agents.get(target_agent)
+            try:
+                agent_instance = self._hydrate_agent(target_agent)
+            except Exception as e:
+                raise NotImplementedError(f"Failed to provision Work Contract for '{target_agent}': {e}")
 
-            if not agent_instance or not hasattr(agent_instance, "execute_task"):
-                raise NotImplementedError(f"Agent '{target_agent}' missing valid Work Contract.")
+            if not hasattr(agent_instance, "execute_task"):
+                raise NotImplementedError(f"Agent '{target_agent}' missing valid execute_task method.")
 
             execution_payload = dict(parameters)
             execution_payload["authorized_tools"] = [target_skill]
@@ -437,7 +538,12 @@ class Coordinator:
             self.db.advance_task_step(task_id, current_index)
 
         if current_index >= len(steps):
-            self.db.update_task_status(task_id, "COMPLETED", results_json=final_results)
+            user_output = resolve_user_facing_output(final_results)
+            self.db.update_task_status(
+                task_id,
+                "COMPLETED",
+                results_json={"result": user_output, "blackboard": final_results},
+            )
             logger.info(f"[COORDINATOR] Task {task_id} COMPLETED successfully.")
         else:
             constraint = build_constraint_revision("MAX_LOOP_LIMIT exceeded.")
