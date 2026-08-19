@@ -1,10 +1,11 @@
 """
 charon/cli/main.py
-System Version: v0.1.0 | File Revision: 1.7.0
+System Version: v3.1.0 | File Revision: 2.0.0
 
-Module: CLI entrypoint and interactive shell loop execution.
+Module: Thin CLI entrypoint and interactive shell loop execution.
 Includes direct launcher support for real-time TelemetryBus trace monitoring,
 Skill Librarian permission & registry management, and Human-in-the-Loop Skill Forge.
+Queries the daemon-resident Concierge Service via HTTP API for dynamic briefings and proposals.
 """
 
 import argparse
@@ -34,7 +35,7 @@ Charon Tool Suite Subcommands:
                              the interactive TUI Control Panel.
   charon forge [list|resolve|interactive]
                              Inspect skill gaps logged by agents and forge skill scaffolds.
-  charon telemetry            Launch live Rich terminal telemetry trace monitor.
+  charon telemetry           Launch live Rich terminal telemetry trace monitor.
 
 Examples:
   charon librarian
@@ -234,10 +235,16 @@ async def async_main() -> None:
 
         session = PromptSession(history=InMemoryHistory())
 
+        # -------------------------------------------------------------------------
+        # Request Dynamic Greeting from Daemon Concierge Service
+        # -------------------------------------------------------------------------
         if not args.non_interactive and not args.command:
+            with console.status("[dim]Consulting the ledger...[/dim]", spinner="dots"):
+                greeting_text = await client.get_concierge_briefing()
+
             console.print(
                 Panel(
-                    "[bold blue]Welcome to The Continental.[/bold blue]\n[dim]How may I be of service this evening?[/dim]",
+                    f"[bold blue]{greeting_text}[/bold blue]",
                     border_style="blue",
                     expand=False,
                 )
@@ -280,7 +287,7 @@ async def async_main() -> None:
                     user_input = user_input.strip()
 
                 if user_input.lower() in ["exit", "quit", "q", "that will be all"]:
-                    console.print("[bold blue]A wise decision. Good evening.[/bold blue]")
+                    console.print("\n[bold blue]A wise decision. Good evening.[/bold blue]")
                     break
 
                 if user_input:
@@ -295,6 +302,7 @@ async def async_main() -> None:
                 console.print("\n[bold blue]A wise decision. Good evening.[/bold blue]")
                 break
     finally:
+        # Gracefully close underlying HTTP sessions
         if hasattr(client, "close"):
             if asyncio.iscoroutinefunction(client.close):
                 await client.close()

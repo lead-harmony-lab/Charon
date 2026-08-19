@@ -21,7 +21,7 @@ from charon.config import (
     PROJECT_MEMORY_DIR,
     ensure_ecosystem_directories,
 )
-from charon.ux.concierge import ConciergeService
+from charon.concierge.core import ConciergeService
 from charon.core.orchestration import OrchestrationEngine
 from charon.telemetry.ledger import ExecutionLedger
 from charon.gateway.journal import GatewayJournal

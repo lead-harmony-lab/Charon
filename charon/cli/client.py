@@ -6,6 +6,7 @@ Module: Daemon integration client managing HTTP REST and WebSocket streaming.
 """
 
 import json
+import logging
 import sys
 import uuid
 from typing import Optional, Set, Tuple
@@ -18,6 +19,7 @@ from rich.panel import Panel
 
 from charon.cli.ui import CharonSpinner, console, render_response
 
+logger = logging.getLogger(__name__)
 
 class CharonClient:
     """Async Client managing REST calls and WebSocket streams with charond."""
@@ -294,3 +296,41 @@ class CharonClient:
             success = False
 
         return success, staged_prompt
+
+    async def get_concierge_briefing(self) -> str:
+        """Fetch dynamic briefing greeting from daemon's Concierge service."""
+        try:
+            response = await self._http_client.get(
+                f"{self.base_url}/api/v1/concierge/briefing",
+                headers=self._headers,
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return response.json().get("greeting", "Welcome to The Continental.")
+        except Exception as err:
+            logger.warning(f"Failed to fetch concierge briefing from daemon: {err}")
+        return "Welcome to The Continental. How may I be of service?"
+
+    async def evaluate_concierge_proposal(
+            self, user_query: str, completed_action: str, execution_result: str
+    ) -> Optional[dict]:
+        """Request task post-mortem proposal from daemon's Concierge service."""
+        try:
+            payload = {
+                "user_query": user_query,
+                "completed_action": completed_action,
+                "execution_result": execution_result,
+            }
+            response = await self._http_client.post(
+                f"{self.base_url}/api/v1/concierge/evaluate",
+                json=payload,
+                headers=self._headers,
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("has_proposal"):
+                    return data.get("proposal")
+        except Exception as err:
+            logger.warning(f"Failed to fetch concierge proposal: {err}")
+        return None

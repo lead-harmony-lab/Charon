@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Central registry for Charon Concierge abilities, parameters, and biological clock intervals.",
+  "model_settings": {
+    "model_name": "llama3.1",
+    "temperature_greeting": 0.6,
+    "temperature_proposal": 0.2,
+    "temperature_chat": 0.7,
+    "min_confidence_threshold": 0.7
+  },
+  "biological_clock": {
+    "telemetry_interval_seconds": 900,
+    "idle_heuristic_reflection_seconds": 86400,
+    "enable_autonomic_scheduler": true
+  },
+  "abilities": {
+    "briefings": true,
+    "proactive_proposals": true,
+    "semantic_memory": true,
+    "context_tracking": true,
+    "voice_synthesis": false,
+    "desktop_overlay": false,
+    "code_assistant_interjections": false
+  },
+  "memory_settings": {
+    "chroma_collection_ephemera": "concierge_ephemera",
+    "chroma_collection_heuristics": "core_heuristics",
+    "session_delta_warmth_hours": 12.0
+  }
+}

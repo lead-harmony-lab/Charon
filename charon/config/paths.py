@@ -1,6 +1,6 @@
 """
 charon/config/paths.py
-System Version: v0.2.0 | File Revision: 1.7.0
+System Version: v0.2.0 | File Revision: 1.8.0
 
 Module: Application & Ecosystem XDG Path Resolver
 Defines canonical XDG-compliant storage paths for Charon background daemon runtime,
@@ -67,8 +67,17 @@ KICAD_DBL_PATH = USER_CONFIG_DIR / "partvault.kicad_dbl"
 # Charon Runtime Data & Memory Storage
 CHARON_DATA_DIR = XDG_DATA_HOME / "charon"
 DATA_DIR = CHARON_DATA_DIR
+
+# ---------------------------------------------------------
+# Vector Memory Separation (Archivist vs Concierge)
+# ---------------------------------------------------------
+# Long-term project memory and RAG stores (The Archivist)
 PROJECT_MEMORY_DIR = CHARON_DATA_DIR / "chroma_db"
 CHROMA_DB_DIR = PROJECT_MEMORY_DIR
+
+# Ephemeral session memory and temporal awareness (The Concierge)
+CONCIERGE_MEMORY_DIR = CHARON_DATA_DIR / "concierge_chroma"
+# ---------------------------------------------------------
 
 # Persistent Daemon Databases
 STATE_DB_PATH = CHARON_DATA_DIR / "charon_state.db"
@@ -111,7 +120,11 @@ def ensure_ecosystem_directories() -> None:
     """Ensures all XDG user directories and workspace runtime folders exist."""
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CHARON_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Initialize both vector database directories
     PROJECT_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    CONCIERGE_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+
     DYNAMIC_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -1,15 +1,15 @@
 """
 charon/daemon.py
-System Version: v0.1.2 | File Revision: 1.7.1
+System Version: v0.1.2 | File Revision: 1.8.0
 
 Module: Charon Daemon (`charond`) - Gateway Entry Point.
+Integrates resident ConciergeService directly into the FastAPI lifespan and gateway routing.
 """
 
 import asyncio
 from contextlib import asynccontextmanager
 import logging
 import ollama
-from charon.config.settings import OLLAMA_HOST
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,11 +17,14 @@ import uvicorn
 
 from charon.config.logging import setup_logging
 from charon.config.paths import ensure_ecosystem_directories
+from charon.config.settings import OLLAMA_HOST
+from charon.concierge.core import ConciergeService
 from charon.core.orchestration import OrchestrationEngine
 from charon.gateway.core import CharonDaemon
 from charon.gateway.middleware import APIKeyMiddleware
 from charon.gateway.models import WSEvent
 from charon.gateway.routes import router as api_router
+from charon.gateway.routes.concierge import router as concierge_router
 from charon.gateway.ws import manager
 from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
@@ -31,18 +34,21 @@ setup_logging()
 
 logger = logging.getLogger("Charon.Daemon")
 
-# 2. Initialize engine and gateway daemon wrapper
+# 2. Initialize engine, gateway daemon wrapper, and resident Concierge
 llm_client = ollama.AsyncClient(host=OLLAMA_HOST)
 
 # Inject the client into the core engine
 engine = OrchestrationEngine(llm_client=llm_client)
 daemon = CharonDaemon(engine=engine)
 
+# Instantiate Resident Concierge Service bound to local LLM client
+concierge_service = ConciergeService(llm_client=llm_client)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
-        "[Charon.Daemon] Initializing Charon FastAPI Gateway, Core Engine, and Persistent Journal..."
+        "[Charon.Daemon] Initializing Charon FastAPI Gateway, Core Engine, Persistent Journal, and Concierge..."
     )
 
     # 1. Await daemon/journal initialization prior to exposing state and serving traffic
@@ -51,21 +57,25 @@ async def lifespan(app: FastAPI):
     elif hasattr(daemon, "journal") and hasattr(daemon.journal, "initialize"):
         await daemon.journal.initialize()
 
+    # 2. Awaken resident Concierge (starts biological clock & loads registry options)
+    await concierge_service.awaken()
+    daemon.concierge = concierge_service
+
     # FIX: Explicitly bind Gateway contexts back to OrchestrationEngine & Coordinator
     engine.bind_gateway_context(
         emitter=getattr(daemon, "emitter", None),
-        concierge=getattr(daemon, "concierge", None),
+        concierge=daemon.concierge,
         state_manager=getattr(daemon, "state_mgr", None),
         ledger=getattr(daemon, "ledger", None),
     )
-    logger.info("[Charon.Daemon] Gateway context successfully bound to OrchestrationEngine.")
+    logger.info("[Charon.Daemon] Gateway and Concierge contexts successfully bound to OrchestrationEngine.")
 
     # Expose runtime instances on FastAPI app.state for HTTP and WS route handlers
     app.state.daemon = daemon
     app.state.engine = daemon.engine
     app.state.emitter = daemon.emitter
     app.state.gatekeeper = daemon.gatekeeper
-    app.state.concierge = daemon.concierge
+    app.state.concierge = concierge_service
     app.state.state_mgr = daemon.state_mgr
     app.state.ledger = daemon.ledger
     app.state.workspace_mgr = daemon.workspace_mgr
@@ -232,11 +242,15 @@ async def lifespan(app: FastAPI):
     )
     heartbeat_task.add_done_callback(_handle_task_crash)
 
-    logger.info("[Charon.Daemon] Gateway and Task Queue fully ready for task ingestion.")
+    logger.info("[Charon.Daemon] Gateway, Task Queue, and Concierge fully ready for operation.")
     yield
 
     # Teardown
     logger.info("[Charon.Daemon] Shutting down Charon Daemon background tasks and core subsystems...")
+
+    # Stand down resident Concierge background clock routines
+    await concierge_service.sleep()
+
     if hasattr(telemetry_bus, "unsubscribe"):
         telemetry_bus.unsubscribe(bridge_telemetry_event)
 
@@ -269,7 +283,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Core API routes and Concierge endpoints
 app.include_router(api_router)
+app.include_router(concierge_router, prefix="/api/v1")
+
 app.mount(
     "/dashboard",
     StaticFiles(directory="charon/gateway/static/dashboard", html=True),
