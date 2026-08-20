@@ -1,9 +1,9 @@
 """
 charon/gateway/routes/websocket.py
-System Version: v3.2.0 | File Revision: 3.2.0
+System Version: v3.2.1 | File Revision: 3.2.1
 
 Module: Full-duplex WebSocket streaming server for real-time IPC, telemetry,
-and autonomic Concierge HUD/Avatar events (proactive interjections, viseme streams, diagnostic alerts).
+and autonomic Concierge HUD/Avatar events (proactive interjections, viseme streams, diagnostic alerts, and cursor motion).
 """
 
 import datetime
@@ -33,7 +33,7 @@ class ConciergeStreamEvent(BaseModel):
     """Standardized multi-modal JSON schema for WebSocket HUD/Avatar broadcasts."""
     event_id: str = Field(default_factory=lambda: f"evt_{uuid.uuid4().hex[:12]}")
     timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
-    type: str = Field(..., description="e.g. 'proactive_interjection', 'avatar_state_update', 'diagnostic_alert'")
+    type: str = Field(..., description="e.g. 'proactive_interjection', 'avatar_state_update', 'diagnostic_alert', 'cursor_motion'")
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -44,7 +44,8 @@ def build_concierge_stream_event(
     emotion: str = "attentive",
     viseme_sequence: Optional[list] = None,
     target_app: Optional[str] = None,
-    urgency: str = "medium"
+    urgency: str = "medium",
+    pointer_target: Optional[Dict[str, float]] = None
 ) -> Dict[str, Any]:
     """Utility function to construct formatted ConciergeStreamEvent payloads for desktop overlays."""
     event = ConciergeStreamEvent(
@@ -58,7 +59,8 @@ def build_concierge_stream_event(
             },
             "hud_overlay": {
                 "target_app": target_app,
-                "urgency": urgency
+                "urgency": urgency,
+                "pointer_target": pointer_target
             }
         }
     )
@@ -89,6 +91,7 @@ async def _handle_incoming_ws_frame(websocket: WebSocket, raw_data: str, client_
     try:
         msg = json.loads(raw_data)
         action = msg.get("action") or msg.get("event_type") or msg.get("type")
+
         daemon = getattr(websocket.app.state, "daemon", None)
         concierge = getattr(websocket.app.state, "concierge", None)
 
@@ -166,6 +169,26 @@ async def _handle_incoming_ws_frame(websocket: WebSocket, raw_data: str, client_
                         selection_or_diff=payload.get("selection_or_diff"),
                         diagnostics=payload.get("diagnostics")
                     )
+
+        elif action == "cursor_motion":
+            # Ingest desktop shell cursor motion telemetry for context awareness
+            if concierge and hasattr(concierge, "sensor") and hasattr(concierge.sensor, "log_cursor_motion"):
+                concierge.sensor.log_cursor_motion(
+                    x=msg.get("x", 0.0),
+                    y=msg.get("y", 0.0),
+                    active_element=msg.get("active_element")
+                )
+
+        elif action == "pointer_telemetry":
+            # Broadcast the telemetry to other connected clients (like the GTK overlay)
+            if hasattr(manager, "active_connections"):
+                for connection in manager.active_connections:
+                    # Don't bounce the message back to the GNOME shell sender
+                    if connection != websocket:
+                        try:
+                            await connection.send_text(raw_data)
+                        except Exception as e:
+                            logger.debug(f"Failed to broadcast telemetry to client: {e}")
 
     except json.JSONDecodeError:
         logger.debug(f"Received non-JSON raw WS frame: {raw_data[:50]}")

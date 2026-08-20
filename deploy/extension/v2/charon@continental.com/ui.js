@@ -16,6 +16,7 @@ export class CharonUI {
         this._logQueue = [];
         this._lastTaskState = 'Idle';
         this._lastResponseText = '';
+        this._avatarSubprocess = null;
 
         this.indicator = new PanelMenu.Button(0.0, 'Charon Concierge', false);
         this.statusLabel = new St.Label({
@@ -56,6 +57,14 @@ export class CharonUI {
         this.overseerDetails = new PopupMenu.PopupMenuItem('  Queue: 0 | Engine: Checking...', { reactive: false });
         this.overseerDetails.label.style = 'font-size: 0.8em; color: #aaa;';
         this.indicator.menu.addMenuItem(this.overseerDetails);
+        this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // --- Avatar Toggle Switch ---
+        this.avatarSwitch = new PopupMenu.PopupSwitchMenuItem('Show Avatar:', false);
+        this.avatarSwitch.connect('toggled', (item, state) => {
+            this._toggleAvatar(state);
+        });
+        this.indicator.menu.addMenuItem(this.avatarSwitch);
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // Response Card
@@ -112,6 +121,59 @@ export class CharonUI {
         let pingItem = new PopupMenu.PopupMenuItem('🔄 Reconnect WebSocket');
         pingItem.connect('activate', () => this.ext.connectDaemon());
         this.indicator.menu.addMenuItem(pingItem);
+    }
+
+    _toggleAvatar(enabled) {
+        if (enabled) {
+            if (this._avatarSubprocess) return;
+
+            let mapWidth = global.stage.width.toString();
+            let mapHeight = global.stage.height.toString();
+
+            try {
+                let homeDir = GLib.get_home_dir();
+                let venvPython = `${homeDir}/Projects/Tools/Charon/.venv/bin/python`;
+
+                this._avatarSubprocess = new Gio.Subprocess({
+                    argv: [
+                        venvPython, '-m', 'charon.client.overlay',
+                        '--map-width', mapWidth,
+                        '--map-height', mapHeight
+                    ],
+                    flags: Gio.SubprocessFlags.INHERIT_FDS,
+                });
+                this._avatarSubprocess.init(null);
+
+                // Watch for process exit to auto-reset toggle state
+                this._avatarSubprocess.wait_check_async(null, (proc, res) => {
+                    try {
+                        proc.wait_check_finish(res);
+                    } catch (e) {
+                        // Handled exit/termination
+                    }
+                    this._avatarSubprocess = null;
+                    if (this.avatarSwitch && this.avatarSwitch.state) {
+                        this.avatarSwitch.setToggleState(false);
+                    }
+                });
+
+                console.log(`[Charon] Avatar overlay launched with bounds: ${mapWidth}x${mapHeight}`);
+            } catch (err) {
+                console.error(`[Charon] Failed to spawn Avatar overlay: ${err.message}`);
+                this._avatarSubprocess = null;
+                if (this.avatarSwitch) this.avatarSwitch.setToggleState(false);
+            }
+        } else {
+            if (this._avatarSubprocess) {
+                try {
+                    this._avatarSubprocess.force_exit();
+                } catch (e) {
+                    // Process already exited
+                }
+                this._avatarSubprocess = null;
+                console.log('[Charon] Avatar overlay terminated.');
+            }
+        }
     }
 
     _getAgentIcon(agentName) {
@@ -223,7 +285,7 @@ export class CharonUI {
         Main.messageTray.add(source);
         const notification = new MessageTray.Notification(source, `⚠️ Overseer: ${alert.title}`, alert.message || 'Inspection required.');
         if (alert.severity === 'CRITICAL') notification.setUrgency(MessageTray.Urgency.CRITICAL);
-        source.addNotification(notification); // Updated for modern GNOME Shell
+        source.addNotification(notification);
     }
 
     _handleGatekeeperIntercept(data) {
@@ -243,7 +305,7 @@ export class CharonUI {
             this.ext.api.respondGatekeeperAsync(approvalId, decision, 'Resolved via GNOME');
             this.updateStatus('Decision Sent', 'Gatekeeper');
         });
-        source.addNotification(notification); // Updated for modern GNOME Shell
+        source.addNotification(notification);
     }
 
     _handleTaskComplete(data, payload) {
@@ -259,7 +321,7 @@ export class CharonUI {
             notification.addButton('concierge-next-step', 'Execute Next Step');
             notification.connect('action-invoked', () => this.ext.submitTask(data.next_step));
         }
-        source.addNotification(notification); // Updated for modern GNOME Shell
+        source.addNotification(notification);
     }
 
     _handleDroppedUri(fileUri) {
@@ -299,6 +361,8 @@ export class CharonUI {
     }
 
     destroy() {
+        this._toggleAvatar(false);
+
         if (this.indicator) {
             this.indicator._delegate = null;
             this.indicator.destroy();

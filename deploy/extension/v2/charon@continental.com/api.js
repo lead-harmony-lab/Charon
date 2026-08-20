@@ -107,4 +107,22 @@ export class CharonAPI {
             this.session.abort();
         }
     }
+
+    // --- WEBSOCKETS: Telemetry Upstream ---
+    sendTelemetry(payload) {
+
+        if (!this.wsConnection) {
+            console.log("[Charon Telemetry] FAILED: WebSocket connection object is null.");
+            return;
+        }
+
+        const state = this.wsConnection.get_state();
+        if (state === Soup.WebsocketState.OPEN) {
+            let textData = JSON.stringify(payload);
+            this.wsConnection.send_text(textData);
+            // console.log("[Charon Telemetry] Successfully pushed to socket."); // Uncomment if you want spam, but the attempt log is usually enough
+        } else {
+            console.log(`[Charon Telemetry] FAILED: Socket state is not OPEN. Current state: ${state}`);
+        }
+    }
 }

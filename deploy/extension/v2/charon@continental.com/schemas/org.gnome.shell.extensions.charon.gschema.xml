@@ -1,25 +1,44 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
   <schema id="org.gnome.shell.extensions.charon" path="/org/gnome/shell/extensions/charon/">
+
+    <!-- API Connection Settings -->
     <key name="api-url" type="s">
       <default>'http://127.0.0.1:8000'</default>
-      <summary>Charon API URL</summary>
+      <summary>Charon Daemon API Base URL</summary>
+      <description>The base HTTP/WebSocket URL where the Charon daemon process is running.</description>
     </key>
+
     <key name="api-key" type="s">
       <default>'charon-secret-key-change-me'</default>
-      <summary>Charon API Key</summary>
+      <summary>API Authentication Key</summary>
+      <description>Secret key used to authenticate requests to the Charon daemon.</description>
     </key>
+
     <key name="api-key-header" type="s">
       <default>'X-API-Key'</default>
-      <summary>Charon API Header</summary>
+      <summary>API Key HTTP Header Name</summary>
+      <description>The header key expected by the daemon for API key validation.</description>
     </key>
+
+    <!-- Keybindings -->
     <key name="toggle-shortcut" type="as">
       <default>['&lt;Super&gt;&lt;Shift&gt;c']</default>
-      <summary>Toggle Charon Popup Menu</summary>
+      <summary>Toggle Extension Menu</summary>
+      <description>Shortcut to open or close the Charon panel menu.</description>
     </key>
+
     <key name="save-to-charon-shortcut" type="as">
-      <default>['&lt;Super&gt;&lt;Shift&gt;v']</default>
-      <summary>Save Clipboard Selection to Charon</summary>
+      <default>['&lt;Super&gt;&lt;Shift&gt;s']</default>
+      <summary>Save Clipboard to Archivist</summary>
+      <description>Shortcut to send current clipboard text to the Archivist agent.</description>
     </key>
+
+    <key name="toggle-avatar-shortcut" type="as">
+      <default>['&lt;Super&gt;&lt;Shift&gt;a']</default>
+      <summary>Toggle Avatar Overlay</summary>
+      <description>Shortcut to spawn or terminate the Wheatley avatar overlay.</description>
+    </key>
+
   </schema>
 </schemalist>

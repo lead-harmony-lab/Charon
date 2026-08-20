@@ -1,13 +1,17 @@
 """
 charon/client/overlay.py
-System Version: v3.5.0 | File Revision: 3.5.0
+System Version: v3.5.0 | File Revision: 3.5.5
 
 Module: Native GTK4 Desktop HUD Overlay with comic book speech bubble interjections,
 Wheatley aperture core visualizer, and cursor gaze tracking.
 """
 
+import argparse
+import json
 import os
 import sys
+from pathlib import Path
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -29,6 +33,45 @@ from gi.repository import Gdk, Gtk
 from charon.client.avatar_widget import AvatarVisualizer
 from charon.client.ws_listener import OverlayWSListener
 from charon.config import CHARON_API_KEY
+
+
+class OverlaySettings:
+    """Manages JSON configuration and window bounds state stored alongside overlay.py."""
+
+    def __init__(self, filename: str = "settings.json"):
+        self.filepath = Path(__file__).resolve().parent / filename
+        self.data = self._load()
+
+    def _load(self) -> dict:
+        if not self.filepath.exists():
+            return {}
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if not content:
+                    return {}
+                return json.loads(content)
+        except Exception as e:
+            print(f"[Charon] Failed to load settings: {e}")
+            return {}
+
+    def _save(self, data: dict) -> dict:
+        try:
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception as e:
+            print(f"[Charon] Failed to save settings: {e}")
+        return data
+
+    def update(self, **kwargs):
+        self.data.update(kwargs)
+        self._save(self.data)
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
 
 
 class ComicSpeechBubble(Gtk.Box):
@@ -76,8 +119,16 @@ class CharonOverlayWindow(Gtk.Window):
         "urgent": "emblem-important-symbolic",
     }
 
-    def __init__(self, app: Gtk.Application):
+    def __init__(self, app: Gtk.Application, map_width: float = 1920.0, map_height: float = 1080.0):
         super().__init__(application=app)
+
+        self.settings = OverlaySettings()
+        self.map_width = map_width
+        self.map_height = map_height
+
+        # Sync stage resolution bounds
+        self.settings.update(map_width=map_width, map_height=map_height)
+
         self.set_title("Charon Concierge Overlay")
         self.set_default_size(420, 160)
 
@@ -95,6 +146,9 @@ class CharonOverlayWindow(Gtk.Window):
         else:
             self.set_decorated(False)
             self.set_resizable(False)
+
+        # Restore saved coordinates if present
+        self.connect("realize", lambda win: self._restore_position_if_saved())
 
         # Root Horizontal Container
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -155,6 +209,67 @@ class CharonOverlayWindow(Gtk.Window):
         )
         self.ws_thread.start()
 
+    def get_settings(self) -> OverlaySettings:
+        return self.settings
+
+    def clamp_coordinates(self, x: float, y: float) -> tuple[int, int]:
+        """Clamps (x, y) coordinates ensuring window fits inside screen bounds."""
+        win_w = self.get_width() if self.get_width() > 0 else 420
+        win_h = self.get_height() if self.get_height() > 0 else 160
+
+        max_x = max(0, int(self.map_width - win_w))
+        max_y = max(0, int(self.map_height - win_h))
+
+        clamped_x = max(0, min(int(x), max_x))
+        clamped_y = max(0, min(int(y), max_y))
+
+        return clamped_x, clamped_y
+
+    def save_position(self, x: float, y: float):
+        """Clamps position coordinates to resolution bounds and writes to settings.json."""
+        clamped_x, clamped_y = self.clamp_coordinates(x, y)
+        curr_x = self.settings.get("x")
+        curr_y = self.settings.get("y")
+
+        # Avoid redundant file writes if window hasn't moved
+        if curr_x == clamped_x and curr_y == clamped_y:
+            return
+
+        self.settings.update(x=clamped_x, y=clamped_y)
+        self._apply_position(clamped_x, clamped_y)
+
+    def _apply_position(self, x: int, y: int):
+        """Reposition window on screen."""
+        use_layer_shell = Gtk4LayerShell is not None and Gtk4LayerShell.is_supported()
+        if use_layer_shell:
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, x)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, y)
+        else:
+            native = self.get_native()
+            surface = native.get_surface() if native else None
+            if surface:
+                try:
+                    from gi.repository import GdkX11
+                    if isinstance(surface, GdkX11.X11Surface):
+                        surface.move(x, y)
+                except (ImportError, TypeError, AttributeError):
+                    pass
+
+    def _restore_position_if_saved(self):
+        """Restores window coordinates if present in settings.json. Skips move on first run."""
+        saved_x = self.settings.get("x")
+        saved_y = self.settings.get("y")
+
+        if saved_x is None or saved_y is None:
+            return
+
+        clamped_x, clamped_y = self.clamp_coordinates(saved_x, saved_y)
+        self._apply_position(clamped_x, clamped_y)
+
     def _on_mouse_motion(self, controller, x, y):
         """Tracks mouse cursor coordinates across overlay window and dispatches gaze signal."""
         self.avatar.set_target_gaze(x, y, self.get_width(), self.get_height())
@@ -186,15 +301,41 @@ class CharonOverlayWindow(Gtk.Window):
 
     def handle_stream_event(self, event: dict):
         """Handles stream events and updates expressive aperture core states."""
-        payload = event.get("payload", {})
 
+        # --- 1. Intercept Global Mouse & Window Telemetry ---
+        if event.get("event_type") == "pointer_telemetry":
+            data = event.get("data", {})
+            cursor = data.get("cursor", {})
+            window_center = data.get("window_center")
+
+            # NOTE: Removed window_position intercept. The shell extension
+            # now strictly handles writing bounds to settings.json to prevent race conditions.
+
+            if cursor and window_center and "x" in cursor and "y" in cursor and "x" in window_center and "y" in window_center:
+                self.avatar.set_target_gaze_relative(
+                    mouse_x=float(cursor["x"]),
+                    mouse_y=float(cursor["y"]),
+                    center_x=float(window_center["x"]),
+                    center_y=float(window_center["y"]),
+                    map_width=self.map_width,
+                    map_height=self.map_height,
+                )
+
+                if data.get("action") == "click":
+                    self.avatar.set_expressive_state("alert")
+
+            return
+
+        # --- 2. Handle Standard Concierge Messages ---
+        payload = event.get("payload", {})
         state_name = payload.get("state", "expressing")
         category = payload.get("category", "thought")
 
         if category in ("warning", "urgent"):
             self.avatar.set_expressive_state("alert")
         elif "text" in payload:
-            self.avatar.set_expressive_state(state_name if state_name in AvatarVisualizer.EXPRESSIVE_STATES else "expressing")
+            self.avatar.set_expressive_state(
+                state_name if state_name in AvatarVisualizer.EXPRESSIVE_STATES else "expressing")
         else:
             self.avatar.set_expressive_state("observing")
 
@@ -272,14 +413,23 @@ class CharonOverlayWindow(Gtk.Window):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Charon Concierge Overlay")
+    parser.add_argument("--map-width", type=float, default=1920.0, help="Total desktop stage width")
+    parser.add_argument("--map-height", type=float, default=1080.0, help="Total desktop stage height")
+    args, residual_args = parser.parse_known_args()
+
     app = Gtk.Application(application_id="com.charon.concierge.overlay")
 
     def on_activate(app_instance):
-        win = CharonOverlayWindow(app_instance)
+        win = CharonOverlayWindow(
+            app=app_instance,
+            map_width=args.map_width,
+            map_height=args.map_height
+        )
         win.present()
 
     app.connect("activate", on_activate)
-    app.run(sys.argv)
+    app.run([sys.argv[0]] + residual_args)
 
 
 if __name__ == "__main__":

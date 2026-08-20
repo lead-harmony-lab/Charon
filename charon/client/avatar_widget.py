@@ -128,16 +128,74 @@ class AvatarVisualizer(Gtk.DrawingArea):
         if state_name in self.EXPRESSIVE_STATES:
             self.state_name = state_name
 
-    def set_target_gaze(self, x: float, y: float, width: float = None, height: float = None):
-        """Standard window-relative overlay controller gaze update."""
+    def set_target_gaze(self, x: float, y: float, screen_w: float = None, screen_h: float = None):
+        """Standard window-relative or screen-mapped overlay controller gaze update."""
         self.external_gaze_active = True
-        self._update_gaze(x, y)
+        self._route_gaze(x, y, screen_w, screen_h)
+
+    # =========================================================================
+    # AI CONTEXT NOTE: DO NOT FORGET THIS ARCHITECTURE
+    # Wheatley relies on a privileged GNOME Shell Extension utilizing Wayland's
+    # xdg-foreign protocol to query Mutter directly. This provides true absolute
+    # global coordinates for both the pointer and the window center.
+    # DO NOT attempt to use GDK4 monitor-local coordinate fallbacks.
+    # =========================================================================
 
     def set_target_gaze_relative(self, mouse_x: float, mouse_y: float, center_x: float, center_y: float,
-                                 tracking_radius: float = 250.0):
-        """Global coordinate space update (Dual monitors)."""
+                                 map_width: float, map_height: float):
+        """Global coordinate update mapped proportionally to Mutter desktop boundaries."""
         self.external_gaze_active = True
-        self._update_gaze(mouse_x, mouse_y, center_x, center_y)
+
+        # Calculate absolute distance vector
+        raw_dx = mouse_x - center_x
+        raw_dy = mouse_y - center_y
+
+        # Determine max possible travel to the screen edge from the window's current position
+        max_x = center_x if raw_dx < 0 else (map_width - center_x)
+        max_y = center_y if raw_dy < 0 else (map_height - center_y)
+
+        # Guard against division by zero if pinned exactly to a screen edge
+        max_x = max(1.0, max_x)
+        max_y = max(1.0, max_y)
+
+        # Normalize to a smooth -1.0 to 1.0 scale proportional to the desktop bounds
+        norm_x = raw_dx / max_x
+        norm_y = raw_dy / max_y
+
+        # Pass the normalized delta to the gaze handler, scaling to a virtual 200px radius
+        self._update_gaze(norm_x * 200.0, norm_y * 200.0, cx=0.0, cy=0.0)
+
+    def _route_gaze(self, x: float, y: float, screen_w: float = None, screen_h: float = None):
+        """Intercepts and auto-normalizes global coordinates across multi-monitor setups."""
+        if (screen_w is None or screen_h is None) and (abs(x) > 300 or abs(y) > 300):
+            display = Gdk.Display.get_default()
+            if display:
+                monitors = display.get_monitors()
+                total_w, max_h = 0, 0
+                for i in range(monitors.get_n_items()):
+                    geom = monitors.get_item(i).get_geometry()
+                    # Under Wayland, geom.x is often 0 for secondary monitors.
+                    # Summing widths accurately accounts for side-by-side desktop layouts.
+                    total_w += geom.width
+                    max_h = max(max_h, geom.height)
+
+                if total_w > 0:
+                    screen_w = float(total_w)
+                    screen_h = float(max_h)
+
+        # Dynamic Expansion Guard: If cursor X/Y position exceeds detected bounds,
+        # expand screen_w/screen_h so coordinates never over-saturate.
+        if screen_w and x > screen_w:
+            screen_w = float(math.ceil(x / 1920.0) * 1920.0)
+        if screen_h and y > screen_h:
+            screen_h = float(math.ceil(y / 1080.0) * 1080.0)
+
+        if screen_w and screen_h:
+            norm_x = (x / screen_w) * 2.0 - 1.0
+            norm_y = (y / screen_h) * 2.0 - 1.0
+            self._update_gaze(norm_x * 200.0, norm_y * 200.0, cx=0.0, cy=0.0)
+        else:
+            self._update_gaze(x, y)
 
     def reset_gaze_to_idle(self):
         self.external_gaze_active = False
@@ -338,6 +396,14 @@ class AvatarVisualizer(Gtk.DrawingArea):
         eye_cx = cx + dx_local
         eye_cy = cy + dy_local
 
+        # --- DYNAMIC PUPIL SHIFT ---
+        # Map the eye's local travel to a proportional offset for the bright white pupil
+        pupil_shift_x = 0.0
+        pupil_shift_y = 0.0
+        if max_travel > 0:
+            pupil_shift_x = (dx_local / max_travel) * (r_core * 0.45)
+            pupil_shift_y = (dy_local / max_travel) * (r_core * 0.45)
+
         cr.save()
         cr.translate(cx, cy)
         cr.rotate(self.rotation_angle)
@@ -356,8 +422,9 @@ class AvatarVisualizer(Gtk.DrawingArea):
         cr.stroke()
         cr.restore()
 
+        # Apply the dynamic pupil_shift_x and pupil_shift_y to the gradient's focal point
         pupil_grad = cairo.RadialGradient(
-            eye_cx - (r_core * 0.2), eye_cy - (r_core * 0.2), r_core * 0.08,
+            eye_cx + pupil_shift_x, eye_cy + pupil_shift_y, r_core * 0.08,
             eye_cx, eye_cy, r_core * pulse
         )
         pupil_grad.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 0.98)

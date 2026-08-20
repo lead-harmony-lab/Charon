@@ -1,6 +1,6 @@
 """
 charon/gateway/models.py
-System Version: v0.1.0 | File Revision: 2.1.1
+System Version: v0.1.0 | File Revision: 2.1.2
 
 Module: Gateway REST request/response and WebSocket event schemas.
 """
@@ -201,6 +201,7 @@ class WSEvent(BaseModel):
         "error",
         "task_error",
         "gateway_ready",
+        "cursor_motion",
     ] = Field(
         ...,
         description="Event discriminator consumed by desktop shell extensions or UI clients."
