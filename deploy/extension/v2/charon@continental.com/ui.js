@@ -17,6 +17,7 @@ export class CharonUI {
         this._lastTaskState = 'Idle';
         this._lastResponseText = '';
         this._avatarSubprocess = null;
+        this._isDestroying = false; // Prevents lock-screen from overwriting saved avatar state
 
         this.indicator = new PanelMenu.Button(0.0, 'Charon Concierge', false);
         this.statusLabel = new St.Label({
@@ -60,8 +61,16 @@ export class CharonUI {
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // --- Avatar Toggle Switch ---
-        this.avatarSwitch = new PopupMenu.PopupSwitchMenuItem('Show Avatar:', false);
+        let currentSettings = this.ext.readOverlaySettings();
+        let shouldShowAvatar = currentSettings.show_avatar === true;
+
+        this.avatarSwitch = new PopupMenu.PopupSwitchMenuItem('Show Avatar:', shouldShowAvatar);
         this.avatarSwitch.connect('toggled', (item, state) => {
+            if (!this._isDestroying) {
+                let data = this.ext.readOverlaySettings();
+                data.show_avatar = state;
+                this.ext.writeOverlaySettings(data);
+            }
             this._toggleAvatar(state);
         });
         this.indicator.menu.addMenuItem(this.avatarSwitch);
@@ -121,6 +130,14 @@ export class CharonUI {
         let pingItem = new PopupMenu.PopupMenuItem('🔄 Reconnect WebSocket');
         pingItem.connect('activate', () => this.ext.connectDaemon());
         this.indicator.menu.addMenuItem(pingItem);
+
+        // --- Auto-Launch Avatar if previously enabled ---
+        if (shouldShowAvatar) {
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                this._toggleAvatar(true);
+                return GLib.SOURCE_REMOVE;
+            });
+        }
     }
 
     _toggleAvatar(enabled) {
@@ -157,7 +174,7 @@ export class CharonUI {
                     }
                 });
 
-                console.log(`[Charon] Avatar overlay launched with bounds: ${mapWidth}x${mapHeight}`);
+                // Removed log line for cleaner journalctl
             } catch (err) {
                 console.error(`[Charon] Failed to spawn Avatar overlay: ${err.message}`);
                 this._avatarSubprocess = null;
@@ -171,7 +188,6 @@ export class CharonUI {
                     // Process already exited
                 }
                 this._avatarSubprocess = null;
-                console.log('[Charon] Avatar overlay terminated.');
             }
         }
     }
@@ -361,6 +377,7 @@ export class CharonUI {
     }
 
     destroy() {
+        this._isDestroying = true; // Signal that we are tearing down, don't save 'false' state to disk
         this._toggleAvatar(false);
 
         if (this.indicator) {

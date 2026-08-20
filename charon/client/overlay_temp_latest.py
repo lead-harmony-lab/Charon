@@ -1,9 +1,9 @@
 """
 charon/client/overlay.py
-System Version: v3.9.0 | File Revision: 3.9.9
+System Version: v3.8.4 | File Revision: 3.8.16
 
 Module: Native GTK4 Desktop HUD Overlay with comic book speech bubble interjections,
-Wheatley aperture core visualizer, cursor gaze tracking, and click-through regions.
+Wheatley aperture core visualizer, and cursor gaze tracking.
 """
 
 import argparse
@@ -127,11 +127,11 @@ class CharonOverlayWindow(Gtk.Window):
         self.map_width = map_width
         self.map_height = map_height
 
-        self._pending_telemetry = None
-        self._telemetry_idle_queued = False
-
+        # Sync stage resolution bounds
         self.settings.update(map_width=map_width, map_height=map_height)
+
         self.set_title("Charon Concierge Overlay")
+        self.set_default_size(420, 160)
 
         use_layer_shell = Gtk4LayerShell is not None and Gtk4LayerShell.is_supported()
 
@@ -140,9 +140,9 @@ class CharonOverlayWindow(Gtk.Window):
             Gtk4LayerShell.set_layer(self, Gtk4LayerShell.Layer.TOP)
             Gtk4LayerShell.set_namespace(self, "charon-concierge-hud")
             Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
             Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 24)
-            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.RIGHT, 24)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, 24)
             Gtk4LayerShell.set_keyboard_mode(self, Gtk4LayerShell.KeyboardMode.NONE)
         else:
             self.set_decorated(False)
@@ -150,14 +150,15 @@ class CharonOverlayWindow(Gtk.Window):
 
         self.connect("realize", lambda win: self._restore_position_if_saved())
 
-        self.main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        self.main_box.set_margin_top(0)
-        self.main_box.set_margin_bottom(0)
-        self.main_box.set_margin_start(0)
-        self.main_box.set_margin_end(0)
+        self.main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.main_box.set_margin_top(12)
+        self.main_box.set_margin_bottom(12)
+        self.main_box.set_margin_start(12)
+        self.main_box.set_margin_end(12)
 
         # 1. Avatar Container
         self.avatar_overlay = Gtk.Overlay()
+
         self.avatar_container = AvatarWidget()
         self.avatar = self.avatar_container.visualizer
 
@@ -165,6 +166,7 @@ class CharonOverlayWindow(Gtk.Window):
         self._setup_avatar_drag_feedback()
         self.avatar_overlay.set_child(self.avatar_container)
 
+        # Indicator Badge
         self.badge_button = Gtk.Button()
         self.badge_button.add_css_class("indicator-badge")
         self.badge_image = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
@@ -176,18 +178,21 @@ class CharonOverlayWindow(Gtk.Window):
         self.badge_button.connect("clicked", self._toggle_thought_bubble)
 
         self.avatar_overlay.add_overlay(self.badge_button)
-
-        # We append the overlay directly. Gtk.WindowHandle is entirely removed to
-        # stop it from creating a rectangular hit-box and capturing scroll events.
         self.main_box.append(self.avatar_overlay)
 
         # 2. Comic Book Speech Bubble
         self.bubble = ComicSpeechBubble()
         self.bubble.set_visible(False)
-        self.bubble.set_margin_start(12)
         self.main_box.append(self.bubble)
 
         self.set_child(self.main_box)
+
+        # 3. Mouse Event Controller for Window-Wide Gaze Tracking
+        motion_ctrl = Gtk.EventControllerMotion.new()
+        motion_ctrl.connect("motion", self._on_mouse_motion)
+        motion_ctrl.connect("leave", self._on_mouse_leave)
+        self.add_controller(motion_ctrl)
+
         self._apply_css()
 
         # Connect WebSocket Stream Listener
@@ -206,8 +211,8 @@ class CharonOverlayWindow(Gtk.Window):
         return self.settings
 
     def clamp_coordinates(self, x: float, y: float) -> tuple[int, int]:
-        win_w = self.get_width() if self.get_width() > 0 else 150
-        win_h = self.get_height() if self.get_height() > 0 else 150
+        win_w = self.get_width() if self.get_width() > 0 else 420
+        win_h = self.get_height() if self.get_height() > 0 else 160
 
         max_x = max(0, int(self.map_width - win_w))
         max_y = max(0, int(self.map_height - win_h))
@@ -217,13 +222,20 @@ class CharonOverlayWindow(Gtk.Window):
 
         return clamped_x, clamped_y
 
+    def save_position(self, x: float, y: float):
+        clamped_x, clamped_y = self.clamp_coordinates(x, y)
+        curr_x = self.settings.get("x")
+        curr_y = self.settings.get("y")
+
+        if curr_x == clamped_x and curr_y == clamped_y:
+            return
+
+        self.settings.update(x=clamped_x, y=clamped_y)
+        self._apply_position(clamped_x, clamped_y)
+
     def _apply_position(self, x: int, y: int):
         use_layer_shell = Gtk4LayerShell is not None and Gtk4LayerShell.is_supported()
         if use_layer_shell:
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
             Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, x)
             Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, y)
         else:
@@ -247,6 +259,12 @@ class CharonOverlayWindow(Gtk.Window):
         clamped_x, clamped_y = self.clamp_coordinates(saved_x, saved_y)
         self._apply_position(clamped_x, clamped_y)
 
+    def _on_mouse_motion(self, controller, x, y):
+        self.avatar.set_target_gaze(x, y, self.get_width(), self.get_height())
+
+    def _on_mouse_leave(self, controller):
+        self.avatar.reset_gaze_to_idle()
+
     def _toggle_thought_bubble(self, button):
         is_visible = self.bubble.get_visible()
         self.bubble.set_visible(not is_visible)
@@ -256,64 +274,91 @@ class CharonOverlayWindow(Gtk.Window):
         self.badge_image.set_from_icon_name(icon_name)
 
     def _setup_avatar_drag_feedback(self):
-        # Natively handles dragging while completely ignoring scrolls and respecting
-        # the precise visual bounds of the AvatarWidget's do_contains method.
+        self._is_drag_ready = False
+        self._long_press_timer_id = None
+        self._drag_sequence = None
+
+        # 1. Click Gesture (Triggers the 350ms hold delay)
+        click_gesture = Gtk.GestureClick.new()
+        click_gesture.set_button(1)
+        click_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+
+        def trigger_long_press():
+            self._is_drag_ready = True
+            self.avatar_container.set_cursor_from_name("grabbing")
+            self._long_press_timer_id = None
+
+            # Claim the exact sequence we captured during 'pressed'
+            if self._drag_sequence:
+                drag_gesture.set_state(self._drag_sequence, Gtk.EventSequenceState.CLAIMED)
+            return False  # Stops the GLib timeout source
+
+        def on_pressed(gesture, n_press, x, y):
+            self._is_drag_ready = False
+            # Capture the sequence here, while inside the event loop!
+            self._drag_sequence = gesture.get_current_sequence()
+
+            if self._long_press_timer_id:
+                GLib.source_remove(self._long_press_timer_id)
+
+            # Start 350ms click-and-hold duration
+            self._long_press_timer_id = GLib.timeout_add(350, trigger_long_press)
+
+        def on_released(gesture, n_press, x, y):
+            if self._long_press_timer_id:
+                GLib.source_remove(self._long_press_timer_id)
+                self._long_press_timer_id = None
+
+            self._is_drag_ready = False
+            self._drag_sequence = None
+            self.avatar_container.set_cursor_from_name("grab")
+
+        click_gesture.connect("pressed", on_pressed)
+        click_gesture.connect("released", on_released)
+
+        # 2. Drag Gesture (Handles positional movement once hold is active)
         drag_gesture = Gtk.GestureDrag.new()
         drag_gesture.set_button(1)
+        drag_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
 
         def on_drag_begin(gesture, start_x, start_y):
-            native = self.avatar_container.get_native()
-            if not native: return
+            self._drag_start_win_x = self.settings.get("x", 0)
+            self._drag_start_win_y = self.settings.get("y", 0)
 
-            surface = native.get_surface()
-            if surface and isinstance(surface, Gdk.Toplevel):
-                seq = gesture.get_current_sequence()
-                event = gesture.get_last_event(seq)
-                if event:
-                    # Pass off to the window manager explicitly
-                    surface.begin_move(
-                        event.get_device(),
-                        1,
-                        start_x,
-                        start_y,
-                        event.get_time()
-                    )
-                    gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-                    self.avatar_container.set_cursor_from_name("grabbing")
+        def on_drag_update(gesture, offset_x, offset_y):
+            # If the user hasn't held for 350ms yet, just wait.
+            # Do NOT cancel the timer here—human hands jitter!
+            if not self._is_drag_ready:
+                return
+
+            # offset_x/y is already the total distance from the start point.
+            # No cumulative math required!
+            new_x = self._drag_start_win_x + offset_x
+            new_y = self._drag_start_win_y + offset_y
+
+            self.save_position(new_x, new_y)
 
         def on_drag_end(gesture, offset_x, offset_y):
+            if self._long_press_timer_id:
+                GLib.source_remove(self._long_press_timer_id)
+                self._long_press_timer_id = None
+
+            self._is_drag_ready = False
             self.avatar_container.set_cursor_from_name("grab")
 
         drag_gesture.connect("drag-begin", on_drag_begin)
+        drag_gesture.connect("drag-update", on_drag_update)
         drag_gesture.connect("drag-end", on_drag_end)
+
+        # Group both gestures so they evaluate the same sequence concurrently
+        drag_gesture.group(click_gesture)
+
+        self.avatar_container.add_controller(click_gesture)
         self.avatar_container.add_controller(drag_gesture)
 
-        # Retain standard clicking feedback
-        click_gesture = Gtk.GestureClick.new()
-        click_gesture.set_button(1)
-        click_gesture.connect("pressed", lambda g, n, x, y: self.avatar_container.set_cursor_from_name("grabbing"))
-        click_gesture.connect("released", lambda g, n, x, y: self.avatar_container.set_cursor_from_name("grab"))
-        self.avatar_container.add_controller(click_gesture)
-
     def handle_stream_event(self, event: dict):
-        if event.get("event_type") == "pointer_telemetry":
-            if event.get("data", {}).get("action"):
-                GLib.idle_add(self._process_stream_event_ui, event)
-                return
-
-            self._pending_telemetry = event
-            if not self._telemetry_idle_queued:
-                self._telemetry_idle_queued = True
-                GLib.idle_add(self._flush_telemetry)
-        else:
-            GLib.idle_add(self._process_stream_event_ui, event)
-
-    def _flush_telemetry(self):
-        self._telemetry_idle_queued = False
-        if self._pending_telemetry:
-            self._process_stream_event_ui(self._pending_telemetry)
-            self._pending_telemetry = None
-        return False
+        # Push websocket updates to the main thread cleanly.
+        GLib.idle_add(self._process_stream_event_ui, event)
 
     def _process_stream_event_ui(self, event: dict):
         if event.get("event_type") == "pointer_telemetry":
@@ -321,20 +366,21 @@ class CharonOverlayWindow(Gtk.Window):
             cursor = data.get("cursor", {})
             window_center = data.get("window_center")
 
-            if cursor and window_center and "x" in cursor and "y" in cursor and "x" in window_center and "y" in window_center:
-                self.avatar.set_target_gaze_relative(
-                    mouse_x=float(cursor["x"]),
-                    mouse_y=float(cursor["y"]),
-                    center_x=float(window_center["x"]),
-                    center_y=float(window_center["y"]),
-                    map_width=self.map_width,
-                    map_height=self.map_height,
-                )
-
-                if data.get("action") == "click":
-                    self.avatar.set_expressive_state("alert")
+            if cursor and "x" in cursor and "y" in cursor:
+                if window_center and "x" in window_center and "y" in window_center:
+                    self.avatar.set_target_gaze_relative(
+                        mouse_x=float(cursor["x"]),
+                        mouse_y=float(cursor["y"]),
+                        center_x=float(window_center["x"]),
+                        center_y=float(window_center["y"]),
+                        map_width=self.map_width,
+                        map_height=self.map_height,
+                    )
+                    if data.get("action") == "click":
+                        self.avatar.set_expressive_state("alert")
             return
 
+        # Handle Standard Concierge Messages
         payload = event.get("payload", {})
         state_name = payload.get("state", "expressing")
         category = payload.get("category", "thought")
