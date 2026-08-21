@@ -1,14 +1,17 @@
 """
 charon/client/overlay.py
-System Version: v3.9.0 | File Revision: 3.9.9
+System Version: v3.9.0 | File Revision: 3.9.13
 
 Module: Native GTK4 Desktop HUD Overlay with comic book speech bubble interjections,
 Wheatley aperture core visualizer, cursor gaze tracking, and click-through regions.
 """
 
 import argparse
+import base64
+import cairo
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -28,7 +31,7 @@ if not is_gnome:
     except (ValueError, ImportError):
         Gtk4LayerShell = None
 
-from gi.repository import Gdk, Gtk, GLib
+from gi.repository import Gdk, GLib, Gtk
 
 # Import the wrapper widget to preserve do_contains hit-testing behavior
 from charon.client.avatar_widget import AvatarVisualizer, AvatarWidget
@@ -113,13 +116,6 @@ class ComicSpeechBubble(Gtk.Box):
 class CharonOverlayWindow(Gtk.Window):
     """HUD Overlay Window featuring Wheatley Core Visualizer and Cursor Gaze Tracking."""
 
-    MESSAGE_ICONS = {
-        "inbox": "mail-unread-symbolic",
-        "warning": "dialog-warning-symbolic",
-        "thought": "dialog-information-symbolic",
-        "urgent": "emblem-important-symbolic",
-    }
-
     def __init__(self, app: Gtk.Application, map_width: float = 1920.0, map_height: float = 1080.0):
         super().__init__(application=app)
 
@@ -148,27 +144,29 @@ class CharonOverlayWindow(Gtk.Window):
             self.set_decorated(False)
             self.set_resizable(False)
 
-        self.connect("realize", lambda win: self._restore_position_if_saved())
+        self.connect("realize", lambda win: self._on_realize())
 
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        self.main_box.set_margin_top(0)
-        self.main_box.set_margin_bottom(0)
-        self.main_box.set_margin_start(0)
-        self.main_box.set_margin_end(0)
 
-        # 1. Avatar Container
+        # --- AVATAR CONTAINER LAYOUT ---
         self.avatar_overlay = Gtk.Overlay()
+
         self.avatar_container = AvatarWidget()
         self.avatar = self.avatar_container.visualizer
-
         self.avatar_container.set_cursor_from_name("grab")
         self._setup_avatar_drag_feedback()
-        self.avatar_overlay.set_child(self.avatar_container)
 
+        # Transparent padding container to offset layout coordinates
+        self.avatar_align_box = Gtk.Box()
+        self.avatar_align_box.set_margin_top(25)
+        self.avatar_align_box.set_margin_end(35)
+        self.avatar_align_box.append(self.avatar_container)
+
+        self.avatar_overlay.set_child(self.avatar_align_box)
+
+        # The badge button overlay
         self.badge_button = Gtk.Button()
-        self.badge_button.add_css_class("indicator-badge")
-        self.badge_image = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
-        self.badge_button.set_child(self.badge_image)
+        self.badge_button.add_css_class("speech-bubble-btn")
         self.badge_button.set_halign(Gtk.Align.END)
         self.badge_button.set_valign(Gtk.Align.START)
         self.badge_button.set_margin_end(14)
@@ -176,12 +174,9 @@ class CharonOverlayWindow(Gtk.Window):
         self.badge_button.connect("clicked", self._toggle_thought_bubble)
 
         self.avatar_overlay.add_overlay(self.badge_button)
-
-        # We append the overlay directly. Gtk.WindowHandle is entirely removed to
-        # stop it from creating a rectangular hit-box and capturing scroll events.
         self.main_box.append(self.avatar_overlay)
 
-        # 2. Comic Book Speech Bubble
+        # Comic Book Speech Bubble
         self.bubble = ComicSpeechBubble()
         self.bubble.set_visible(False)
         self.bubble.set_margin_start(12)
@@ -189,6 +184,9 @@ class CharonOverlayWindow(Gtk.Window):
 
         self.set_child(self.main_box)
         self._apply_css()
+
+        # Update input shape when speech bubble visibility toggles
+        self.bubble.connect("notify::visible", lambda *args: GLib.idle_add(self.update_input_region))
 
         # Connect WebSocket Stream Listener
         ws_uri = "ws://localhost:8000/v1/concierge/stream?client_id=gtk_overlay"
@@ -201,6 +199,56 @@ class CharonOverlayWindow(Gtk.Window):
             on_event_callback=self.handle_stream_event
         )
         self.ws_thread.start()
+
+    def _on_realize(self):
+        """Triggered when GDK surface is created."""
+        self._restore_position_if_saved()
+        GLib.idle_add(self.update_input_region)
+
+    def update_input_region(self):
+        """Update Wayland input region so empty space passes clicks through to desktop."""
+        native = self.get_native()
+        if not native:
+            return
+        surface = native.get_surface()
+        if not surface:
+            return
+
+        region = cairo.Region()
+
+        # 1. Add specific visible Avatar bounds (bypassing transparent margin boxes)
+        res, avatar_rect = self.avatar_container.compute_bounds(self)
+        if res:
+            region.union(cairo.RectangleInt(
+                int(avatar_rect.origin.x),
+                int(avatar_rect.origin.y),
+                int(avatar_rect.size.width),
+                int(avatar_rect.size.height)
+            ))
+
+        # 2. Add Badge Button bounds independently
+        res, badge_rect = self.badge_button.compute_bounds(self)
+        if res:
+            region.union(cairo.RectangleInt(
+                int(badge_rect.origin.x),
+                int(badge_rect.origin.y),
+                int(badge_rect.size.width),
+                int(badge_rect.size.height)
+            ))
+
+        # 3. Add Speech Bubble bounds if visible
+        if self.bubble.get_visible():
+            res, bubble_rect = self.bubble.compute_bounds(self)
+            if res:
+                region.union(cairo.RectangleInt(
+                    int(bubble_rect.origin.x),
+                    int(bubble_rect.origin.y),
+                    int(bubble_rect.size.width),
+                    int(bubble_rect.size.height)
+                ))
+
+        # Apply the exact mask to the Wayland/X11 surface
+        surface.set_input_region(region)
 
     def get_settings(self) -> OverlaySettings:
         return self.settings
@@ -250,14 +298,21 @@ class CharonOverlayWindow(Gtk.Window):
     def _toggle_thought_bubble(self, button):
         is_visible = self.bubble.get_visible()
         self.bubble.set_visible(not is_visible)
+        GLib.idle_add(self.update_input_region)
 
     def set_indicator_type(self, msg_type: str):
-        icon_name = self.MESSAGE_ICONS.get(msg_type, "dialog-information-symbolic")
-        self.badge_image.set_from_icon_name(icon_name)
+        self.badge_button.remove_css_class("indicator-warning")
+        self.badge_button.remove_css_class("indicator-urgent")
+        self.badge_button.remove_css_class("indicator-inbox")
+
+        if msg_type == "warning":
+            self.badge_button.add_css_class("indicator-warning")
+        elif msg_type == "urgent":
+            self.badge_button.add_css_class("indicator-urgent")
+        elif msg_type == "inbox":
+            self.badge_button.add_css_class("indicator-inbox")
 
     def _setup_avatar_drag_feedback(self):
-        # Natively handles dragging while completely ignoring scrolls and respecting
-        # the precise visual bounds of the AvatarWidget's do_contains method.
         drag_gesture = Gtk.GestureDrag.new()
         drag_gesture.set_button(1)
 
@@ -270,7 +325,6 @@ class CharonOverlayWindow(Gtk.Window):
                 seq = gesture.get_current_sequence()
                 event = gesture.get_last_event(seq)
                 if event:
-                    # Pass off to the window manager explicitly
                     surface.begin_move(
                         event.get_device(),
                         1,
@@ -288,7 +342,6 @@ class CharonOverlayWindow(Gtk.Window):
         drag_gesture.connect("drag-end", on_drag_end)
         self.avatar_container.add_controller(drag_gesture)
 
-        # Retain standard clicking feedback
         click_gesture = Gtk.GestureClick.new()
         click_gesture.set_button(1)
         click_gesture.connect("pressed", lambda g, n, x, y: self.avatar_container.set_cursor_from_name("grabbing"))
@@ -322,11 +375,22 @@ class CharonOverlayWindow(Gtk.Window):
             window_center = data.get("window_center")
 
             if cursor and window_center and "x" in cursor and "y" in cursor and "x" in window_center and "y" in window_center:
+                win_w = self.get_width()
+                win_h = self.get_height()
+                avatar_w = self.avatar_container.get_width()
+                avatar_h = self.avatar_container.get_height()
+
+                win_top_left_x = float(window_center["x"]) - (win_w / 2.0)
+                win_top_left_y = float(window_center["y"]) - (win_h / 2.0)
+
+                eye_center_x = win_top_left_x + (avatar_w / 2.0)
+                eye_center_y = win_top_left_y + 15.0 + (avatar_h / 2.0)
+
                 self.avatar.set_target_gaze_relative(
                     mouse_x=float(cursor["x"]),
                     mouse_y=float(cursor["y"]),
-                    center_x=float(window_center["x"]),
-                    center_y=float(window_center["y"]),
+                    center_x=eye_center_x,
+                    center_y=eye_center_y,
                     map_width=self.map_width,
                     map_height=self.map_height,
                 )
@@ -353,63 +417,91 @@ class CharonOverlayWindow(Gtk.Window):
             text = payload["text"]
             self.bubble.set_text(text)
             self.bubble.set_visible(True)
+            GLib.idle_add(self.update_input_region)
 
     def _apply_css(self):
+        def get_svg_uri(stroke_color: str, fill_color: str = "rgba(15, 23, 42, 0.92)") -> str:
+            svg = f"""<svg viewBox="69 78 85 50" xmlns="http://www.w3.org/2000/svg">
+              <path fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"
+                    d="m 76.03705,79.224564 h 70.86015 c 3.13351,0 5.65615,2.522644 5.65615,5.656152 v 15.218714 c 0,3.13351 -2.52264,5.65615 -5.65615,5.65615 H 89.675042 l -19.478391,20.63523 6.816997,-20.63523 H 76.03705 c -3.133509,0 -5.656152,-2.52264 -5.656152,-5.65615 V 84.880716 c 0,-3.133508 2.522643,-5.656152 5.656152,-5.656152 z"/>
+            </svg>"""
+            b64 = base64.b64encode(svg.encode('utf-8')).decode('utf-8')
+            return f"url('data:image/svg+xml;base64,{b64}')"
+
         css_provider = Gtk.CssProvider()
-        css = """
-        window {
+        css = f"""
+        window {{
             background-color: transparent;
             box-shadow: none;
-        }
+        }}
 
-        .comic-speech-bubble {
+        .comic-speech-bubble {{
             background-color: rgba(15, 23, 42, 0.92);
             border: 2px solid #38BDF8;
             border-radius: 16px;
             padding: 12px 16px;
             box-shadow: 0px 8px 24px rgba(0, 0, 0, 0.6), 0px 0px 14px rgba(56, 189, 248, 0.4);
-        }
+        }}
 
-        .bubble-title {
+        .bubble-title {{
             font-weight: bold;
             font-size: 12px;
             color: #38BDF8;
             letter-spacing: 0.5px;
-        }
+        }}
 
-        .bubble-text {
+        .bubble-text {{
             font-size: 13px;
             color: #F8FAFC;
-        }
+        }}
 
-        .indicator-badge {
-            background-color: rgba(15, 23, 42, 0.85);
-            border: 1px solid rgba(56, 189, 248, 0.7);
-            border-radius: 50%;
-            min-width: 20px;
-            min-height: 20px;
-            padding: 2px;
-            box-shadow: 0px 0px 10px rgba(56, 189, 248, 0.6);
-        }
+        .speech-bubble-btn {{
+            background-image: {get_svg_uri("#38BDF8")};
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+            background-color: transparent;
+            border: none;
+            min-width: 50px;
+            min-height: 30px; 
+            padding: 0px;
+            box-shadow: none;
+            transition: all 0.2s ease-in-out;
+            filter: drop-shadow(0px 0px 4px rgba(56, 189, 248, 0.8));
+        }}
+        
+        .speech-bubble-btn:hover {{
+            background-image: {get_svg_uri("#F472B6")};
+            filter: drop-shadow(0px 0px 6px rgba(244, 114, 182, 1.0));
+        }}
+        
+        .indicator-warning {{
+            background-image: {get_svg_uri("#FBBF24")};
+            filter: drop-shadow(0px 0px 5px rgba(251, 191, 36, 0.9));
+        }}
 
-        .indicator-badge:hover {
-            background-color: rgba(30, 41, 59, 0.95);
-            border-color: #F472B6;
-            box-shadow: 0px 0px 12px rgba(244, 114, 182, 0.8);
-        }
+        .indicator-urgent {{
+            background-image: {get_svg_uri("#EF4444")};
+            filter: drop-shadow(0px 0px 5px rgba(239, 68, 68, 0.9));
+        }}
 
-        .collapse-btn {
+        .indicator-inbox {{
+            background-image: {get_svg_uri("#A855F7")};
+            filter: drop-shadow(0px 0px 5px rgba(168, 85, 247, 0.9));
+        }}
+
+        .collapse-btn {{
             background: transparent;
             border: none;
             padding: 0px;
             min-width: 16px;
             min-height: 16px;
             opacity: 0.7;
-        }
+        }}
 
-        .collapse-btn:hover {
+        .collapse-btn:hover {{
             opacity: 1.0;
-        }
+        }}
         """
         css_provider.load_from_data(css.encode("utf-8"))
         Gtk.StyleContext.add_provider_for_display(
@@ -421,21 +513,46 @@ class CharonOverlayWindow(Gtk.Window):
 
 def main():
     parser = argparse.ArgumentParser(description="Charon Concierge Overlay")
-    parser.add_argument("--map-width", type=float, default=1920.0, help="Total desktop stage width")
-    parser.add_argument("--map-height", type=float, default=1080.0, help="Total desktop stage height")
+    parser.add_argument("--map-width", type=float, default=None, help="Total desktop stage width")
+    parser.add_argument("--map-height", type=float, default=None, help="Total desktop stage height")
     args, residual_args = parser.parse_known_args()
 
     app = Gtk.Application(application_id="com.charon.concierge.overlay")
 
     def on_activate(app_instance):
+        map_w = args.map_width
+        map_h = args.map_height
+
+        if map_w is None or map_h is None:
+            display = Gdk.Display.get_default()
+            max_x, max_y = 0, 0
+
+            if display:
+                monitors = display.get_monitors()
+                for i in range(monitors.get_n_items()):
+                    monitor = monitors.get_item(i)
+                    geom = monitor.get_geometry()
+
+                    right_edge = geom.x + geom.width
+                    bottom_edge = geom.y + geom.height
+
+                    if right_edge > max_x: max_x = right_edge
+                    if bottom_edge > max_y: max_y = bottom_edge
+
+            if map_w is None:
+                map_w = float(max_x) if max_x > 0 else 1920.0
+            if map_h is None:
+                map_h = float(max_y) if max_y > 0 else 1080.0
+
         win = CharonOverlayWindow(
             app=app_instance,
-            map_width=args.map_width,
-            map_height=args.map_height
+            map_width=map_w,
+            map_height=map_h
         )
         win.present()
 
     app.connect("activate", on_activate)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     app.run([sys.argv[0]] + residual_args)
 
 

@@ -10,8 +10,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gtk, Gdk
 
-from .avatar_visualizer import AvatarVisualizer
-from .avatar_states import BASE_ROTATION
+from charon.client.avatar_visualizer import AvatarVisualizer
+from charon.client.avatar_states import BASE_ROTATION
 
 
 class AvatarWidget(Gtk.Overlay):
