@@ -1,10 +1,9 @@
 """
 charon/client/ws_listener.py
-System Version: v3.2.2 | File Revision: 3.2.2
+System Version: v3.3.0 | File Revision: 3.3.0
 
 Module: Asynchronous WebSocket client bridge running in a background thread.
-Dispatches incoming stream events to GTK main loop safely via GLib.idle_add with API Key authentication.
-Supports websockets v13+ (additional_headers) and legacy versions.
+Dispatches incoming stream events and connection state lifecycle events to GTK main loop.
 """
 
 import asyncio
@@ -38,7 +37,6 @@ class OverlayWSListener(threading.Thread):
     async def _listen_loop(self):
         logger.info(f"[WSListener] Connecting to stream at: {self.uri}")
 
-        # Determine header parameter name dynamically for websockets version compatibility
         connect_params = inspect.signature(websockets.connect).parameters
         header_kwarg = "additional_headers" if "additional_headers" in connect_params else "extra_headers"
 
@@ -50,14 +48,32 @@ class OverlayWSListener(threading.Thread):
             try:
                 async with websockets.connect(self.uri, **connect_kwargs) as ws:
                     logger.info("[WSListener] Stream connected successfully.")
+
+                    # Dispatch connection status event to GTK main loop
+                    GLib.idle_add(self.on_event_callback, {
+                        "event_type": "system",
+                        "payload": {
+                            "text": "Data link established",
+                            "category": "thought",
+                            "state": "observing"
+                        }
+                    })
+
                     while self.running:
                         raw_msg = await ws.recv()
                         try:
                             data = json.loads(raw_msg)
-                            # Thread-safe dispatch to GTK main GUI loop
                             GLib.idle_add(self.on_event_callback, data)
                         except json.JSONDecodeError:
                             pass
             except Exception as err:
                 logger.warning(f"[WSListener] Stream disconnected ({err}). Reconnecting in 3s...")
+                GLib.idle_add(self.on_event_callback, {
+                    "event_type": "system",
+                    "payload": {
+                        "text": "Data link lost",
+                        "category": "warning",
+                        "state": "alert"
+                    }
+                })
                 await asyncio.sleep(3)

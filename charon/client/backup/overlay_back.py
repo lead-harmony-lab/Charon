@@ -36,6 +36,7 @@ from gi.repository import Gdk, GLib, Gtk
 # Import the wrapper widget to preserve do_contains hit-testing behavior
 from charon.client.avatar_widget import AvatarVisualizer, AvatarWidget
 from charon.client.ws_listener import OverlayWSListener
+from charon.client.avatar_states import EXPRESSIVE_STATES
 from charon.config import CHARON_API_KEY
 
 
@@ -407,7 +408,7 @@ class CharonOverlayWindow(Gtk.Window):
             self.avatar.set_expressive_state("alert")
         elif "text" in payload:
             self.avatar.set_expressive_state(
-                state_name if state_name in AvatarVisualizer.EXPRESSIVE_STATES else "expressing")
+                state_name if state_name in EXPRESSIVE_STATES else "expressing")
         else:
             self.avatar.set_expressive_state("observing")
 

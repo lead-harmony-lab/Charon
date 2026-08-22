@@ -1,174 +1,187 @@
+"""
+charon/client/message_bubble.py
+System Version: v3.9.4
+
+Module: Comic-book style message bubble for the Charon Concierge.
+Features elastic pop-in, cubic shrink-out, and click-to-dismiss gestures.
+"""
+
 import math
 import gi
 
-gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk, GLib
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
 
 
-class MessageBubble(Gtk.Overlay):
-    """Unified comic bubble that acts as both a notification badge and a text container."""
-
-    URGENCY_COLORS = {
-        "thought": (0.22, 0.74, 0.97, 1.0),  # #38BDF8 (Blue)
-        "warning": (0.98, 0.80, 0.08, 1.0),  # #FACC15 (Yellow)
-        "urgent": (0.97, 0.44, 0.44, 1.0),  # #F87171 (Red)
-    }
+class MessageBubble(Gtk.Box):
+    """Speech Bubble with GPU-accelerated animations and click dismiss."""
 
     def __init__(self):
-        super().__init__()
-        self.message_type = "speech"
-        self.urgency = "thought"
-        self.is_expanded = False
-        self.has_unread = False
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.add_css_class("comic-speech-bubble")
+        self.set_valign(Gtk.Align.CENTER)
 
         # Animation state
-        self.anim_duration_ms = 400
+        self.anim_duration_ms = 600
+        self.shrink_duration_ms = 220
         self.start_time = 0
         self.tick_id = 0
-        self.current_scale = 0.0
-        self.target_scale = 0.0
+        self.is_closing = False
 
-        self.add_css_class("message-bubble")
-        self.css_provider = Gtk.CssProvider()
-        self.get_style_context().add_provider(
-            self.css_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
+        # --- Layout Setup ---
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
-        # Draw layer for the dynamic shape and halo
-        self.bg_draw = Gtk.DrawingArea()
-        # Force the drawing area to stretch and fill the overlay
-        self.bg_draw.set_hexpand(True)
-        self.bg_draw.set_vexpand(True)
-        self.bg_draw.set_draw_func(self._draw_background)
-        self.set_child(self.bg_draw)
+        self.title_label = Gtk.Label(label="Charon Concierge")
+        self.title_label.set_halign(Gtk.Align.START)
+        self.title_label.add_css_class("bubble-title")
+        self.title_label.set_hexpand(True)
 
-        # Text layer (hidden when collapsed)
-        self.label = Gtk.Label()
-        self.label.set_wrap(True)
-        self.label.set_max_width_chars(28)
-        self.label.set_margin_top(14)
-        self.label.set_margin_bottom(28)
-        self.label.set_margin_start(16)
-        self.label.set_margin_end(16)
-        self.label.set_opacity(0.0)  # Start hidden
+        collapse_btn = Gtk.Button.new_from_icon_name("window-minimize-symbolic")
+        collapse_btn.add_css_class("collapse-btn")
+        collapse_btn.connect("clicked", self._on_collapse_clicked)
 
-        self.add_overlay(self.label)
+        header_box.append(self.title_label)
+        header_box.append(collapse_btn)
 
-        # Force the Overlay to calculate its size based on the text!
-        self.set_measure_overlay(self.label, True)
+        self.content_label = Gtk.Label(label="")
+        self.content_label.set_halign(Gtk.Align.START)
+        self.content_label.set_wrap(True)
+        self.content_label.set_max_width_chars(32)
+        self.content_label.add_css_class("bubble-text")
 
+        self.append(header_box)
+        self.append(self.content_label)
+
+        # --- Click Gesture ---
         click_gesture = Gtk.GestureClick.new()
-        click_gesture.connect("pressed", self._on_clicked)
+        click_gesture.connect("pressed", self._on_bubble_clicked)
         self.add_controller(click_gesture)
 
-        # Initialize hidden
+        # --- CSS Providers ---
+        self.static_css_provider = Gtk.CssProvider()
+        self.dynamic_css_provider = Gtk.CssProvider()
+
+        self._apply_static_css()
+        self.get_style_context().add_provider(
+            self.dynamic_css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
+        )
+
         self._apply_scale_css(0.0)
 
-    def set_payload(self, text: str, msg_type: str = "speech", urgency: str = "thought"):
-        """Called when a new message arrives. Pops open to full size immediately."""
-        self.message_type = msg_type
-        self.urgency = urgency if urgency in self.URGENCY_COLORS else "thought"
-        self.has_unread = True
+    def show_message(self, text: str):
+        self.is_closing = False
+        self.content_label.set_text(text)
+        self.set_visible(True)
 
-        # Start fully expanded so we don't get the 'thumbtack' effect
-        self.is_expanded = True
-
-        self.label.set_label(f"<span size='medium' weight='bold' foreground='#111111'>{text}</span>")
-        self.label.set_use_markup(True)
-        self.bg_draw.queue_draw()
-
-        # Animate directly to 100% scale instead of 25% scale
-        self._start_animation(target_scale=1.0)
-
-    def _on_clicked(self, gesture, n_press, x, y):
-        if self.current_scale == 0.0: return
-
-        self.is_expanded = not self.is_expanded
-        self.has_unread = False if self.is_expanded else self.has_unread
-        self.bg_draw.queue_draw()  # Redraw to remove unread pulse if needed
-
-        target = 1.0 if self.is_expanded else 0.25
-        self._start_animation(target_scale=target)
-
-    def _start_animation(self, target_scale: float):
-        self.target_scale = target_scale
         if self.tick_id != 0:
             self.remove_tick_callback(self.tick_id)
-        self.start_time = 0
-        self.tick_id = self.add_tick_callback(self._animate_tick)
 
-    def _animate_tick(self, widget, frame_clock):
+        self.start_time = 0
+        self.tick_id = self.add_tick_callback(self._animate_pop_in_tick)
+
+    def _on_bubble_clicked(self, gesture, n_press, x, y):
+        """Intercepts click and begins shrink animation."""
+        if self.is_closing:
+            return
+
+        self.is_closing = True
+        if self.tick_id != 0:
+            self.remove_tick_callback(self.tick_id)
+
+        self.start_time = 0
+        self.tick_id = self.add_tick_callback(self._animate_shrink_tick)
+
+    def _on_collapse_clicked(self, button):
+        self.set_visible(False)
+        self._apply_scale_css(0.0)
+        if self.tick_id != 0:
+            self.remove_tick_callback(self.tick_id)
+            self.tick_id = 0
+
+    def _animate_pop_in_tick(self, widget, frame_clock):
         current_time = frame_clock.get_frame_time()
         if self.start_time == 0:
             self.start_time = current_time
-            self.start_scale = self.current_scale
             return GLib.SOURCE_CONTINUE
 
         elapsed_ms = (current_time - self.start_time) / 1000.0
         t = min(elapsed_ms / self.anim_duration_ms, 1.0)
 
-        # Smooth ease-in-out
-        ease = t * t * (3.0 - 2.0 * t)
-        self.current_scale = self.start_scale + (self.target_scale - self.start_scale) * ease
+        if t == 0.0:
+            scale = 0.0
+        elif t == 1.0:
+            scale = 1.0
+        else:
+            p = 0.3
+            scale = math.pow(2, -10 * t) * math.sin((t - p / 4.0) * (2 * math.pi) / p) + 1.0
 
-        self._apply_scale_css(self.current_scale)
-
-        # Fade text in/out based on expansion
-        text_opacity = max(0.0, (self.current_scale - 0.5) * 2.0) if self.is_expanded else 0.0
-        self.label.set_opacity(text_opacity)
+        self._apply_scale_css(scale)
 
         if t >= 1.0:
             self.tick_id = 0
-            if self.target_scale == 0.0:
-                self.set_visible(False)
             return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
 
+    def _animate_shrink_tick(self, widget, frame_clock):
+        current_time = frame_clock.get_frame_time()
+        if self.start_time == 0:
+            self.start_time = current_time
+            return GLib.SOURCE_CONTINUE
+
+        elapsed_ms = (current_time - self.start_time) / 1000.0
+        t = min(elapsed_ms / self.shrink_duration_ms, 1.0)
+
+        # Ease-In Cubic Math
+        scale = 1.0 - math.pow(t, 3)
+        self._apply_scale_css(max(scale, 0.0))
+
+        if t >= 1.0:
+            self.tick_id = 0
+            self.is_closing = False
+            self.set_visible(False) # This automatically triggers Wayland hit region update!
+            return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
 
     def _apply_scale_css(self, scale):
-        # Origin ensures it grows out from the side closest to the avatar
-        css = f".message-bubble {{ transform: scale({scale}); transform-origin: center left; }}"
-        self.css_provider.load_from_data(css.encode())
+        css = f".comic-speech-bubble {{ transform: scale({scale}); transform-origin: bottom center; }}"
+        self.dynamic_css_provider.load_from_data(css.encode("utf-8"))
 
-    def _draw_background(self, area, cr, width, height):
-        tail_height = 20
-        box_height = height - tail_height
-        radius = 16
-
-        # Draw base shape
-        cr.set_source_rgba(0.98, 0.98, 0.98, 0.95)
-
-        if self.message_type == "speech" or self.message_type not in ["thought"]:
-            # Speech Rectangle
-            cr.arc(width - radius, radius, radius, -math.pi / 2, 0)
-            cr.arc(width - radius, box_height - radius, radius, 0, math.pi / 2)
-            cr.arc(radius, box_height - radius, radius, math.pi / 2, math.pi)
-            cr.arc(radius, radius, radius, math.pi, 3 * math.pi / 2)
-
-            # Tail pointing left (towards avatar)
-            cr.move_to(20, box_height)
-            cr.line_to(5, height)
-            cr.line_to(35, box_height)
-            cr.fill_preserve()
-
-        elif self.message_type == "thought":
-            # Thought Cloud (simplified rounded rect for now, plus circles)
-            cr.arc(width - radius, radius, radius, -math.pi / 2, 0)
-            cr.arc(width - radius, box_height - radius, radius, 0, math.pi / 2)
-            cr.arc(radius, box_height - radius, radius, math.pi / 2, math.pi)
-            cr.arc(radius, radius, radius, math.pi, 3 * math.pi / 2)
-            cr.fill_preserve()
-
-            # Trail leading left
-            cr.arc(35, box_height + 8, 6, 0, 2 * math.pi)
-            cr.fill()
-            cr.arc(15, box_height + 18, 4, 0, 2 * math.pi)
-            cr.fill()
-
-        # Draw the Urgency Halo (Stroke)
-        r, g, b, a = self.URGENCY_COLORS.get(self.urgency, (0.5, 0.5, 0.5, 1.0))
-        cr.set_source_rgba(r, g, b, a)
-        # Thicker stroke if unread to make it pop
-        cr.set_line_width(4 if self.has_unread and not self.is_expanded else 2)
-        cr.stroke()
+    def _apply_static_css(self):
+        css = """
+        .comic-speech-bubble {
+            background-color: rgba(15, 23, 42, 0.92);
+            border: 2px solid #38BDF8;
+            border-radius: 16px;
+            padding: 12px 16px;
+            box-shadow: 0px 8px 24px rgba(0, 0, 0, 0.6), 0px 0px 14px rgba(56, 189, 248, 0.4);
+        }
+        .bubble-title {
+            font-weight: bold;
+            font-size: 12px;
+            color: #38BDF8;
+            letter-spacing: 0.5px;
+        }
+        .bubble-text {
+            font-size: 13px;
+            color: #F8FAFC;
+        }
+        .collapse-btn {
+            background: transparent;
+            border: none;
+            padding: 0px;
+            min-width: 16px;
+            min-height: 16px;
+            opacity: 0.7;
+        }
+        .collapse-btn:hover {
+            opacity: 1.0;
+        }
+        """
+        self.static_css_provider.load_from_data(css.encode("utf-8"))
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            self.static_css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )

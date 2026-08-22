@@ -1,14 +1,16 @@
 """
 charon/client/overlay.py
-System Version: v3.8.4 | File Revision: 3.8.16
+System Version: v3.9.0 | File Revision: 3.9.16
 
-Module: Native GTK4 Desktop HUD Overlay with comic book speech bubble interjections,
-Wheatley aperture core visualizer, and cursor gaze tracking.
+Module: Native GTK4 Desktop HUD Overlay with elastic speech badge interjections,
+Wheatley aperture core visualizer, cursor gaze tracking, and click-through regions.
 """
 
 import argparse
+import cairo
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -28,12 +30,14 @@ if not is_gnome:
     except (ValueError, ImportError):
         Gtk4LayerShell = None
 
-from gi.repository import Gdk, Gtk, GLib
+from gi.repository import Gdk, GLib, Gtk
 
 # Import the wrapper widget to preserve do_contains hit-testing behavior
 from charon.client.avatar_widget import AvatarVisualizer, AvatarWidget
 from charon.client.ws_listener import OverlayWSListener
+from charon.client.avatar_states import EXPRESSIVE_STATES
 from charon.config import CHARON_API_KEY
+from charon.client.elastic_badge import ElasticBadge
 
 
 class OverlaySettings:
@@ -75,50 +79,8 @@ class OverlaySettings:
         return self.data.get(key, default)
 
 
-class ComicSpeechBubble(Gtk.Box):
-    """Comic Book Style Speech Bubble with directional tail pointing left toward Avatar."""
-
-    def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        self.add_css_class("comic-speech-bubble")
-        self.set_valign(Gtk.Align.CENTER)
-
-        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-
-        self.title_label = Gtk.Label(label="Charon Concierge")
-        self.title_label.set_halign(Gtk.Align.START)
-        self.title_label.add_css_class("bubble-title")
-        self.title_label.set_hexpand(True)
-
-        collapse_btn = Gtk.Button.new_from_icon_name("window-minimize-symbolic")
-        collapse_btn.add_css_class("collapse-btn")
-        collapse_btn.connect("clicked", lambda x: self.set_visible(False))
-
-        header_box.append(self.title_label)
-        header_box.append(collapse_btn)
-
-        self.content_label = Gtk.Label(label="")
-        self.content_label.set_halign(Gtk.Align.START)
-        self.content_label.set_wrap(True)
-        self.content_label.set_max_width_chars(32)
-        self.content_label.add_css_class("bubble-text")
-
-        self.append(header_box)
-        self.append(self.content_label)
-
-    def set_text(self, text: str):
-        self.content_label.set_text(text)
-
-
 class CharonOverlayWindow(Gtk.Window):
     """HUD Overlay Window featuring Wheatley Core Visualizer and Cursor Gaze Tracking."""
-
-    MESSAGE_ICONS = {
-        "inbox": "mail-unread-symbolic",
-        "warning": "dialog-warning-symbolic",
-        "thought": "dialog-information-symbolic",
-        "urgent": "emblem-important-symbolic",
-    }
 
     def __init__(self, app: Gtk.Application, map_width: float = 1920.0, map_height: float = 1080.0):
         super().__init__(application=app)
@@ -127,11 +89,11 @@ class CharonOverlayWindow(Gtk.Window):
         self.map_width = map_width
         self.map_height = map_height
 
-        # Sync stage resolution bounds
-        self.settings.update(map_width=map_width, map_height=map_height)
+        self._pending_telemetry = None
+        self._telemetry_idle_queued = False
 
+        self.settings.update(map_width=map_width, map_height=map_height)
         self.set_title("Charon Concierge Overlay")
-        self.set_default_size(420, 160)
 
         use_layer_shell = Gtk4LayerShell is not None and Gtk4LayerShell.is_supported()
 
@@ -140,58 +102,45 @@ class CharonOverlayWindow(Gtk.Window):
             Gtk4LayerShell.set_layer(self, Gtk4LayerShell.Layer.TOP)
             Gtk4LayerShell.set_namespace(self, "charon-concierge-hud")
             Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, True)
             Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 24)
-            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, 24)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.RIGHT, 24)
             Gtk4LayerShell.set_keyboard_mode(self, Gtk4LayerShell.KeyboardMode.NONE)
         else:
             self.set_decorated(False)
             self.set_resizable(False)
 
-        self.connect("realize", lambda win: self._restore_position_if_saved())
+        self.connect("realize", lambda win: self._on_realize())
 
-        self.main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.main_box.set_margin_top(12)
-        self.main_box.set_margin_bottom(12)
-        self.main_box.set_margin_start(12)
-        self.main_box.set_margin_end(12)
-
-        # 1. Avatar Container
+        # Primary Spatial Container
         self.avatar_overlay = Gtk.Overlay()
 
         self.avatar_container = AvatarWidget()
         self.avatar = self.avatar_container.visualizer
-
         self.avatar_container.set_cursor_from_name("grab")
+
         self._setup_avatar_drag_feedback()
-        self.avatar_overlay.set_child(self.avatar_container)
 
-        # Indicator Badge
-        self.badge_button = Gtk.Button()
-        self.badge_button.add_css_class("indicator-badge")
-        self.badge_image = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
-        self.badge_button.set_child(self.badge_image)
-        self.badge_button.set_halign(Gtk.Align.END)
-        self.badge_button.set_valign(Gtk.Align.START)
-        self.badge_button.set_margin_end(14)
-        self.badge_button.set_margin_top(14)
-        self.badge_button.connect("clicked", self._toggle_thought_bubble)
+        # Transparent padding container to offset layout coordinates
+        # We enforce a permanent runway here so the badge has room to expand to 250x120
+        # without triggering Wayland window resizes.
+        self.avatar_align_box = Gtk.Box()
+        self.avatar_align_box.set_margin_top(130)  # Runway for height expansion
+        self.avatar_align_box.set_margin_end(260)  # Runway for width expansion
 
-        self.avatar_overlay.add_overlay(self.badge_button)
-        self.main_box.append(self.avatar_overlay)
+        self.avatar_align_box.append(self.avatar_container)
+        self.avatar_overlay.set_child(self.avatar_align_box)
 
-        # 2. Comic Book Speech Bubble
-        self.bubble = ComicSpeechBubble()
-        self.bubble.set_visible(False)
-        self.main_box.append(self.bubble)
+        # The Elastic Badge Component
+        self.badge = ElasticBadge()
+        self.badge.set_halign(Gtk.Align.END)
+        self.badge.set_valign(Gtk.Align.END)
+        self.badge.set_margin_end(14)
+        self.badge.set_margin_bottom(14)
+        self.badge.connect("clicked", self._on_badge_clicked)
 
-        self.set_child(self.main_box)
-
-        # 3. Mouse Event Controller for Window-Wide Gaze Tracking
-        motion_ctrl = Gtk.EventControllerMotion.new()
-        motion_ctrl.connect("motion", self._on_mouse_motion)
-        motion_ctrl.connect("leave", self._on_mouse_leave)
-        self.add_controller(motion_ctrl)
+        self.avatar_overlay.add_overlay(self.badge)
+        self.set_child(self.avatar_overlay)
 
         self._apply_css()
 
@@ -207,35 +156,70 @@ class CharonOverlayWindow(Gtk.Window):
         )
         self.ws_thread.start()
 
+    def _queue_input_region_update(self, *args):
+        """
+        Wait 50ms for GTK's layout engine to finish shifting widgets
+        before recalculating the Wayland click-through input boundaries.
+        """
+        GLib.timeout_add(50, self.update_input_region)
+
+    def _on_realize(self):
+        self._restore_position_if_saved()
+        self._queue_input_region_update()
+
+    def update_input_region(self):
+        native = self.get_native()
+        if not native:
+            return
+        surface = native.get_surface()
+        if not surface:
+            return
+
+        region = cairo.Region()
+
+        # 1. Avatar Click Region
+        res, avatar_rect = self.avatar_container.compute_bounds(self)
+        if res:
+            region.union(cairo.RectangleInt(
+                int(avatar_rect.origin.x),
+                int(avatar_rect.origin.y),
+                int(avatar_rect.size.width),
+                int(avatar_rect.size.height)
+            ))
+
+        # 2. Dynamic Elastic Badge Click Region
+        # Because ElasticBadge scales natively in GTK, compute_bounds instantly
+        # fetches the new 250x120 box when expanded.
+        res, badge_rect = self.badge.compute_bounds(self)
+        if res:
+            region.union(cairo.RectangleInt(
+                int(badge_rect.origin.x),
+                int(badge_rect.origin.y),
+                int(badge_rect.size.width),
+                int(badge_rect.size.height)
+            ))
+
+        surface.set_input_region(region)
+
     def get_settings(self) -> OverlaySettings:
         return self.settings
 
     def clamp_coordinates(self, x: float, y: float) -> tuple[int, int]:
-        win_w = self.get_width() if self.get_width() > 0 else 420
-        win_h = self.get_height() if self.get_height() > 0 else 160
-
+        win_w = self.get_width() if self.get_width() > 0 else 150
+        win_h = self.get_height() if self.get_height() > 0 else 150
         max_x = max(0, int(self.map_width - win_w))
         max_y = max(0, int(self.map_height - win_h))
-
         clamped_x = max(0, min(int(x), max_x))
         clamped_y = max(0, min(int(y), max_y))
-
         return clamped_x, clamped_y
-
-    def save_position(self, x: float, y: float):
-        clamped_x, clamped_y = self.clamp_coordinates(x, y)
-        curr_x = self.settings.get("x")
-        curr_y = self.settings.get("y")
-
-        if curr_x == clamped_x and curr_y == clamped_y:
-            return
-
-        self.settings.update(x=clamped_x, y=clamped_y)
-        self._apply_position(clamped_x, clamped_y)
 
     def _apply_position(self, x: int, y: int):
         use_layer_shell = Gtk4LayerShell is not None and Gtk4LayerShell.is_supported()
         if use_layer_shell:
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
             Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, x)
             Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, y)
         else:
@@ -252,113 +236,82 @@ class CharonOverlayWindow(Gtk.Window):
     def _restore_position_if_saved(self):
         saved_x = self.settings.get("x")
         saved_y = self.settings.get("y")
-
         if saved_x is None or saved_y is None:
             return
-
         clamped_x, clamped_y = self.clamp_coordinates(saved_x, saved_y)
         self._apply_position(clamped_x, clamped_y)
 
-    def _on_mouse_motion(self, controller, x, y):
-        self.avatar.set_target_gaze(x, y, self.get_width(), self.get_height())
-
-    def _on_mouse_leave(self, controller):
-        self.avatar.reset_gaze_to_idle()
-
-    def _toggle_thought_bubble(self, button):
-        is_visible = self.bubble.get_visible()
-        self.bubble.set_visible(not is_visible)
+    def _on_badge_clicked(self, button):
+        # Collapse the badge when clicked and recalculate Wayland bounds
+        self.badge.collapse()
+        self._queue_input_region_update()
 
     def set_indicator_type(self, msg_type: str):
-        icon_name = self.MESSAGE_ICONS.get(msg_type, "dialog-information-symbolic")
-        self.badge_image.set_from_icon_name(icon_name)
+        self.badge.remove_css_class("indicator-warning")
+        self.badge.remove_css_class("indicator-urgent")
+        self.badge.remove_css_class("indicator-inbox")
+        if msg_type == "warning":
+            self.badge.add_css_class("indicator-warning")
+        elif msg_type == "urgent":
+            self.badge.add_css_class("indicator-urgent")
+        elif msg_type == "inbox":
+            self.badge.add_css_class("indicator-inbox")
 
     def _setup_avatar_drag_feedback(self):
-        self._is_drag_ready = False
-        self._long_press_timer_id = None
-        self._drag_sequence = None
-
-        # 1. Click Gesture (Triggers the 350ms hold delay)
-        click_gesture = Gtk.GestureClick.new()
-        click_gesture.set_button(1)
-        click_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-
-        def trigger_long_press():
-            self._is_drag_ready = True
-            self.avatar_container.set_cursor_from_name("grabbing")
-            self._long_press_timer_id = None
-
-            # Claim the exact sequence we captured during 'pressed'
-            if self._drag_sequence:
-                drag_gesture.set_state(self._drag_sequence, Gtk.EventSequenceState.CLAIMED)
-            return False  # Stops the GLib timeout source
-
-        def on_pressed(gesture, n_press, x, y):
-            self._is_drag_ready = False
-            # Capture the sequence here, while inside the event loop!
-            self._drag_sequence = gesture.get_current_sequence()
-
-            if self._long_press_timer_id:
-                GLib.source_remove(self._long_press_timer_id)
-
-            # Start 350ms click-and-hold duration
-            self._long_press_timer_id = GLib.timeout_add(350, trigger_long_press)
-
-        def on_released(gesture, n_press, x, y):
-            if self._long_press_timer_id:
-                GLib.source_remove(self._long_press_timer_id)
-                self._long_press_timer_id = None
-
-            self._is_drag_ready = False
-            self._drag_sequence = None
-            self.avatar_container.set_cursor_from_name("grab")
-
-        click_gesture.connect("pressed", on_pressed)
-        click_gesture.connect("released", on_released)
-
-        # 2. Drag Gesture (Handles positional movement once hold is active)
         drag_gesture = Gtk.GestureDrag.new()
         drag_gesture.set_button(1)
-        drag_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
 
         def on_drag_begin(gesture, start_x, start_y):
-            self._drag_start_win_x = self.settings.get("x", 0)
-            self._drag_start_win_y = self.settings.get("y", 0)
+            native = self.avatar_container.get_native()
+            if not native: return
 
-        def on_drag_update(gesture, offset_x, offset_y):
-            # If the user hasn't held for 350ms yet, just wait.
-            # Do NOT cancel the timer here—human hands jitter!
-            if not self._is_drag_ready:
-                return
-
-            # offset_x/y is already the total distance from the start point.
-            # No cumulative math required!
-            new_x = self._drag_start_win_x + offset_x
-            new_y = self._drag_start_win_y + offset_y
-
-            self.save_position(new_x, new_y)
+            surface = native.get_surface()
+            if surface and isinstance(surface, Gdk.Toplevel):
+                seq = gesture.get_current_sequence()
+                event = gesture.get_last_event(seq)
+                if event:
+                    surface.begin_move(
+                        event.get_device(),
+                        1,
+                        start_x,
+                        start_y,
+                        event.get_time()
+                    )
+                    gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+                    self.avatar_container.set_cursor_from_name("grabbing")
 
         def on_drag_end(gesture, offset_x, offset_y):
-            if self._long_press_timer_id:
-                GLib.source_remove(self._long_press_timer_id)
-                self._long_press_timer_id = None
-
-            self._is_drag_ready = False
             self.avatar_container.set_cursor_from_name("grab")
 
         drag_gesture.connect("drag-begin", on_drag_begin)
-        drag_gesture.connect("drag-update", on_drag_update)
         drag_gesture.connect("drag-end", on_drag_end)
-
-        # Group both gestures so they evaluate the same sequence concurrently
-        drag_gesture.group(click_gesture)
-
-        self.avatar_container.add_controller(click_gesture)
         self.avatar_container.add_controller(drag_gesture)
 
+        click_gesture = Gtk.GestureClick.new()
+        click_gesture.set_button(1)
+        click_gesture.connect("pressed", lambda g, n, x, y: self.avatar_container.set_cursor_from_name("grabbing"))
+        click_gesture.connect("released", lambda g, n, x, y: self.avatar_container.set_cursor_from_name("grab"))
+        self.avatar_container.add_controller(click_gesture)
+
     def handle_stream_event(self, event: dict):
-        # Push websocket updates to the main thread cleanly.
-        GLib.idle_add(self._process_stream_event_ui, event)
+        if event.get("event_type") == "pointer_telemetry":
+            if event.get("data", {}).get("action"):
+                GLib.idle_add(self._process_stream_event_ui, event)
+                return
+
+            self._pending_telemetry = event
+            if not self._telemetry_idle_queued:
+                self._telemetry_idle_queued = True
+                GLib.idle_add(self._flush_telemetry)
+        else:
+            GLib.idle_add(self._process_stream_event_ui, event)
+
+    def _flush_telemetry(self):
+        self._telemetry_idle_queued = False
+        if self._pending_telemetry:
+            self._process_stream_event_ui(self._pending_telemetry)
+            self._pending_telemetry = None
+        return False
 
     def _process_stream_event_ui(self, event: dict):
         if event.get("event_type") == "pointer_telemetry":
@@ -366,21 +319,36 @@ class CharonOverlayWindow(Gtk.Window):
             cursor = data.get("cursor", {})
             window_center = data.get("window_center")
 
-            if cursor and "x" in cursor and "y" in cursor:
-                if window_center and "x" in window_center and "y" in window_center:
-                    self.avatar.set_target_gaze_relative(
-                        mouse_x=float(cursor["x"]),
-                        mouse_y=float(cursor["y"]),
-                        center_x=float(window_center["x"]),
-                        center_y=float(window_center["y"]),
-                        map_width=self.map_width,
-                        map_height=self.map_height,
-                    )
-                    if data.get("action") == "click":
-                        self.avatar.set_expressive_state("alert")
+            if cursor and window_center and "x" in cursor and "y" in cursor and "x" in window_center and "y" in window_center:
+                win_w = self.get_width()
+                win_h = self.get_height()
+
+                win_top_left_x = float(window_center["x"]) - (win_w / 2.0)
+                win_top_left_y = float(window_center["y"]) - (win_h / 2.0)
+
+                res, avatar_rect = self.avatar_container.compute_bounds(self)
+                if res:
+                    eye_center_x = win_top_left_x + avatar_rect.origin.x + (avatar_rect.size.width / 2.0)
+                    eye_center_y = win_top_left_y + avatar_rect.origin.y + (avatar_rect.size.height / 2.0)
+                else:
+                    avatar_w = self.avatar_container.get_width()
+                    avatar_h = self.avatar_container.get_height()
+                    eye_center_x = win_top_left_x + (avatar_w / 2.0)
+                    eye_center_y = win_top_left_y + 15.0 + (avatar_h / 2.0)
+
+                self.avatar.set_target_gaze_relative(
+                    mouse_x=float(cursor["x"]),
+                    mouse_y=float(cursor["y"]),
+                    center_x=eye_center_x,
+                    center_y=eye_center_y,
+                    map_width=self.map_width,
+                    map_height=self.map_height,
+                )
+
+                if data.get("action") == "click":
+                    self.avatar.set_expressive_state("alert")
             return
 
-        # Handle Standard Concierge Messages
         payload = event.get("payload", {})
         state_name = payload.get("state", "expressing")
         category = payload.get("category", "thought")
@@ -389,7 +357,7 @@ class CharonOverlayWindow(Gtk.Window):
             self.avatar.set_expressive_state("alert")
         elif "text" in payload:
             self.avatar.set_expressive_state(
-                state_name if state_name in AvatarVisualizer.EXPRESSIVE_STATES else "expressing")
+                state_name if state_name in EXPRESSIVE_STATES else "expressing")
         else:
             self.avatar.set_expressive_state("observing")
 
@@ -397,64 +365,68 @@ class CharonOverlayWindow(Gtk.Window):
 
         if "text" in payload:
             text = payload["text"]
-            self.bubble.set_text(text)
-            self.bubble.set_visible(True)
+            # Trigger the CSS expansion and text injection
+            self.badge.show_message(text)
+            self._queue_input_region_update()
 
     def _apply_css(self):
         css_provider = Gtk.CssProvider()
+
+        # Swapped from rigid SVG backgrounds to fluid CSS boundaries to ensure
+        # the 300% scale morphs perfectly and respects the border-radius transitions.
         css = """
         window {
             background-color: transparent;
             box-shadow: none;
         }
 
-        .comic-speech-bubble {
+        .elastic-badge {
             background-color: rgba(15, 23, 42, 0.92);
             border: 2px solid #38BDF8;
-            border-radius: 16px;
-            padding: 12px 16px;
-            box-shadow: 0px 8px 24px rgba(0, 0, 0, 0.6), 0px 0px 14px rgba(56, 189, 248, 0.4);
-        }
-
-        .bubble-title {
-            font-weight: bold;
-            font-size: 12px;
-            color: #38BDF8;
-            letter-spacing: 0.5px;
-        }
-
-        .bubble-text {
-            font-size: 13px;
-            color: #F8FAFC;
-        }
-
-        .indicator-badge {
-            background-color: rgba(15, 23, 42, 0.85);
-            border: 1px solid rgba(56, 189, 248, 0.7);
-            border-radius: 50%;
-            min-width: 20px;
-            min-height: 20px;
-            padding: 2px;
-            box-shadow: 0px 0px 10px rgba(56, 189, 248, 0.6);
-        }
-
-        .indicator-badge:hover {
-            background-color: rgba(30, 41, 59, 0.95);
-            border-color: #F472B6;
-            box-shadow: 0px 0px 12px rgba(244, 114, 182, 0.8);
-        }
-
-        .collapse-btn {
-            background: transparent;
-            border: none;
+            border-radius: 25px;
+            min-width: 50px;
+            min-height: 50px;
             padding: 0px;
-            min-width: 16px;
-            min-height: 16px;
-            opacity: 0.7;
+            box-shadow: none;
+            
+            transform-origin: top right; 
+            transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1);
+            filter: drop-shadow(0px 0px 4px rgba(56, 189, 248, 0.8));
+        }
+        
+        .elastic-badge:hover {
+            filter: drop-shadow(0px 0px 6px rgba(56, 189, 248, 1.0));
         }
 
-        .collapse-btn:hover {
-            opacity: 1.0;
+        .elastic-badge.expanded {
+            min-width: 250px;
+            min-height: 120px;
+            padding: 16px;
+            border-radius: 16px;
+            border-color: #F472B6; 
+            background-color: rgba(15, 23, 42, 0.98);
+            filter: drop-shadow(0px 0px 8px rgba(244, 114, 182, 0.8));
+        }
+
+        .badge-text {
+            color: white;
+            font-size: 14px;
+            transition: opacity 0.3s ease-in-out;
+        }
+
+        .indicator-warning {
+            border-color: #FBBF24;
+            filter: drop-shadow(0px 0px 5px rgba(251, 191, 36, 0.9));
+        }
+
+        .indicator-urgent {
+            border-color: #EF4444;
+            filter: drop-shadow(0px 0px 5px rgba(239, 68, 68, 0.9));
+        }
+
+        .indicator-inbox {
+            border-color: #A855F7;
+            filter: drop-shadow(0px 0px 5px rgba(168, 85, 247, 0.9));
         }
         """
         css_provider.load_from_data(css.encode("utf-8"))
@@ -467,21 +439,46 @@ class CharonOverlayWindow(Gtk.Window):
 
 def main():
     parser = argparse.ArgumentParser(description="Charon Concierge Overlay")
-    parser.add_argument("--map-width", type=float, default=1920.0, help="Total desktop stage width")
-    parser.add_argument("--map-height", type=float, default=1080.0, help="Total desktop stage height")
+    parser.add_argument("--map-width", type=float, default=None, help="Total desktop stage width")
+    parser.add_argument("--map-height", type=float, default=None, help="Total desktop stage height")
     args, residual_args = parser.parse_known_args()
 
     app = Gtk.Application(application_id="com.charon.concierge.overlay")
 
     def on_activate(app_instance):
+        map_w = args.map_width
+        map_h = args.map_height
+
+        if map_w is None or map_h is None:
+            display = Gdk.Display.get_default()
+            max_x, max_y = 0, 0
+
+            if display:
+                monitors = display.get_monitors()
+                for i in range(monitors.get_n_items()):
+                    monitor = monitors.get_item(i)
+                    geom = monitor.get_geometry()
+
+                    right_edge = geom.x + geom.width
+                    bottom_edge = geom.y + geom.height
+
+                    if right_edge > max_x: max_x = right_edge
+                    if bottom_edge > max_y: max_y = bottom_edge
+
+            if map_w is None:
+                map_w = float(max_x) if max_x > 0 else 1920.0
+            if map_h is None:
+                map_h = float(max_y) if max_y > 0 else 1080.0
+
         win = CharonOverlayWindow(
             app=app_instance,
-            map_width=args.map_width,
-            map_height=args.map_height
+            map_width=map_w,
+            map_height=map_h
         )
         win.present()
 
     app.connect("activate", on_activate)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     app.run([sys.argv[0]] + residual_args)
 
 
