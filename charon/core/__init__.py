@@ -11,10 +11,6 @@ from charon.core.coordinator.blackboard import (
     TaskStatus,
 )
 from charon.core.session import SessionGateway
-from charon.core.prompts import (
-    CHARON_ROUTING_PROMPT,
-    EXTRACTION_SYSTEM_PROMPT,
-)
 from charon.core.utils import (
     clean_json_string,
     get_schema_json,

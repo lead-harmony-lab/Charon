@@ -1,6 +1,6 @@
 """
 charon/gateway/middleware.py
-System Version: v0.1.0 | File Revision: 1.2.0
+System Version: v0.1.0 | File Revision: 1.2.2
 
 Module: Local Network & Peripheral Node Authentication Boundary.
 
@@ -26,8 +26,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, public_paths: Optional[List[str]] = None):
         super().__init__(app)
         self.public_paths = public_paths or [
+            "/",              # Dashboard root
+            "/index.html",    # Dashboard explicit HTML
+            "/assets",        # Vite compiled static assets (JS/CSS)
+            "/css",           # Dashboard styles
+            "/js",            # Dashboard scripts
+            "/favicon.svg",   # Dashboard icon
             "/v1/health",
-            "/dashboard",
             "/favicon.ico",
             "/docs",
             "/openapi.json",
@@ -47,7 +52,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         # 3. Public Path Prefix Bypass
         path = request.url.path
         if any(
-            path == p or path.startswith(f"{p.rstrip('/')}/")
+            path == p or (p != "/" and path.startswith(f"{p.rstrip('/')}/"))
             for p in self.public_paths
         ):
             return await call_next(request)

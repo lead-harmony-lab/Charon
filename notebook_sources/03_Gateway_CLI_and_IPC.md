@@ -6121,7 +6121,7 @@ from pydantic import BaseModel, Field
 
 from charon.config import API_KEY_HEADER_NAME, CHARON_API_KEY
 from charon.gateway.models import GatekeeperDecision, TaskRequest, TaskResponse, WSEvent
-from charon.gateway.routes_router import router as router_control_api
+from charon.gateway.routes.routing import router as router_control_api
 from charon.gateway.ws import manager
 
 logger = logging.getLogger("Charon.Gateway.Routes")
@@ -6379,9 +6379,9 @@ async def register_manual_skill(skill_req: SkillRegisterRequest, request: Reques
 
 @router.websocket("/v1/ws")
 async def websocket_endpoint(
-    websocket: WebSocket,
-    client_id: Optional[str] = Query(None),
-    api_key: Optional[str] = Query(None, alias="api_key"),
+        websocket: WebSocket,
+        client_id: Optional[str] = Query(None),
+        api_key: Optional[str] = Query(None, alias="api_key"),
 ):
     """Full-duplex WebSocket stream for desktop extension, CLI, and real-time telemetry."""
     token = _extract_ws_token(websocket, api_key)
@@ -6474,7 +6474,7 @@ async def websocket_endpoint(
 
 ────────────────────────────────────────────────────────────────────────────────
 
-## Target File: `charon/gateway/routes_router.py`
+## Target File: `../charon/gateway/routes/routing.py`
 
 ```python
 """

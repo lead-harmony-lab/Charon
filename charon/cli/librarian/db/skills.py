@@ -246,7 +246,6 @@ def purge_skill_records(skill_id: str) -> bool:
 
             for act in action_names:
                 cursor.execute("DELETE FROM system_actions WHERE action_name = ?", (act,))
-                cursor.execute("DELETE FROM route_registry WHERE action_trigger = ?", (act,))
                 cursor.execute("UPDATE agent_registry SET default_action = NULL WHERE default_action = ?", (act,))
 
             cursor.execute("DELETE FROM skill_permissions WHERE LOWER(skill_id) = LOWER(?)", (skill_id,))
@@ -426,45 +425,6 @@ def register_and_bind_skill_db(
                 ),
             )
 
-            target_role = None
-            if target_agent_id:
-                sanitized_target = target_agent_id.replace("role:", "")
-                cursor.execute(
-                    "SELECT role_name FROM system_roles WHERE role_name = ? OR agent_id = ?",
-                    (sanitized_target, sanitized_target),
-                )
-                role_row = cursor.fetchone()
-                if role_row:
-                    target_role = role_row[0]
-
-            if not target_role:
-                cursor.execute(
-                    """
-                    SELECT sr.role_name 
-                    FROM system_roles sr
-                    JOIN agent_skill_map asm ON sr.agent_id = asm.agent_id
-                    WHERE asm.skill_id = ?
-                    LIMIT 1
-                    """,
-                    (skill_id,),
-                )
-                role_row = cursor.fetchone()
-                target_role = role_row[0] if role_row else "system_fallback"
-
-            cursor.execute(
-                """
-                INSERT INTO route_registry (
-                    action_trigger, target_role, fallback_role, route_type, is_active, description
-                )
-                VALUES (?, ?, 'system_fallback', 'DYNAMIC_AUTO', 1, ?)
-                ON CONFLICT(action_trigger) DO UPDATE SET
-                    target_role = excluded.target_role,
-                    description = excluded.description,
-                    is_active = 1
-                """,
-                (action_name, target_role, act_desc),
-            )
-
         if target_agent_id:
             sanitized_target = target_agent_id.replace("role:", "")
             cursor.execute(
@@ -522,7 +482,6 @@ def unregister_skill_db(
 
         for trigger in action_triggers:
             cursor.execute("DELETE FROM system_actions WHERE action_name = ?", (trigger,))
-            cursor.execute("DELETE FROM route_registry WHERE action_trigger = ?", (trigger,))
             cursor.execute("UPDATE agent_registry SET default_action = NULL WHERE default_action = ?", (trigger,))
 
         cursor.execute("DELETE FROM skill_permissions WHERE LOWER(skill_id) = LOWER(?)", (skill_id,))

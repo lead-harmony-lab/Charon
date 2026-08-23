@@ -1,6 +1,6 @@
 """
 charon/db/repositories/agent.py
-System Version: v0.6.2 | File Revision: 6.1.0
+System Version: v0.6.2 | File Revision: 6.2.0
 
 Module: Data Access Layer repository for agent configurations, capability descriptions,
 triage priority weights, system prompts, and action capability manifests.
@@ -333,6 +333,8 @@ class AgentRepository:
                 a.is_active,
                 s.skill_id,
                 s.action_name,
+                s.skill_type,
+                s.domain,
                 s.description AS skill_description,
                 s.parameters,
                 s.status AS skill_status
@@ -370,6 +372,9 @@ class AgentRepository:
 
                 if row["skill_id"]:
                     action_name = row["action_name"]
+                    skill_type = dict(row).get("skill_type") or "Skill Type"
+                    domain = dict(row).get("domain") or "Domain"
+
                     params = row["parameters"]
                     if isinstance(params, str) and params.strip():
                         try:
@@ -385,6 +390,8 @@ class AgentRepository:
                     skill_info = {
                         "skill_id": row["skill_id"],
                         "action_name": action_name,
+                        "skill_type": skill_type,
+                        "domain": domain,
                         "description": row["skill_description"] or "",
                         "parameters": params,
                     }
@@ -392,9 +399,12 @@ class AgentRepository:
                     if row["skill_id"] not in manifests[agent_id]["equipped_skills"]:
                         manifests[agent_id]["equipped_skills"].append(row["skill_id"])
                         manifests[agent_id]["active_tools"].append(action_name)
+
                         manifests[agent_id]["skills"].append({
                             "skill_id": row["skill_id"],
                             "action_name": action_name,
+                            "skill_type": skill_type,
+                            "domain": domain
                         })
                         manifests[agent_id]["actions"][action_name] = skill_info
 

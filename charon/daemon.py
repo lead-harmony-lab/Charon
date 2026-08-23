@@ -1,6 +1,6 @@
 """
 charon/daemon.py
-System Version: v0.1.2 | File Revision: 1.8.0
+System Version: v0.1.2 | File Revision: 1.9.2
 
 Module: Charon Daemon (`charond`) - Gateway Entry Point.
 Integrates resident ConciergeService directly into the FastAPI lifespan and gateway routing.
@@ -9,9 +9,11 @@ Integrates resident ConciergeService directly into the FastAPI lifespan and gate
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+import os
 import ollama
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -23,8 +25,7 @@ from charon.core.orchestration import OrchestrationEngine
 from charon.gateway.core import CharonDaemon
 from charon.gateway.middleware import APIKeyMiddleware
 from charon.gateway.models import WSEvent
-from charon.gateway.routes import router as api_router
-from charon.gateway.routes.concierge import router as concierge_router
+from charon.gateway.routes import router as master_api_router
 from charon.gateway.ws import manager
 from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
@@ -61,7 +62,7 @@ async def lifespan(app: FastAPI):
     await concierge_service.awaken()
     daemon.concierge = concierge_service
 
-    # FIX: Explicitly bind Gateway contexts back to OrchestrationEngine & Coordinator
+    # Explicitly bind Gateway contexts back to OrchestrationEngine & Coordinator
     engine.bind_gateway_context(
         emitter=getattr(daemon, "emitter", None),
         concierge=daemon.concierge,
@@ -283,15 +284,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Core API routes and Concierge endpoints
-app.include_router(api_router)
-app.include_router(concierge_router, prefix="/api/v1")
+# Core API routes and Control Plane endpoints
+app.include_router(master_api_router)
 
-app.mount(
-    "/dashboard",
-    StaticFiles(directory="charon/gateway/static/dashboard", html=True),
-    name="dashboard",
-)
+# Serve Dashboard V2 compiled static assets from dist/
+current_dir = os.path.dirname(os.path.abspath(__file__))
+static_dir = os.path.join(current_dir, "gateway", "static", "dashboard_v2", "dist")
+
+if not os.path.exists(static_dir):
+    logger.error(f"[Charon.Daemon] CRITICAL: Static dist directory not found at {static_dir}. Run 'npm run build' in dashboard_v2.")
+else:
+    logger.info(f"[Charon.Daemon] Serving production static bundle from: {static_dir}")
+
+# Mount /assets explicitly for minified JS and CSS bundles
+assets_dir = os.path.join(static_dir, "assets")
+if os.path.exists(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+# SPA catch-all: returns requested physical file or falls back to index.html
+@app.get("/{catchall:path}")
+async def serve_spa(catchall: str):
+    file_path = os.path.join(static_dir, catchall)
+    if catchall and os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+    return FileResponse(os.path.join(static_dir, "index.html"))
 
 
 def main():

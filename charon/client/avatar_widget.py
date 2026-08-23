@@ -15,32 +15,12 @@ from .avatar_states import BASE_ROTATION
 
 
 class AvatarWidget(Gtk.Overlay):
-    """Container wrapping AvatarVisualizer with integrated Always-On-Top pin indicator."""
+    """Container wrapping AvatarVisualizer."""
 
     def __init__(self):
         super().__init__()
         self.visualizer = AvatarVisualizer()
         self.set_child(self.visualizer)
-
-        self.pin_button = Gtk.ToggleButton()
-        self.pin_button.set_icon_name("pin-symbolic")
-        self.pin_button.set_tooltip_text("Pin Window Always-On-Top")
-        self.pin_button.add_css_class("flat")
-        self.pin_button.add_css_class("circular")
-        self.pin_button.set_halign(Gtk.Align.END)
-        self.pin_button.set_valign(Gtk.Align.START)
-        self.pin_button.set_margin_top(4)
-        self.pin_button.set_margin_end(4)
-        self.pin_button.connect("toggled", self._on_pin_toggled)
-
-        self.add_overlay(self.pin_button)
-
-    def _on_pin_toggled(self, button: Gtk.ToggleButton):
-        root = self.get_root()
-        if isinstance(root, Gtk.Window):
-            is_pinned = button.get_active()
-            if hasattr(root, "set_keep_above"):
-                root.set_keep_above(is_pinned)
 
     def do_contains(self, x: float, y: float) -> bool:
         """

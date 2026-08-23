@@ -1,6 +1,6 @@
 """
 charon/client/overlay.py
-System Version: v3.9.0 | File Revision: 3.9.16
+System Version: v3.9.0 | File Revision: 3.9.20
 
 Module: Native GTK4 Desktop HUD Overlay with Cairo-drawn dynamic badges,
 Wheatley aperture core visualizer, cursor gaze tracking, and click-through regions.
@@ -39,6 +39,8 @@ from charon.client.avatar_widget import AvatarVisualizer, AvatarWidget
 from charon.client.ws_listener import OverlayWSListener
 from charon.client.avatar_states import EXPRESSIVE_STATES
 from charon.config import CHARON_API_KEY
+from charon.client.dynamic_badge import DynamicBadge, MessageBubble
+from charon.client.context_menu import AvatarContextMenu
 
 
 class OverlaySettings:
@@ -80,98 +82,7 @@ class OverlaySettings:
         return self.data.get(key, default)
 
 
-class DynamicBadge(Gtk.DrawingArea):
-    """Cairo-drawn badge serving as the seed for the elastic speech bubble."""
-
-    def __init__(self):
-        super().__init__()
-        self.set_size_request(70, 60)
-
-        # Semiotic State Defaults (Standard Blue with 4 dots)
-        self.glow_color = (0.22, 0.74, 0.97, 1.0)  # #38BDF8
-        self.badge_text = "...."
-
-        # GTK4 Drawing Areas need a draw function assigned
-        self.set_draw_func(self.on_draw)
-
-        # Click detection
-        self.click_gesture = Gtk.GestureClick.new()
-        self.click_gesture.set_button(1)
-        self.add_controller(self.click_gesture)
-
-    def set_state(self, text: str, r: float, g: float, b: float):
-        """Updates both the symbol/text payload and the electric glow color."""
-        self.badge_text = text
-        self.glow_color = (r, g, b, 1.0)
-        self.queue_draw()
-
-    def set_indicator_color(self, r: float, g: float, b: float):
-        """Update the Cairo glow color while preserving current text."""
-        self.glow_color = (r, g, b, 1.0)
-        self.queue_draw()
-
-    def on_draw(self, area, cr, width, height):
-        pad = 12
-        box_w = width - (pad * 2)
-        box_h = height - (pad * 2) - 12  # Reserve 12px at the bottom for the tail
-        r = 6.0  # Corner radius
-
-        cr.translate(pad, pad)
-
-        # --- CHASSIS GEOMETRY ---
-        cr.move_to(r, 0)
-        cr.line_to(box_w - r, 0)
-        cr.arc(box_w - r, r, r, -math.pi / 2, 0)
-        cr.line_to(box_w, box_h - r)
-        cr.arc(box_w - r, box_h - r, r, 0, math.pi / 2)
-
-        cr.line_to(box_w * 0.40, box_h)
-        cr.line_to(-6, box_h + 12)
-        cr.line_to(box_w * 0.15, box_h)
-
-        cr.line_to(r, box_h)
-        cr.arc(r, box_h - r, r, math.pi / 2, math.pi)
-        cr.line_to(0, r)
-        cr.arc(r, r, r, math.pi, 3 * math.pi / 2)
-        cr.close_path()
-
-        # --- ELECTRIC SHADING & GLOW ---
-        glow_r, glow_g, glow_b, _ = self.glow_color
-
-        for i in range(4, 0, -1):
-            cr.set_source_rgba(glow_r, glow_g, glow_b, 0.15)
-            cr.set_line_width(i * 3.0)
-            cr.stroke_preserve()
-
-        cr.set_source_rgba(0.06, 0.09, 0.16, 0.95)
-        cr.fill_preserve()
-
-        cr.set_source_rgba(*self.glow_color)
-        cr.set_line_width(1.5)
-        cr.stroke()
-
-        # --- DYNAMIC TEXT RENDERING ---
-        cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-        cr.set_font_size(18)
-
-        extents = cr.text_extents(self.badge_text)
-
-        # Center text precisely inside the main badge box (excluding the tail)
-        text_x = (box_w / 2.0) - (extents.width / 2.0) - extents.x_bearing
-        text_y = (box_h / 2.0) - (extents.height / 2.0) - extents.y_bearing
-
-        # Ambient Text Glow Pass (Matches active color)
-        cr.set_source_rgba(glow_r, glow_g, glow_b, 0.6)
-        cr.move_to(text_x, text_y)
-        cr.show_text(self.badge_text)
-
-        # High-Contrast Core Text Pass
-        cr.set_source_rgba(1.0, 1.0, 1.0, 1.0)
-        cr.move_to(text_x, text_y)
-        cr.show_text(self.badge_text)
-
-
-class CharonOverlayWindow(Gtk.Window):
+class CharonOverlayWindow(Gtk.ApplicationWindow):
     """HUD Overlay Window featuring Wheatley Core Visualizer and Cursor Gaze Tracking."""
 
     def __init__(self, app: Gtk.Application, map_width: float = 1920.0, map_height: float = 1080.0):
@@ -183,6 +94,8 @@ class CharonOverlayWindow(Gtk.Window):
 
         self._pending_telemetry = None
         self._telemetry_idle_queued = False
+        self._latest_message_text = "..."  # Initialize empty message state
+        self._last_active_pos = (-1, -1)   # Position tracking for input region sync
 
         self.settings.update(map_width=map_width, map_height=map_height)
         self.set_title("Charon Concierge Overlay")
@@ -215,25 +128,36 @@ class CharonOverlayWindow(Gtk.Window):
         self.avatar_container.set_cursor_from_name("grab")
         self._setup_avatar_drag_feedback()
 
+        # Attach the right-click context menu manager
+        self.context_menu_manager = AvatarContextMenu(self, self.avatar_container)
+
         # Transparent padding container to offset layout coordinates
         self.avatar_align_box = Gtk.Box()
-        self.avatar_align_box.set_margin_top(25)
-        self.avatar_align_box.set_margin_end(35)
+        self.avatar_align_box.set_halign(Gtk.Align.CENTER)
+        self.avatar_align_box.set_valign(Gtk.Align.END)
+        self.avatar_align_box.set_margin_bottom(20) # Gives him a little breathing room off the bottom edge
         self.avatar_align_box.append(self.avatar_container)
 
         self.avatar_overlay.set_child(self.avatar_align_box)
 
-        # The new Cairo badge aligned to START for dynamic absolute positioning
+        # --- DYNAMIC BADGE ---
         self.badge = DynamicBadge()
         self.badge.set_halign(Gtk.Align.START)
         self.badge.set_valign(Gtk.Align.START)
         self.badge.click_gesture.connect(
             "pressed", lambda gesture, n, x, y: self._toggle_thought_bubble()
         )
-
         self.avatar_overlay.add_overlay(self.badge)
-        self.main_box.append(self.avatar_overlay)
 
+        # --- MESSAGE BUBBLE ---
+        self.bubble = MessageBubble()
+        self.bubble.set_halign(Gtk.Align.START)
+        self.bubble.set_valign(Gtk.Align.START)
+        self.bubble.set_visible(False)  # Hide initially so it doesn't block badge clicks
+        self.bubble.on_dismissed_callback = self._on_bubble_dismissed
+        self.avatar_overlay.add_overlay(self.bubble)
+
+        self.main_box.append(self.avatar_overlay)
         self.set_child(self.main_box)
         self._apply_css()
 
@@ -281,35 +205,55 @@ class CharonOverlayWindow(Gtk.Window):
         eye_cy = cy + dy
 
         # 2. Position the speech bubble in relation to that location
-        # Push out at a 45-degree angle (top-right) from the physical eye center
         angle = -math.pi / 4.0
 
-        # Target the outer edge of the chassis shell, stretching slightly past it
         touch_x = eye_cx + math.cos(angle) * (r_body * 1.05)
         touch_y = eye_cy + math.sin(angle) * (r_body * 1.05)
 
-        # Apply layout offsets from the avatar_align_box container
-        touch_x += self.avatar_align_box.get_margin_start()
-        touch_y += self.avatar_align_box.get_margin_top()
+        # Dynamically map the visualizer's coordinates into the overlay's coordinate space
+        res, avatar_rect = self.avatar.compute_bounds(self.avatar_overlay)
+        if res:
+            touch_x += avatar_rect.origin.x
+            touch_y += avatar_rect.origin.y
 
-        # 3. Align the tip of the badge's tail to this exact touch point
-        badge_w = self.badge.get_width()
-        badge_h = self.badge.get_height()
-        if badge_w == 0: badge_w = 70
-        if badge_h == 0: badge_h = 60
+        pos_changed = False
 
-        # Extracting the hardcoded Cairo geometry:
-        # Tail X offset = pad(12) - 6 = 6.0
-        # Tail Y offset drops 12px below the box, which sits exactly at (height - 12.0)
-        tail_x = 6.0
-        tail_y = badge_h - 12.0
+        # 3. Align the Badges / Bubbles based on which is visible
+        if self.badge.get_visible():
+            badge_w = self.badge.get_width() or 70
+            badge_h = self.badge.get_height() or 60
 
-        final_x = max(0, int(touch_x - tail_x))
-        final_y = max(0, int(touch_y - tail_y))
+            tail_x = 6.0
+            tail_y = badge_h - 12.0
 
-        # Push the widget using its margins to act as absolute coordinates
-        self.badge.set_margin_start(final_x)
-        self.badge.set_margin_top(final_y)
+            final_x = max(0, int(touch_x - tail_x))
+            final_y = max(0, int(touch_y - tail_y))
+
+            if (final_x, final_y) != self._last_active_pos:
+                self.badge.set_margin_start(final_x)
+                self.badge.set_margin_top(final_y)
+                self._last_active_pos = (final_x, final_y)
+                pos_changed = True
+
+        elif self.bubble.get_visible():
+            bubble_w = self.bubble.get_width() or 280
+            bubble_h = self.bubble.get_height() or 140
+
+            b_tail_x = bubble_w / 2.0
+            b_tail_y = bubble_h - 8.0
+
+            b_final_x = max(0, int(touch_x - b_tail_x))
+            b_final_y = max(0, int(touch_y - b_tail_y))
+
+            if (b_final_x, b_final_y) != self._last_active_pos:
+                self.bubble.set_margin_start(b_final_x)
+                self.bubble.set_margin_top(b_final_y)
+                self._last_active_pos = (b_final_x, b_final_y)
+                pos_changed = True
+
+        # Keep click-through mask updated with motion
+        if pos_changed:
+            self.update_input_region()
 
         return GLib.SOURCE_CONTINUE
 
@@ -318,6 +262,7 @@ class CharonOverlayWindow(Gtk.Window):
         GLib.idle_add(self.update_input_region)
 
     def update_input_region(self):
+        """Updates click-through bounds so both badges and expanded bubbles are clickable."""
         native = self.get_native()
         if not native: return
         surface = native.get_surface()
@@ -331,12 +276,21 @@ class CharonOverlayWindow(Gtk.Window):
                 int(avatar_rect.size.width), int(avatar_rect.size.height)
             ))
 
-        res, badge_rect = self.badge.compute_bounds(self)
-        if res:
-            region.union(cairo.RectangleInt(
-                int(badge_rect.origin.x), int(badge_rect.origin.y),
-                int(badge_rect.size.width), int(badge_rect.size.height)
-            ))
+        if self.badge.get_visible():
+            res, badge_rect = self.badge.compute_bounds(self)
+            if res:
+                region.union(cairo.RectangleInt(
+                    int(badge_rect.origin.x), int(badge_rect.origin.y),
+                    int(badge_rect.size.width), int(badge_rect.size.height)
+                ))
+
+        if self.bubble.get_visible():
+            res, bubble_rect = self.bubble.compute_bounds(self)
+            if res:
+                region.union(cairo.RectangleInt(
+                    int(bubble_rect.origin.x), int(bubble_rect.origin.y),
+                    int(bubble_rect.size.width), int(bubble_rect.size.height)
+                ))
 
         surface.set_input_region(region)
 
@@ -378,22 +332,42 @@ class CharonOverlayWindow(Gtk.Window):
         self._apply_position(clamped_x, clamped_y)
 
     def _toggle_thought_bubble(self):
-        print("[Charon Overlay] Dynamic Badge clicked! Ready for expansion animation.")
+        """Hides the badge and shows the expanded text bubble."""
+        self._last_active_pos = (-1, -1)
+        self.badge.set_visible(False)
+        self.bubble.set_visible(True)
+
+        bubble_style = getattr(self.badge, "bubble_type", "thought")
+        self.bubble.show_message(self._latest_message_text, msg_type=bubble_style)
+
+        GLib.idle_add(self.update_input_region)
+
+    def _on_bubble_dismissed(self):
+        """Brings the badge back once the text bubble is closed."""
+        self._last_active_pos = (-1, -1)
+        self.bubble.set_visible(False)
+        self.badge.set_visible(True)
+
+        GLib.idle_add(self.update_input_region)
 
     def set_indicator_type(self, msg_type: str, custom_symbol: str = None):
         """Binds semantic categories to explicit color values and idiomatic symbols."""
         if msg_type == "warning":
             text = custom_symbol or "!!"
             self.badge.set_state(text, 0.98, 0.75, 0.14)
+            if hasattr(self.bubble, "glow_color"): self.bubble.glow_color = (0.98, 0.75, 0.14, 1.0)
         elif msg_type == "urgent":
             text = custom_symbol or "$#@!"
             self.badge.set_state(text, 0.93, 0.26, 0.26)
+            if hasattr(self.bubble, "glow_color"): self.bubble.glow_color = (0.93, 0.26, 0.26, 1.0)
         elif msg_type == "inbox":
             text = custom_symbol or "@"
             self.badge.set_state(text, 0.66, 0.33, 0.97)
+            if hasattr(self.bubble, "glow_color"): self.bubble.glow_color = (0.66, 0.33, 0.97, 1.0)
         else:
             text = custom_symbol or "...."
             self.badge.set_state(text, 0.22, 0.74, 0.97)
+            if hasattr(self.bubble, "glow_color"): self.bubble.glow_color = (0.22, 0.74, 0.97, 1.0)
 
     def _setup_avatar_drag_feedback(self):
         drag_gesture = Gtk.GestureDrag.new()
@@ -459,8 +433,15 @@ class CharonOverlayWindow(Gtk.Window):
                 win_top_left_x = float(window_center["x"]) - (win_w / 2.0)
                 win_top_left_y = float(window_center["y"]) - (win_h / 2.0)
 
-                eye_center_x = win_top_left_x + (avatar_w / 2.0)
-                eye_center_y = win_top_left_y + 15.0 + (avatar_h / 2.0)
+                # Dynamically calculate the avatar's actual position inside the window
+                res, avatar_rect = self.avatar_container.compute_bounds(self)
+                if res:
+                    eye_center_x = win_top_left_x + avatar_rect.origin.x + (avatar_rect.size.width / 2.0)
+                    eye_center_y = win_top_left_y + avatar_rect.origin.y + (avatar_rect.size.height / 2.0)
+                else:
+                    # Fallback if bounds are not yet allocated
+                    eye_center_x = win_top_left_x + (avatar_w / 2.0)
+                    eye_center_y = win_top_left_y + (avatar_h / 2.0)
 
                 self.avatar.set_target_gaze_relative(
                     mouse_x=float(cursor["x"]),
@@ -490,9 +471,9 @@ class CharonOverlayWindow(Gtk.Window):
 
         self.set_indicator_type(category, custom_symbol=symbol)
 
+        # Update the hidden message text whenever we receive it
         if "text" in payload:
-            text = payload["text"]
-            print(f"[Charon Overlay] Intercepted text for Step 2 animation payload: {text}")
+            self._latest_message_text = payload["text"]
 
     def _apply_css(self):
         css_provider = Gtk.CssProvider()
