@@ -37,10 +37,11 @@ htmlcov/
 *.log
 *.error.log
 .env
-data/
 
 # ==========================================
 # OS Junk
 # ==========================================
 .DS_Store
 Thumbs.db
+/charon/gateway/static/dashboard_v2/node_modules/
+/charon/gateway/static/dashboard_v2/dist/
