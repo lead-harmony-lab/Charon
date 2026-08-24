@@ -1,8 +1,13 @@
+/**
+ * @file src/features/docs/KnowledgeBase.tsx
+ */
 import React, { useState } from 'react';
 import { AdrViewer } from './AdrViewer';
 import { SpecsViewer } from './SpecsViewer';
+import { ManualViewer } from './ManualViewer';
 
-type DocsSubTab = 'adrs' | 'specs';
+// Added 'manual' to the type
+type DocsSubTab = 'adrs' | 'specs' | 'manual';
 
 export function KnowledgeBase() {
   const [activeSubTab, setActiveSubTab] = useState<DocsSubTab>('adrs');
@@ -14,7 +19,7 @@ export function KnowledgeBase() {
         <div>
           <h2 style={{ margin: 0, fontSize: '1.25rem', color: '#f8fafc' }}>Knowledge Base</h2>
           <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: '#94a3b8' }}>
-            Access system specifications, protocol definitions, and Architectural Decision Records (ADRs).
+            Access system specifications, protocol definitions, Architectural Decision Records (ADRs), and User Manuals.
           </p>
         </div>
 
@@ -52,12 +57,30 @@ export function KnowledgeBase() {
           >
             System Specs
           </button>
+          <button
+            onClick={() => setActiveSubTab('manual')}
+            style={{
+              padding: '0.4rem 1rem',
+              border: 'none',
+              borderRadius: '4px',
+              backgroundColor: activeSubTab === 'manual' ? '#38bdf8' : 'transparent',
+              color: activeSubTab === 'manual' ? '#0f172a' : '#94a3b8',
+              fontWeight: activeSubTab === 'manual' ? 'bold' : 'normal',
+              cursor: 'pointer',
+              fontSize: '0.85rem',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            User Manual
+          </button>
         </div>
       </div>
 
       {/* Sub-View Content */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {activeSubTab === 'adrs' ? <AdrViewer /> : <SpecsViewer />}
+        {activeSubTab === 'adrs' && <AdrViewer />}
+        {activeSubTab === 'specs' && <SpecsViewer />}
+        {activeSubTab === 'manual' && <ManualViewer />}
       </div>
     </div>
   );

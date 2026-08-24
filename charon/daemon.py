@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 import logging
 import os
 import ollama
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -304,6 +304,11 @@ if os.path.exists(assets_dir):
 # SPA catch-all: returns requested physical file or falls back to index.html
 @app.get("/{catchall:path}")
 async def serve_spa(catchall: str):
+    # 1. Reject API routes immediately so they return proper 404 JSON errors
+    if catchall.startswith("v1/") or catchall.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API Route Not Found")
+
+    # 2. Serve static files or fallback to index.html
     file_path = os.path.join(static_dir, catchall)
     if catchall and os.path.exists(file_path) and os.path.isfile(file_path):
         return FileResponse(file_path)

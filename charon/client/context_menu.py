@@ -25,7 +25,7 @@ class AvatarContextMenu:
 
         # 1. Define the menu model
         menu = Gio.Menu.new()
-        menu.append("Command Center V2", "win.open_dashboard")
+        menu.append("Charon Control", "win.open_dashboard")
         menu.append("Settings (Coming Soon)", "win.dummy")
         menu.append("System Window Controls...", "win.show_sys_menu")
 

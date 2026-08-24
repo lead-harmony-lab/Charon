@@ -1,4 +1,9 @@
+/**
+ * @file src/features/docs/CreateDocModal.tsx
+ * @description Modal for creating ADRs and System Specifications integrated with Monaco Editor.
+ */
 import React, { useState, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
 import { authFetch } from '../../core/api/client';
 
 interface CreateDocModalProps {
@@ -19,6 +24,23 @@ interface FormErrors {
 const SEMVER_REGEX = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const ID_REGEX = /^[A-Z0-9_-]+$/i;
 
+const DEFAULT_SPEC_BOILERPLATE = JSON.stringify(
+  {
+    id: 'SPEC-001',
+    name: 'New Protocol Spec',
+    version: '1.0.0',
+    status: 'PROPOSED',
+    description: 'Overview of the protocol specification',
+    endpoints: ['/v1/endpoint'],
+    channels: {
+      inboundActions: [],
+      outboundEventSchemas: {}
+    }
+  },
+  null,
+  2
+);
+
 export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDocModalProps) {
   const [id, setId] = useState('');
   const [titleOrName, setTitleOrName] = useState('');
@@ -30,14 +52,13 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
   const [statusMsg, setStatusMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Reset defaults on modal toggle or docType change
   useEffect(() => {
     if (isOpen) {
       setId(docType === 'adr' ? 'ADR-' : 'SPEC-');
       setTitleOrName('');
       setStatusOrVersion(docType === 'adr' ? 'PROPOSED' : '1.0.0');
       setSummary('');
-      setContent('');
+      setContent(docType === 'spec' ? DEFAULT_SPEC_BOILERPLATE : '');
       setErrors({});
       setStatusMsg('');
     }
@@ -48,7 +69,6 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
   const validate = (): boolean => {
     const newErrors: FormErrors = {};
 
-    // 1. ID Validation
     if (!id.trim()) {
       newErrors.id = 'ID is required.';
     } else if (!ID_REGEX.test(id)) {
@@ -59,14 +79,12 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
       newErrors.id = 'Spec ID should begin with "SPEC-" (e.g. SPEC-001).';
     }
 
-    // 2. Title / Name Validation
     if (!titleOrName.trim()) {
       newErrors.titleOrName = `${docType === 'adr' ? 'Title' : 'Name'} is required.`;
     } else if (titleOrName.trim().length < 3) {
       newErrors.titleOrName = 'Title must be at least 3 characters.';
     }
 
-    // 3. Status / Version Validation
     if (docType === 'spec') {
       if (!statusOrVersion.trim()) {
         newErrors.statusOrVersion = 'Version is required.';
@@ -75,14 +93,18 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
       }
     }
 
-    // 4. Summary Validation (ADR only)
     if (docType === 'adr' && summary.trim() && summary.trim().length < 5) {
       newErrors.summary = 'Summary must be at least 5 characters if provided.';
     }
 
-    // 5. Content Validation
     if (!content.trim()) {
       newErrors.content = 'Content is required.';
+    } else if (docType === 'spec') {
+      try {
+        JSON.parse(content);
+      } catch (err: any) {
+        newErrors.content = `Invalid JSON syntax: ${err.message}`;
+      }
     } else if (content.trim().length < 10) {
       newErrors.content = 'Document content must be at least 10 characters.';
     }
@@ -107,20 +129,20 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
             status: statusOrVersion,
             date: new Date().toISOString().split('T')[0],
             summary: summary.trim(),
-            content: content.trim(),
+            content: content.trim()
           }
         : {
             id: id.trim(),
             name: titleOrName.trim(),
             version: statusOrVersion.trim(),
-            content: content.trim(),
+            content: JSON.stringify(JSON.parse(content), null, 2)
           };
 
     try {
       const res = await authFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(body)
       });
 
       if (res.ok) {
@@ -140,13 +162,12 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
 
   return (
     <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(15, 23, 42, 0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
-      <div style={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '1.5rem', width: '520px', maxWidth: '90vw', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div style={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '1.5rem', width: '640px', maxWidth: '90vw', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '1.1rem' }}>
           Create New {docType === 'adr' ? 'Architecture Decision Record' : 'System Spec'}
         </h3>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-          {/* Document ID */}
           <div>
             <input
               type="text"
@@ -158,7 +179,6 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
             {errors.id && <span style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '2px', display: 'block' }}>{errors.id}</span>}
           </div>
 
-          {/* Title or Spec Name */}
           <div>
             <input
               type="text"
@@ -170,7 +190,6 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
             {errors.titleOrName && <span style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '2px', display: 'block' }}>{errors.titleOrName}</span>}
           </div>
 
-          {/* Status (ADR) or Version (Spec) */}
           <div>
             {docType === 'adr' ? (
               <select
@@ -194,7 +213,6 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
             {errors.statusOrVersion && <span style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '2px', display: 'block' }}>{errors.statusOrVersion}</span>}
           </div>
 
-          {/* Summary (ADR Only) */}
           {docType === 'adr' && (
             <div>
               <input
@@ -208,17 +226,26 @@ export function CreateDocModal({ isOpen, onClose, docType, onSuccess }: CreateDo
             </div>
           )}
 
-          {/* Markdown Content */}
-          <div>
-            <textarea
-              placeholder="Document Content (Markdown supported)..."
+          {/* Monaco Code Editor Container */}
+          <div style={{ border: `1px solid ${errors.content ? '#ef4444' : '#334155'}`, borderRadius: '6px', overflow: 'hidden' }}>
+            <Editor
+              height="240px"
+              language={docType === 'spec' ? 'json' : 'markdown'}
+              theme="vs-dark"
               value={content}
-              onChange={(e) => setContent(e.target.value)}
-              rows={8}
-              style={{ width: '100%', backgroundColor: '#0f172a', border: `1px solid ${errors.content ? '#ef4444' : '#334155'}`, color: '#38bdf8', padding: '0.5rem 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.85rem', boxSizing: 'border-box' }}
+              onChange={(value) => setContent(value || '')}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 13,
+                lineNumbers: 'on',
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+                tabSize: 2,
+                wordWrap: 'on'
+              }}
             />
-            {errors.content && <span style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '2px', display: 'block' }}>{errors.content}</span>}
           </div>
+          {errors.content && <span style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '2px', display: 'block' }}>{errors.content}</span>}
 
           {statusMsg && <span style={{ fontSize: '0.8rem', color: statusMsg.includes('successfully') ? '#10b981' : '#ef4444' }}>{statusMsg}</span>}
 

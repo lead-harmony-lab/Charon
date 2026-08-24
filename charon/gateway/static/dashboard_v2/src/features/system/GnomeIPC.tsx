@@ -1,3 +1,7 @@
+/**
+ * @file src/features/system/GnomeIPC.tsx
+ * @description
+ */
 import React, { useState } from 'react';
 import { authFetch } from '../../core/api/client';
 

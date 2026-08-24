@@ -1,19 +1,24 @@
+/**
+ * @file src/App.tsx
+ * @description
+ */
 import React, { useEffect, useState, useRef } from 'react';
 import { wsClient } from './core/ws/CharonStream';
 import { getApiKey } from './core/api/client';
-import { BlackboardObserver } from './features/coordinator/BlackboardObserver';
 
-// We will build these placeholder components next
+// Updated imports
+import { SystemDiagnostics } from './features/diagnostics/SystemDiagnostics';
 import { AgentStudio } from './features/agents/AgentStudio';
 import { IntegrationMatrix } from './features/system/IntegrationMatrix';
 import { KnowledgeBase } from './features/docs/KnowledgeBase';
 import { DevJournal } from './features/journal/DevJournal';
 
-type TabID = 'blackboard' | 'studio' | 'matrix' | 'docs' | 'journal';
+// Swapped 'blackboard' for 'diagnostics'
+type TabID = 'diagnostics' | 'studio' | 'matrix' | 'docs' | 'journal';
 
 export default function App() {
   const [connected, setConnected] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabID>('blackboard');
+  const [activeTab, setActiveTab] = useState<TabID>('diagnostics');
   const isConnecting = useRef(false);
 
   useEffect(() => {
@@ -37,18 +42,17 @@ export default function App() {
 
   const renderActiveTab = () => {
     switch (activeTab) {
-      case 'blackboard': return <BlackboardObserver />;
+      case 'diagnostics': return <SystemDiagnostics />;
       case 'studio': return <AgentStudio />;
       case 'matrix': return <IntegrationMatrix />;
       case 'docs': return <KnowledgeBase />;
       case 'journal': return <DevJournal />;
-      default: return <BlackboardObserver />;
+      default: return <SystemDiagnostics />;
     }
   };
 
   return (
     <div style={{ display: 'flex', height: '100vh', backgroundColor: '#0f172a', color: '#f8fafc', fontFamily: 'sans-serif' }}>
-
       {/* Sidebar Navigation */}
       <nav style={{ width: '250px', backgroundColor: '#1e293b', borderRight: '1px solid #334155', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '1.5rem', borderBottom: '1px solid #334155' }}>
@@ -67,7 +71,7 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', padding: '1rem 0' }}>
-          <TabButton id="blackboard" label="Blackboard" active={activeTab} onClick={setActiveTab} />
+          <TabButton id="diagnostics" label="Diagnostics" active={activeTab} onClick={setActiveTab} />
           <TabButton id="studio" label="Agent Studio" active={activeTab} onClick={setActiveTab} />
           <TabButton id="matrix" label="Integration Matrix" active={activeTab} onClick={setActiveTab} />
           <TabButton id="docs" label="Knowledge Base" active={activeTab} onClick={setActiveTab} />

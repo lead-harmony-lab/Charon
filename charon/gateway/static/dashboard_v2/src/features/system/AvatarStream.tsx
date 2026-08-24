@@ -1,3 +1,7 @@
+/**
+ * @file src/features/system/AvatarStream.tsx
+ * @description
+ */
 import React, { useEffect, useRef, useState } from 'react';
 import { wsClient, CharonWSFrame, ConciergeAvatarState } from '../../core/ws/CharonStream';
 

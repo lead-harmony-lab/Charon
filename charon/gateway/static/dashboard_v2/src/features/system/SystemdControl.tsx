@@ -1,3 +1,7 @@
+/**
+ * @file src/features/system/SystemdControl.tsx
+ * @description
+ */
 import React, { useState, useEffect } from 'react';
 import { authFetch } from '../../core/api/client';
 

@@ -1,3 +1,7 @@
+/**
+ * @file src/features/system/IntegrationMatrix.tsx
+ * @description
+ */
 import React, { useState } from 'react';
 import { SystemdControl } from './SystemdControl';
 import { GnomeIPC } from './GnomeIPC';

@@ -1,3 +1,7 @@
+/**
+ * @file src/core/ws/CharonStream.ts
+ * @description
+ */
 export interface CharonWSFrame {
   event_type: string;
   timestamp?: string;
@@ -86,6 +90,20 @@ export class CharonStream {
     this.stopHeartbeat();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) this.ws.close();
+  }
+
+  public send(eventType: string, data: any = {}, payload: any = {}) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const frame: CharonWSFrame = {
+        event_type: eventType,
+        client_id: 'desktop_concierge',
+        data: data,
+        payload: payload
+      };
+      this.ws.send(JSON.stringify(frame));
+    } else {
+      console.warn(`[CharonStream] Cannot send ${eventType}: WebSocket is not open.`);
+    }
   }
 
   private emitToSubscribers(eventType: string, frame: CharonWSFrame) {

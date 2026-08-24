@@ -1,5 +1,5 @@
 """
-charon/gateway/routes_router.py
+charon/gateway/routes/routing.py
 System Version: v0.1.0 | File Revision: 1.1.0
 
 Module: Gateway Router Control endpoints.
