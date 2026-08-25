@@ -190,6 +190,27 @@ async def _handle_incoming_ws_frame(websocket: WebSocket, raw_data: str, client_
                         except Exception as e:
                             logger.debug(f"Failed to broadcast telemetry to client: {e}")
 
+        elif action == "desktop_ipc":
+            # Target the specific client ID defined in the GNOME extension (api.js)
+            target_client = "gnome_shell_extension"
+
+            if hasattr(manager, "active_connections"):
+                routed = False
+                for connection in manager.active_connections:
+                    # Check the attribute we attached during connection
+                    if getattr(connection, "client_id", None) == target_client:
+                        try:
+                            # Forward the exact raw JSON frame received from the Dashboard
+                            await connection.send_text(raw_data)
+                            routed = True
+                        except Exception as e:
+                            logger.error(f"Failed to route IPC to {target_client}: {e}")
+
+                if routed:
+                    logger.debug(f"Successfully routed desktop_ipc frame from '{client_id}' to '{target_client}'.")
+                else:
+                    logger.warning(f"Dropped desktop_ipc frame: Target '{target_client}' is not currently connected.")
+
     except json.JSONDecodeError:
         logger.debug(f"Received non-JSON raw WS frame: {raw_data[:50]}")
     except Exception as e:
@@ -220,6 +241,7 @@ async def websocket_endpoint(
             return
 
     await manager.connect(websocket, client_id=client_id)
+    websocket.client_id = client_id
     try:
         await manager.send_event(
             websocket,

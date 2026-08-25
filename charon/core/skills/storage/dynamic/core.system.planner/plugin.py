@@ -186,6 +186,14 @@ class PlannerPolicyExecutionContainer(BaseContractPolicy):
                     delegatable_tool_names.append(name)
                     if owner:
                         skill_owner_map[name] = owner
+
+                        # ==========================================
+                        # CHANGE 1: Inject required_agent directly into schema
+                        # ==========================================
+                        t["required_agent"] = owner
+                        current_desc = t.get("description", "")
+                        t["description"] = f"[MANDATORY AGENT: {owner}] {current_desc}"
+
                     else:
                         logger.warning(
                             f"[{self.agent_id}] Librarian could not resolve an owner for '{name}'."
@@ -256,7 +264,10 @@ class PlannerPolicyExecutionContainer(BaseContractPolicy):
             f"\n\nSTRICT TOOL SELECTION RULES:\n"
             f"1. You MUST select 'target_skill' EXCLUSIVELY from this exact allowed set: [{delegatable_tools_str}].\n"
             f"2. Selection of ANY tool string outside [{delegatable_tools_str}] is strictly illegal and will trigger systemic failure.\n"
-            f"3. Every node MUST set 'target_agent' strictly to an agent ID from [{available_agents_str}].\n"
+            # ==========================================
+            # CHANGE 2: Update prompt instruction to enforce the new field
+            # ==========================================
+            f"3. Every node MUST set 'target_agent' strictly to the 'required_agent' specified in that tool's definition.\n"
             f"4. You MUST include a 'user_query' or 'task' key inside the 'arguments' dictionary for every node to provide the downstream agent with its instruction.\n\n"
             f"Target Schema:\n{clean_schema}\n\n"
             f"EXPECTED OUTPUT STRUCTURE EXAMPLE:\n"
@@ -322,17 +333,16 @@ class PlannerPolicyExecutionContainer(BaseContractPolicy):
                         f"Planner attempted to route task to unknown system skill: '{node.target_skill}'"
                     )
 
-                # 2. Agent-Skill Alignment Procedure (Middleware Correction)
+                # ==========================================
+                # CHANGE 3: Remove auto-correction, implement hard failure on mismatch
+                # ==========================================
                 expected_owner = skill_owner_map.get(node.target_skill)
 
                 if expected_owner and node.target_agent != expected_owner:
-                    logger.warning(
-                        f"[{self.agent_id}] Routing mismatch detected. LLM assigned '{node.target_skill}' "
-                        f"to unauthorized agent '{node.target_agent}'. "
-                        f"Auto-correcting DAG node to strict owner: '{expected_owner}'."
+                    raise PermissionDeniedError(
+                        f"Planner assigned tool '{node.target_skill}' to unauthorized agent '{node.target_agent}'. "
+                        f"CBAC policy dictates this tool is strictly bound to '{expected_owner}'."
                     )
-                    # Forcibly overwrite the LLM's hallucinated agent with the DB-verified owner
-                    node.target_agent = expected_owner
 
             logger.info(f"[{self.agent_id}] PlanArtifact successfully validated and routing secured.")
 

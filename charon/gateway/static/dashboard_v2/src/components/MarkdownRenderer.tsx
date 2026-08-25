@@ -1,18 +1,22 @@
 /**
  * @file src/components/MarkdownRenderer.tsx
- * @description
+ * @description Markdown renderer component supporting syntax highlighting, ticket anchors, and doc mentions.
  */
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Link, useNavigate } from 'react-router-dom';
 
 interface Props {
   content: string;
   onInternalLinkClick?: (id: string) => void;
+  onDocLinkClick?: (docId: string) => void;
 }
 
-export function MarkdownRenderer({ content, onInternalLinkClick }: Props) {
+export function MarkdownRenderer({ content, onInternalLinkClick, onDocLinkClick }: Props) {
+  const navigate = useNavigate();
+
   return (
     <div style={{ color: '#e2e8f0', lineHeight: '1.6', fontSize: '0.9rem' }}>
       <ReactMarkdown
@@ -40,7 +44,6 @@ export function MarkdownRenderer({ content, onInternalLinkClick }: Props) {
 
             return isBlock ? (
               <div style={{ margin: '0.75rem 0', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#0f172a', overflow: 'hidden' }}>
-                {/* Only show the header if a specific language was tagged */}
                 {match && match[1] && (
                   <div style={{
                     backgroundColor: '#1e293b',
@@ -60,9 +63,9 @@ export function MarkdownRenderer({ content, onInternalLinkClick }: Props) {
                   language={language}
                   PreTag="div"
                   customStyle={{
-                    margin: 0, // Removed margin/border since the parent div handles it
+                    margin: 0,
                     padding: '0.75rem',
-                    backgroundColor: 'transparent', // Let parent background show through
+                    backgroundColor: 'transparent',
                     fontSize: '0.85rem'
                   }}
                   {...props}
@@ -82,7 +85,47 @@ export function MarkdownRenderer({ content, onInternalLinkClick }: Props) {
             </blockquote>
           ),
           a: ({ href, children }) => {
-            // Intercept internal anchor links
+            // Intercept doc mentions (doc:<id>)
+            if (href?.startsWith('doc:')) {
+              const docId = href.replace(/^doc:/, '');
+              return (
+                <a
+                  href={`/docs/manual/${docId}`}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (onDocLinkClick) {
+                      onDocLinkClick(docId);
+                    } else {
+                      navigate(`/docs/manual/${docId}`);
+                    }
+                  }}
+                  style={{ color: '#c084fc', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  {children}
+                </a>
+              );
+            }
+
+            // Intercept manual viewer absolute links (/docs/manual/<id>)
+            if (href?.startsWith('/docs/manual/')) {
+              const targetId = href.replace('/docs/manual/', '');
+              return (
+                <Link
+                  to={href}
+                  onClick={(e) => {
+                    // Optional override if the parent still needs to intercept
+                    if (onInternalLinkClick) {
+                      onInternalLinkClick(targetId);
+                    }
+                  }}
+                  style={{ color: '#38bdf8', textDecoration: 'underline', cursor: 'pointer' }}
+                >
+                  {children}
+                </Link>
+              );
+            }
+
+            // Intercept legacy internal anchor ticket links (#<id>)
             if (href?.startsWith('#')) {
               const targetId = href.slice(1);
               return (
@@ -90,7 +133,11 @@ export function MarkdownRenderer({ content, onInternalLinkClick }: Props) {
                   href={href}
                   onClick={(e) => {
                     e.preventDefault();
-                    if (onInternalLinkClick) onInternalLinkClick(targetId);
+                    if (onInternalLinkClick) {
+                      onInternalLinkClick(targetId);
+                    } else {
+                      navigate(`?logId=${targetId}`);
+                    }
                   }}
                   style={{ color: '#38bdf8', textDecoration: 'underline', cursor: 'pointer' }}
                 >
@@ -98,6 +145,7 @@ export function MarkdownRenderer({ content, onInternalLinkClick }: Props) {
                 </a>
               );
             }
+
             // Standard external links
             return (
               <a href={href} target="_blank" rel="noreferrer" style={{ color: '#38bdf8', textDecoration: 'none' }}>

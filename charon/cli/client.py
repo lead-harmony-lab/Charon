@@ -1,15 +1,16 @@
 """
 charon/cli/client.py
-System Version: v0.1.0 | File Revision: 1.2.2
+System Version: v0.2.0 | File Revision: 1.4.1
 
 Module: Daemon integration client managing HTTP REST and WebSocket streaming.
 """
 
+import asyncio
 import json
 import logging
 import sys
 import uuid
-from typing import Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 import httpx
 import websockets
@@ -33,16 +34,25 @@ class CharonClient:
         self.spinner = CharonSpinner()
         self._rendered_proposals: Set[str] = set()
 
-    @property
-    def headers(self) -> dict:
-        return {"X-API-Key": self.api_key}
+        # State tracked during an active stream
+        self._streamed_any_chunk = False
+        self._staged_prompt: Optional[str] = None
+
+        # Persistent HTTP client pool
+        self.http_client = httpx.AsyncClient(
+            base_url=self.base_url,
+            headers={"X-API-Key": self.api_key}
+        )
+
+    async def close(self) -> None:
+        """Gracefully close the underlying HTTP connection pool."""
+        await self.http_client.aclose()
 
     async def ping_daemon(self) -> bool:
         """Checks if the Charon REST endpoint is healthy."""
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                res = await client.get(f"{self.base_url}/v1/health")
-                return res.status_code == 200
+            res = await self.http_client.get("/v1/health", timeout=3.0)
+            return res.status_code == 200
         except Exception:
             return False
 
@@ -56,35 +66,25 @@ class CharonClient:
         """Establishes WebSocket stream, submits task, and listens for events."""
         self.spinner.start("Tending to the arrangements...")
         self._rendered_proposals.clear()
-        success = True
-        staged_prompt: Optional[str] = None
-        streamed_any_chunk = False
+        self._streamed_any_chunk = False
+        self._staged_prompt = None
 
         ws_uri = f"{self.ws_url}?client_id={self.client_id}&api_key={self.api_key}"
 
         try:
+            # Removed ping_interval and ping_timeout so the CLI won't drop the connection
+            # when the daemon's event loop is blocked by heavy LLM inference.
             async with websockets.connect(
                 ws_uri,
                 additional_headers={"x-api-key": self.api_key},
-                ping_interval=10,
-                ping_timeout=10,
+                ping_interval=None,
+                ping_timeout=None,
             ) as ws:
-                # 1. Post Task via REST API
-                async with httpx.AsyncClient(headers=self.headers, timeout=30.0) as http_client:
-                    payload = {
-                        "prompt": prompt,
-                        "client_id": self.client_id,
-                        "agent_override": agent_override,
-                    }
-                    resp = await http_client.post(f"{self.base_url}/v1/task", json=payload)
-                    if resp.status_code != 200:
-                        self.spinner.stop()
-                        console.print(
-                            f"\n[bold red][System Error]: Task submission failed ({resp.status_code}: {resp.text})[/bold red]"
-                        )
-                        return False, None
 
-                    task_id = resp.json().get("task_id")
+                # 1. Post Task via REST API
+                task_id = await self._post_task(prompt, agent_override)
+                if not task_id:
+                    return False, None
 
                 # 2. Consume WebSocket Event Stream
                 while True:
@@ -95,216 +95,212 @@ class CharonClient:
                     event_task_id = event.get("task_id")
                     data = event.get("data", {}) if "data" in event else event
 
-                    if (
-                        event_task_id
-                        and task_id
-                        and event_task_id != task_id
-                        and event_type not in ["system_alert", "overseer_report"]
-                    ):
+                    # Ignore events belonging to other active tasks
+                    if self._should_ignore_event(event_task_id, task_id, event_type):
                         continue
 
-                    # Dynamic Task Heartbeat / Dynamic Sub-step updates
-                    if event_type in [
-                        "task_heartbeat",
-                        "task_progress",
-                        "agent_status",
-                        "agent_action",
-                        "status",
-                        "telemetry",
-                        "step",
-                    ]:
-                        step_msg = (
-                            data.get("step")
-                            or data.get("status_message")
-                            or data.get("message")
-                            or data.get("status")
-                            or data.get("action")
-                        )
-                        agent = data.get("active_agent") or data.get("agent")
-                        elapsed = data.get("elapsed_seconds")
-
-                        if step_msg:
-                            display_text = f"[{agent}] {step_msg}" if agent else str(step_msg)
-                            self.spinner.update(display_text)
-                        elif elapsed is not None:
-                            agent_label = agent or "Orchestrator"
-                            self.spinner.update(
-                                f"[{agent_label}] Tending to the arrangements... ({elapsed}s)"
-                            )
-
-                    # Stream Chunks / Agent Logs
-                    elif event_type in ["agent_log", "task_stream", "content_chunk"]:
-                        # If the log carries an explicit step label, update spinner instead of raw streaming
-                        if data.get("is_step") or data.get("step"):
-                            step_text = data.get("step") or data.get("message", "")
-                            agent = data.get("active_agent") or data.get("agent")
-                            if step_text:
-                                display_text = f"[{agent}] {step_text}" if agent else str(step_text)
-                                self.spinner.update(display_text)
-                        else:
-                            chunk = data.get("message") or data.get("content", "")
-                            if isinstance(chunk, dict):
-                                chunk = json.dumps(chunk, indent=2)
-                            if chunk:
-                                # Only set streamed_any_chunk for actual response streaming events
-                                if event_type in ["content_chunk", "task_stream"]:
-                                    streamed_any_chunk = True
-                                if self.spinner.running:
-                                    self.spinner.stop()
-                                sys.stdout.write(chunk)
-                                sys.stdout.flush()
-
-                    # Gatekeeper Intercepts
-                    elif event_type == "gatekeeper_intercept":
-                        self.spinner.stop()
-                        manifest = data.get("manifest", "")
-                        action = data.get("action", "Destructive action requested")
-                        approval_id = data.get("approval_id")
-
-                        if manifest:
-                            console.print(manifest)
-                        else:
-                            console.print("\n[bold yellow]🛡️ GATEKEEPER INTERCEPT:[/bold yellow]")
-                            panel_msg = (
-                                f"Management requires physical authorization before executing:\n"
-                                f"[bold red]{action}[/bold red]\n\n"
-                                f"Please reply with '[bold green]proceed[/bold green]' to authorize, or '[bold red]cancel[/bold red]' to abort."
-                            )
-                            console.print(
-                                Panel(
-                                    panel_msg,
-                                    border_style="yellow",
-                                    title="Authorization Required",
-                                )
-                            )
-
-                        decision = await session.prompt_async(
-                            HTML("<ansiyellow><b>Authorization [proceed/cancel] > </b></ansiyellow>")
-                        )
-                        decision_str = decision.strip().lower()
-
-                        async with httpx.AsyncClient(
-                            headers=self.headers, timeout=10.0
-                        ) as http_client:
-                            await http_client.post(
-                                f"{self.base_url}/v1/gatekeeper/respond",
-                                json={
-                                    "approval_id": approval_id,
-                                    "decision": decision_str,
-                                    "client_id": self.client_id,
-                                },
-                            )
-                        self.spinner.start("Resuming task execution...")
-
-                    # Concierge Proposals
-                    elif event_type in ["concierge_suggestion", "concierge_proposal", "proposal"]:
-                        if self.spinner.running:
-                            self.spinner.stop()
-
-                        phrase = (
-                            data.get("phrase")
-                            or data.get("recommendation")
-                            or data.get("next_step")
-                        )
-                        proposed_cmd = (
-                            data.get("suggested_prompt")
-                            or data.get("proposed_command")
-                            or data.get("next_step")
-                        )
-                        proposal_key = f"{phrase}:{proposed_cmd}"
-
-                        if phrase and proposal_key not in self._rendered_proposals:
-                            self._rendered_proposals.add(proposal_key)
-                            staged_prompt = proposed_cmd
-
-                            panel_body = (
-                                f"[bold italic cyan]\"{phrase}\"[/bold italic cyan]\n\n"
-                                f"[dim]Use [bold white]↑/↓[/bold white] arrows to select, press [bold white]Enter[/bold white] to confirm:[/dim]"
-                            )
-                            console.print()
-                            console.print(
-                                Panel(
-                                    panel_body,
-                                    title="[bold blue]🛎️ Concierge Proposal[/bold blue]",
-                                    border_style="blue",
-                                    expand=False,
-                                )
-                            )
-
-                    # System Alerts
-                    elif event_type == "system_alert":
-                        severity = data.get("severity", "INFO")
-                        title = data.get("title", "System Alert")
-                        msg = data.get("message", "")
-                        style = "bold red" if severity == "CRITICAL" else "bold yellow"
-                        console.print(
-                            Panel(
-                                msg,
-                                title=f"[{style}]{title}[/{style}]",
-                                border_style="red" if severity == "CRITICAL" else "yellow",
-                            )
-                        )
-
-                    # Task Completion
-                    elif event_type == "task_complete":
-                        self.spinner.stop()
-                        summary = (
-                            data.get("summary")
-                            or data.get("result")
-                            or data.get("output")
-                            or data.get("content", "")
-                        )
-
-                        if isinstance(summary, dict):
-                            if "constraint_revision" in summary:
-                                summary = (
-                                    summary["constraint_revision"].get("failure_summary")
-                                    or json.dumps(summary, indent=2)
-                                )
-                            else:
-                                summary = json.dumps(summary, indent=2)
-
-                        if summary and not streamed_any_chunk:
-                            console.print("\n[bold cyan]🛎️ CHARON:[/bold cyan] ", end="")
-                            render_response(str(summary))
-                        else:
-                            console.print()
-                        break
-
-                    # Task Errors
-                    elif event_type in ["task_error", "error"]:
-                        self.spinner.stop()
-                        error_msg = data.get("error") or data.get("message", "An unknown error occurred.")
-                        if isinstance(error_msg, dict):
-                            error_msg = json.dumps(error_msg, indent=2)
-                        console.print(f"\n[bold red][System Error]: {error_msg}[/bold red]")
-                        success = False
-                        break
+                    # Route the event to the appropriate handler
+                    is_complete, success = await self._route_event(event_type, data, session)
+                    if is_complete:
+                        return success, self._staged_prompt
 
         except httpx.RequestError as e:
-            self.spinner.stop()
-            console.print(
-                f"\n[bold red]Connection Error:[/bold red] Unable to reach daemon at {self.base_url} ({e})"
-            )
+            self._handle_connection_error(e)
             return False, None
         except websockets.exceptions.ConnectionClosed:
             self.spinner.stop()
             console.print("\n[dim][System]: Event stream disconnected.[/dim]")
+            return False, None
+        except asyncio.CancelledError:
+            self.spinner.stop()
+            console.print("\n[dim][System]: Stream cancelled by user.[/dim]")
+            return False, None
         except Exception as e:
             self.spinner.stop()
             console.print(f"\n[bold red][System Error]: Stream error ({e})[/bold red]")
-            success = False
+            return False, None
 
-        return success, staged_prompt
+    # --- Internal Stream Handlers ---
+
+    async def _post_task(self, prompt: str, agent_override: Optional[str]) -> Optional[str]:
+        """Submits the initial task payload to the REST API."""
+        payload = {
+            "prompt": prompt,
+            "client_id": self.client_id,
+            "agent_override": agent_override,
+        }
+
+        # Extended the timeout to 60s in case the API is sluggish under load
+        resp = await self.http_client.post("/v1/task", json=payload, timeout=60.0)
+        if resp.status_code != 200:
+            self.spinner.stop()
+            console.print(
+                f"\n[bold red][System Error]: Task submission failed ({resp.status_code}: {resp.text})[/bold red]"
+            )
+            return None
+        return resp.json().get("task_id")
+
+    def _should_ignore_event(self, event_task_id: Optional[str], task_id: str, event_type: str) -> bool:
+        """Determines if an event belongs to a different task and should be dropped."""
+        global_events = ["system_alert", "overseer_report"]
+        return bool(event_task_id and task_id and event_task_id != task_id and event_type not in global_events)
+
+    async def _route_event(self, event_type: str, data: Dict[str, Any], session: PromptSession) -> Tuple[bool, bool]:
+        """
+        Routes the event payload to specific handlers.
+        Returns (is_complete, is_success).
+        """
+        heartbeat_events = ["task_heartbeat", "task_progress", "agent_status", "agent_action", "status", "telemetry", "step"]
+        stream_events = ["agent_log", "task_stream", "content_chunk"]
+        proposal_events = ["concierge_suggestion", "concierge_proposal", "proposal"]
+
+        if event_type in heartbeat_events:
+            self._handle_heartbeat(data)
+        elif event_type in stream_events:
+            self._handle_stream_chunk(event_type, data)
+        elif event_type == "gatekeeper_intercept":
+            await self._handle_gatekeeper(data, session)
+        elif event_type in proposal_events:
+            self._handle_proposal(data)
+        elif event_type == "system_alert":
+            self._handle_system_alert(data)
+        elif event_type == "task_complete":
+            self._handle_completion(data)
+            return True, True
+        elif event_type in ["task_error", "error"]:
+            self._handle_error(data)
+            return True, False
+
+        return False, False
+
+    def _handle_heartbeat(self, data: Dict[str, Any]) -> None:
+        step_msg = (
+            data.get("step")
+            or data.get("status_message")
+            or data.get("message")
+            or data.get("status")
+            or data.get("action")
+        )
+        agent = data.get("active_agent") or data.get("agent")
+        elapsed = data.get("elapsed_seconds")
+
+        if step_msg:
+            display_text = f"[{agent}] {step_msg}" if agent else str(step_msg)
+            self.spinner.update(display_text)
+        elif elapsed is not None:
+            agent_label = agent or "Orchestrator"
+            self.spinner.update(f"[{agent_label}] Tending to the arrangements... ({elapsed}s)")
+
+    def _handle_stream_chunk(self, event_type: str, data: Dict[str, Any]) -> None:
+        if data.get("is_step") or data.get("step"):
+            step_text = data.get("step") or data.get("message", "")
+            agent = data.get("active_agent") or data.get("agent")
+            if step_text:
+                display_text = f"[{agent}] {step_text}" if agent else str(step_text)
+                self.spinner.update(display_text)
+        else:
+            chunk = data.get("message") or data.get("content", "")
+            if isinstance(chunk, dict):
+                chunk = json.dumps(chunk, indent=2)
+            if chunk:
+                if event_type in ["content_chunk", "task_stream"]:
+                    self._streamed_any_chunk = True
+                if self.spinner.running:
+                    self.spinner.stop()
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+
+    async def _handle_gatekeeper(self, data: Dict[str, Any], session: PromptSession) -> None:
+        self.spinner.stop()
+        manifest = data.get("manifest", "")
+        action = data.get("action", "Destructive action requested")
+        approval_id = data.get("approval_id")
+
+        if manifest:
+            console.print(manifest)
+        else:
+            console.print("\n[bold yellow]🛡️ GATEKEEPER INTERCEPT:[/bold yellow]")
+            panel_msg = (
+                f"Management requires physical authorization before executing:\n"
+                f"[bold red]{action}[/bold red]\n\n"
+                f"Please reply with '[bold green]proceed[/bold green]' to authorize, or '[bold red]cancel[/bold red]' to abort."
+            )
+            console.print(Panel(panel_msg, border_style="yellow", title="Authorization Required"))
+
+        decision = await session.prompt_async(HTML("<ansiyellow><b>Authorization [proceed/cancel] > </b></ansiyellow>"))
+        decision_str = decision.strip().lower()
+
+        await self.http_client.post(
+            "/v1/gatekeeper/respond",
+            json={
+                "approval_id": approval_id,
+                "decision": decision_str,
+                "client_id": self.client_id,
+            },
+            timeout=10.0
+        )
+        self.spinner.start("Resuming task execution...")
+
+    def _handle_proposal(self, data: Dict[str, Any]) -> None:
+        if self.spinner.running:
+            self.spinner.stop()
+
+        phrase = data.get("phrase") or data.get("recommendation") or data.get("next_step")
+        proposed_cmd = data.get("suggested_prompt") or data.get("proposed_command") or data.get("next_step")
+        proposal_key = f"{phrase}:{proposed_cmd}"
+
+        if phrase and proposal_key not in self._rendered_proposals:
+            self._rendered_proposals.add(proposal_key)
+            self._staged_prompt = proposed_cmd
+
+            panel_body = (
+                f"[bold italic cyan]\"{phrase}\"[/bold italic cyan]\n\n"
+                f"[dim]Use [bold white]↑/↓[/bold white] arrows to select, press [bold white]Enter[/bold white] to confirm:[/dim]"
+            )
+            console.print()
+            console.print(Panel(panel_body, title="[bold blue]🛎️ Concierge Proposal[/bold blue]", border_style="blue", expand=False))
+
+    def _handle_system_alert(self, data: Dict[str, Any]) -> None:
+        severity = data.get("severity", "INFO")
+        title = data.get("title", "System Alert")
+        msg = data.get("message", "")
+        style = "bold red" if severity == "CRITICAL" else "bold yellow"
+        border = "red" if severity == "CRITICAL" else "yellow"
+        console.print(Panel(msg, title=f"[{style}]{title}[/{style}]", border_style=border))
+
+    def _handle_completion(self, data: Dict[str, Any]) -> None:
+        self.spinner.stop()
+        summary = data.get("summary") or data.get("result") or data.get("output") or data.get("content", "")
+
+        if isinstance(summary, dict):
+            if "constraint_revision" in summary:
+                summary = summary["constraint_revision"].get("failure_summary") or json.dumps(summary, indent=2)
+            else:
+                summary = json.dumps(summary, indent=2)
+
+        if summary and not self._streamed_any_chunk:
+            console.print("\n[bold cyan]🛎️ CHARON:[/bold cyan] ", end="")
+            render_response(str(summary))
+        else:
+            console.print()
+
+    def _handle_error(self, data: Dict[str, Any]) -> None:
+        self.spinner.stop()
+        error_msg = data.get("error") or data.get("message", "An unknown error occurred.")
+        if isinstance(error_msg, dict):
+            error_msg = json.dumps(error_msg, indent=2)
+        console.print(f"\n[bold red][System Error]: {error_msg}[/bold red]")
+
+    def _handle_connection_error(self, e: Exception) -> None:
+        self.spinner.stop()
+        console.print(f"\n[bold red]Connection Error:[/bold red] Unable to reach daemon at {self.base_url} ({e})")
+
+    # --- REST Endpoints ---
 
     async def get_concierge_briefing(self) -> str:
         """Fetch dynamic briefing greeting from daemon's Concierge service."""
         try:
-            response = await self._http_client.get(
-                f"{self.base_url}/api/v1/concierge/briefing",
-                headers=self._headers,
-                timeout=10.0,
-            )
+            response = await self.http_client.get("/api/v1/concierge/briefing", timeout=10.0)
             if response.status_code == 200:
                 return response.json().get("greeting", "Welcome to The Continental.")
         except Exception as err:
@@ -321,12 +317,7 @@ class CharonClient:
                 "completed_action": completed_action,
                 "execution_result": execution_result,
             }
-            response = await self._http_client.post(
-                f"{self.base_url}/api/v1/concierge/evaluate",
-                json=payload,
-                headers=self._headers,
-                timeout=10.0,
-            )
+            response = await self.http_client.post("/api/v1/concierge/evaluate", json=payload, timeout=10.0)
             if response.status_code == 200:
                 data = response.json()
                 if data.get("has_proposal"):

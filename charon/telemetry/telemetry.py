@@ -1,5 +1,6 @@
 """
-System Version: v1.0.0 | Refactored Work Contract Architecture
+charon/telemetry/telemetry.py
+System Version: v0.1.0 | File Revision: 1.0.0
 
 Module: Telemetry dispatch utilities for strongly-typed event streaming.
 Enforces the TelemetryBus Protocol for dependency injection.
@@ -7,30 +8,20 @@ Enforces the TelemetryBus Protocol for dependency injection.
 
 import inspect
 import logging
-from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, Optional, Protocol, Union, runtime_checkable
 
-from charon.telemetry.trace import TraceEvent, TraceEventType
+from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus as global_telemetry_bus
 
 logger = logging.getLogger("Charon.Telemetry")
 
 
 @runtime_checkable
 class TelemetryBus(Protocol):
-    """
-    Strict interface for telemetry dispatching.
-    Any bus injected into the system MUST implement this protocol.
-    """
-
-    async def emit(self, event: Dict[str, Any]) -> None:
-        """Dispatches a telemetry event to all connected listeners or sinks."""
+    def emit(self, event: Union[TraceEvent, Dict[str, Any]]) -> Any:
         ...
 
 
 def resolve_trace_event_type(event_type: Any) -> TraceEventType:
-    """
-    Ensures input is a valid TraceEventType enum.
-    Fast-fails if an invalid event type is provided rather than guessing via regex.
-    """
     if isinstance(event_type, TraceEventType):
         return event_type
 
@@ -44,35 +35,21 @@ def resolve_trace_event_type(event_type: Any) -> TraceEventType:
 
 
 async def emit_telemetry(
-        event: TraceEvent,
-        bus: Optional[TelemetryBus] = None,
+    event: Union[TraceEvent, Dict[str, Any]],
+    bus: Optional[TelemetryBus] = None,
 ) -> None:
-    """
-    Async dispatch of trace events through an injected TelemetryBus interface.
+    """Async dispatch of trace events. Falls back to global singleton if bus is None."""
+    target_bus = bus if bus is not None else global_telemetry_bus
 
-    Args:
-        event: The strongly-typed TraceEvent instance.
-        bus: The injected TelemetryBus implementation. If None, telemetry emission is skipped.
-    """
-    if bus is None:
-        return
-
-    if not isinstance(bus, TelemetryBus) and not hasattr(bus, "emit"):
+    if not hasattr(target_bus, "emit"):
         logger.warning(
-            f"Invalid telemetry_bus injected: {type(bus).__name__}. "
+            f"Invalid telemetry_bus injected: {type(target_bus).__name__}. "
             "Must implement TelemetryBus Protocol."
         )
         return
 
     try:
-        if hasattr(event, "model_dump"):
-            event_dict = event.model_dump(mode="json")
-        elif hasattr(event, "dict"):
-            event_dict = event.dict()
-        else:
-            event_dict = dict(event)
-
-        res = bus.emit(event_dict)
+        res = target_bus.emit(event)
         if inspect.isawaitable(res):
             await res
     except Exception as err:

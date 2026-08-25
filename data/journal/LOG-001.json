@@ -1,0 +1,12 @@
+{
+  "id": "LOG-001",
+  "title": "Session Context \u2014 2026-08-24",
+  "content": "## What was done\n- Added logic to implement session logs in the dashboard's Dev Journal\n- Resolved problem in the planner that caused it to default to the Generalist on every DAG.\n- Resolved async issue in coordinator that was stalling Uvicorn\n- Added telemetry instrumentation from core.orchestration up into coordinator.engine and into agents.base to enable Live Telemetry Trace\n- Scheduled core.session for deletion and removed hooks from orchestration.py\n- Added heartbeat to Uvicorn in daemon.py\n- Added systemd service monitoring for charon service files in Integration Matrix dashboard\n- Transformed CLI entry point into a thin client\n- Added comparable logic for commanding charon to the Integration Matrix -> Charon Daemon dashboard [@Dev Journal](/docs/manual/journal-subsystem) \n\n## Where I left off\n- Building out the '@' linking functionality between pages\n\n## Next steps\n- Implement native react router in the application\n- Ensure adding an '@' symbol allows selecting a specific manual page\n ",
+  "timestamp": "2026-08-24T19:18:16.739Z",
+  "type": "session",
+  "status": null,
+  "priority": "medium",
+  "linkedArtifacts": [],
+  "linkedTickets": [],
+  "updatedAt": "2026-08-25T21:40:02Z"
+}

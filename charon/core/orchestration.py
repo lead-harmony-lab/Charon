@@ -1,12 +1,12 @@
 """
 charon/core/orchestration.py
-System Version: v2.2.0 | File Revision: 2.4.3
+System Version: v2.2.0 | File Revision: 2.4.4
 
 Module: Main Orchestration Engine facade for Charon.
 Refactored for the Active Execution Envelope paradigm.
 Delegates strictly to the Coordinator for execution and the Concierge for UX proposals.
 Updated: Direct SkillLibrarian encapsulation for agent hydration and tool discovery with comprehensive diagnostic logging
-and DB payload result extraction.
+and DB payload result extraction. Refactored to use native async execution via _safe_execute.
 """
 
 import inspect
@@ -17,7 +17,7 @@ from charon.config.paths import STATE_DB_PATH
 from charon.telemetry.ledger import ExecutionLedger
 from charon.core.skills import SkillLibrarian
 from charon.core.state import StateManager
-from charon.core.coordinator.engine import Coordinator, _exec_sync_or_async
+from charon.core.coordinator.engine import Coordinator, _safe_execute
 from charon.core.coordinator.blackboard import TaskBlackboard
 
 logger = logging.getLogger("Charon.Engine")
@@ -225,7 +225,7 @@ class OrchestrationEngine:
             # 2. Trigger Zero-Trust Execution Lifecycle
             logger.info("[ENGINE.PATHWAY] Step 2: Triggering Coordinator Zero-Trust Lifecycle...")
 
-            _exec_sync_or_async(
+            await _safe_execute(
                 self.coordinator.run_task_lifecycle,
                 task_id=task_id,
                 user_input=raw_prompt,

@@ -15,6 +15,7 @@ from charon.gateway.routes.websocket import router as websocket_router
 from charon.gateway.routes.concierge import router as concierge_router
 from charon.gateway.routes.docs import router as docs_router
 from charon.gateway.routes.journal import router as journal_router
+from charon.gateway.routes.system import router as system_router
 
 router = APIRouter()
 
@@ -26,3 +27,4 @@ router.include_router(websocket_router)
 router.include_router(concierge_router)
 router.include_router(docs_router)
 router.include_router(journal_router)
+router.include_router(system_router)

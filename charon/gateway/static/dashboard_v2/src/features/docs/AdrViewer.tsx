@@ -14,12 +14,30 @@ interface ADR {
   content: string;
 }
 
+/** Formats ISO timestamp string to readable date + time string */
+function formatTimestamp(isoString?: string): string {
+  if (!isoString) return '';
+  try {
+    const date = new Date(isoString);
+    return date.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return isoString;
+  }
+}
+
 export function AdrViewer() {
   return (
     <FlatDocumentViewer<ADR>
       title="Decision Records"
       docType="adr"
       apiPath="/v1/docs/adrs"
+      baseRoute="/docs/adrs" // NEW: Added baseRoute for deep linking
       extractData={(data) => data.adrs}
       filterItem={(adr, query) => {
         const q = query.toLowerCase();
@@ -31,7 +49,9 @@ export function AdrViewer() {
       renderListItem={(adr) => (
         <>
           <div style={{ fontWeight: 'bold' }}>{adr.id}: {adr.title}</div>
-          <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '4px' }}>{adr.status} • {adr.date}</div>
+          <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '4px' }}>
+            {adr.status} • {formatTimestamp(adr.date)}
+          </div>
         </>
       )}
       renderViewerHeader={(adr) => (
@@ -39,7 +59,7 @@ export function AdrViewer() {
           <span style={{ fontSize: '0.8rem', padding: '2px 8px', borderRadius: '4px', backgroundColor: '#38bdf820', color: '#38bdf8', border: '1px solid #38bdf8', marginRight: '8px' }}>
             {adr.status}
           </span>
-          <span style={{ fontSize: '0.85rem', color: '#64748b' }}>{adr.date}</span>
+          <span style={{ fontSize: '0.85rem', color: '#64748b' }}>{formatTimestamp(adr.date)}</span>
           <h2 style={{ color: '#f8fafc', margin: '0.5rem 0 0 0' }}>{adr.id}: {adr.title}</h2>
         </>
       )}

@@ -1,0 +1,12 @@
+{
+  "id": "LOG-004",
+  "title": "Build Dashboard",
+  "content": "This dashboard is built on node / react / vite\n\nNavigate to dashboard root directory `~/Projects/Tools/Charon/charon/gateway/static/dashboard_v2`\n- The vite.config.ts file is set up for running the production build of the dashboard. Attempting to run the live view requires modifications to this file.\n\nBuilding a new version of the dashboard:\n- From the root directory, run \n```bash\nnpm run build\n```\n",
+  "timestamp": "2026-08-25T22:37:29.748Z",
+  "type": "runbook",
+  "status": null,
+  "priority": "medium",
+  "linkedArtifacts": [],
+  "linkedTickets": [],
+  "updatedAt": "2026-08-25T23:12:31Z"
+}

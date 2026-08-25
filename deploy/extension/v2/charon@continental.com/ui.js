@@ -174,7 +174,6 @@ export class CharonUI {
                     }
                 });
 
-                // Removed log line for cleaner journalctl
             } catch (err) {
                 console.error(`[Charon] Failed to spawn Avatar overlay: ${err.message}`);
                 this._avatarSubprocess = null;
@@ -233,6 +232,11 @@ export class CharonUI {
         const activeAgent = data.agent_name || payload.agent_name || 'Concierge';
 
         switch (eventType) {
+            case 'desktop_ipc':
+                // Route the inner payload string/object to the dedicated IPC handler
+                this._handleDesktopIPC(payload.payload, payload.client_id);
+                break;
+
             case 'overseer_report': this._updateOverseerTelemetry(data); break;
             case 'system_alert': this._handleSystemAlert(data); break;
             case 'gatekeeper_intercept':
@@ -258,6 +262,36 @@ export class CharonUI {
                 let statusText = data.status || payload.message || 'Processing';
                 this.updateStatus(statusText, activeAgent);
                 break;
+        }
+    }
+
+    /**
+     * Executes commands sent from the Dashboard via the Daemon.
+     */
+    _handleDesktopIPC(ipcPayload, senderId) {
+        if (!ipcPayload) return;
+
+        // Route based on the "target" system specified in the JSON
+        if (ipcPayload.target === 'hud') {
+
+            if (ipcPayload.command === 'show_notification') {
+                const title = ipcPayload.title || '👔 Charon IPC';
+                const message = ipcPayload.message || 'Empty message received.';
+                Main.notify(title, message);
+                console.debug(`[Charon UI] Notification displayed. Sent by: ${senderId}`);
+            }
+
+            else if (ipcPayload.command === 'toggle_avatar') {
+                // Toggle the UI switch, which inherently fires the 'toggled' signal
+                // and launches/kills the avatar subprocess
+                if (this.avatarSwitch) {
+                    this.avatarSwitch.setToggleState(!this.avatarSwitch.state);
+                }
+            }
+
+            else {
+                console.warn(`[Charon UI] Unknown HUD command: ${ipcPayload.command}`);
+            }
         }
     }
 

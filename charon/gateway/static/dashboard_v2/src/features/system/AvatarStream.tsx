@@ -3,7 +3,7 @@
  * @description
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { wsClient, CharonWSFrame, ConciergeAvatarState } from '../../core/ws/CharonStream';
+import { wsClient, CharonWSFrame } from '../../core/ws/CharonStream';
 
 export const AvatarStream: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);

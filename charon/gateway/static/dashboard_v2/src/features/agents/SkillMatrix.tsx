@@ -1,3 +1,7 @@
+/**
+ * @file src/features/agents/SkillMatrix.tsx
+ * @description
+ */
 import React, { useEffect, useState, useCallback } from 'react';
 import { authFetch } from '../../core/api/client';
 import { wsClient } from '../../core/ws/CharonStream';

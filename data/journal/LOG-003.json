@@ -1,0 +1,12 @@
+{
+  "id": "LOG-003",
+  "title": "Dashboard Upgrades",
+  "content": "Tasks completed:\n- Added router to App.tsx. Installed react-router-dom and then upgraded to a hash router. This solved page history navigation, refresh issues with authFetch, and enabled cross-page linking.\n- Completed troubleshooting on the '@' feature and confirmed the ability to link to a manual page within a dev log. Still have not checked if linking to ADR or Spec functions correctly\n- Updated default initial view in the Dev Log to show the latest session log saved instead of just the last document created.\n- Refactored Dev Journal -> Dev Log to show a runbook (Build) journal type\n- Added tabs to the Dev Journal side panel to filter for journal type\n- Added text CSS size cycling to the markdown toolbar\n- Unified feature sets on the markdown toolbars for the Journal log viewer and the Manual Viewer.",
+  "timestamp": "2026-08-25T21:47:47.639Z",
+  "type": "session",
+  "status": null,
+  "priority": "medium",
+  "linkedArtifacts": [],
+  "linkedTickets": [],
+  "updatedAt": "2026-08-25T23:14:27Z"
+}

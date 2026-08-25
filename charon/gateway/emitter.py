@@ -229,3 +229,15 @@ class EventEmitter:
                 data=data,
             )
         )
+
+    async def emit_system_event(self, payload: Dict[str, Any]) -> None:
+        """Emit system-level events (like TaskDispatched) to acknowledge ingestion and prevent timeouts."""
+        event_type = payload.get("event_type", "system_event")
+        await self.emit_targeted(
+            WSEvent(
+                event_type=event_type,
+                task_id=self.current_task_id or payload.get("task_id"),
+                agent_name="System",
+                data=payload,
+            )
+        )

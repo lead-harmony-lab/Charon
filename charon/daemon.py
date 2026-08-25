@@ -314,10 +314,15 @@ async def serve_spa(catchall: str):
         return FileResponse(file_path)
     return FileResponse(os.path.join(static_dir, "index.html"))
 
-
 def main():
-    uvicorn.run("charon.daemon:app", host="0.0.0.0", port=8000, log_level="info")
-
+    uvicorn.run(
+        "charon.daemon:app",
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        ws_ping_interval=20.0,
+        ws_ping_timeout=20.0
+    )
 
 if __name__ == "__main__":
     main()

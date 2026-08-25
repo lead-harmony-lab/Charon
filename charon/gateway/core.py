@@ -1,6 +1,6 @@
 """
 charon/gateway/core.py
-System Version: v0.1.1 | File Revision: 2.1.4
+System Version: v0.1.1 | File Revision: 2.1.5
 
 Module: Charon Core Daemon Orchestrator.
 
@@ -25,7 +25,6 @@ from charon.concierge.core import ConciergeService
 from charon.core.orchestration import OrchestrationEngine
 from charon.telemetry.ledger import ExecutionLedger
 from charon.gateway.journal import GatewayJournal
-from charon.core.session import SessionGateway
 from charon.core.state import StateManager, TaskStatus
 from charon.core.workspace import WorkspaceManager
 from charon.gateway.emitter import EventEmitter
@@ -138,12 +137,10 @@ class CharonDaemon:
         self.ledger = ExecutionLedger()
         self.workspace_mgr = WorkspaceManager()
 
-        # Replaced CoordinatorJournal with GatewayJournal
         self.journal = GatewayJournal(state_manager=self.state_mgr)
 
         if engine:
             self.engine = engine
-            self.orchestrator = SessionGateway(engine=self.engine, journal=self.journal)
         else:
             self.engine = OrchestrationEngine(
                 heavy_model=heavy_model,
@@ -151,7 +148,6 @@ class CharonDaemon:
                 state_manager=self.state_mgr,
                 ledger=self.ledger,
             )
-            self.orchestrator = SessionGateway(engine=self.engine, journal=self.journal)
 
         # Initialize Concierge with confidence threshold guardrails and required LLM client
         llm_instance = getattr(self.engine, "llm_client", getattr(self.engine, "llm", self.engine))
@@ -170,7 +166,6 @@ class CharonDaemon:
             ledger=self.ledger,
         )
 
-        # Updated TelemetryReporter instantiation pointing to the new journal
         self.telemetry = TelemetryReporter(
             queue_provider=self.journal.qsize if hasattr(self.journal, "qsize") else lambda: 0,
             gatekeeper_status_provider=lambda: self.gatekeeper.awaiting_approval,
@@ -372,7 +367,7 @@ class CharonDaemon:
                                 data={"approval_id": active_id, "decision": dec},
                             )
 
-                        # FIX 3: Acknowledge the user's command before continuing
+                        # Acknowledge the user's command before continuing
                         await self.emitter.emit_completed(f"[Authorization {dec}]")
                         continue
 
@@ -444,7 +439,7 @@ class CharonDaemon:
                     routing_hint=routing_hint_payload,
                 )
 
-                # FIX 1 & 2: Structural conditionals logic mapping the event emitter
+                # Structural conditionals logic mapping the event emitter
                 if result:
                     if not str(result).startswith("[Awaiting Authorization]"):
                         if task_id:
@@ -454,8 +449,8 @@ class CharonDaemon:
                                 event_type="task_completed",
                                 data={"result_summary": str(result)[:300]},
                             )
-                        if hasattr(self.orchestrator, "memory"):
-                            self.orchestrator.memory.add_system_message(str(result))
+                        if hasattr(self.engine, "memory"):
+                            self.engine.memory.add_system_message(str(result))
 
                         await self.evaluate_and_emit_concierge(
                             user_input=user_input,
@@ -480,10 +475,10 @@ class CharonDaemon:
                                 data={"reason": result},
                             )
 
-                        # FIX 1: Actually emit the authorization request to the user
+                        # Actually emit the authorization request to the user
                         await self.emitter.emit_completed(result)
                 else:
-                    # FIX 2: Catch-all for engine returning None or empty strings
+                    # Catch-all for engine returning None or empty strings
                     msg = "[System Notice] Engine returned an empty response."
                     if task_id:
                         await self.state_mgr.update_status(task_id, TaskStatus.FAILED, error_message=msg)
@@ -517,7 +512,7 @@ class CharonDaemon:
         logger.info("Initiating OrchestrationEngine shutdown sequence...")
 
         # 1. Halt the DAG Executor (Stops new nodes from being dispatched)
-        dag_executor = getattr(self.engine, "dag_executor", getattr(self.orchestrator, "dag_executor", None))
+        dag_executor = getattr(self.engine, "dag_executor", None)
         if dag_executor and hasattr(dag_executor, "shutdown"):
             try:
                 if inspect.iscoroutinefunction(dag_executor.shutdown):
@@ -528,19 +523,19 @@ class CharonDaemon:
             except Exception as e:
                 logger.error(f"Error shutting down DAG executor: {e}")
 
-        # 2. Halt Orchestrator (Kills active agent loops, flushes ChromaDB)
-        if hasattr(self.orchestrator, "shutdown"):
+        # 2. Halt Engine (Kills active agent loops, flushes ChromaDB)
+        if hasattr(self.engine, "shutdown"):
             try:
-                if inspect.iscoroutinefunction(self.orchestrator.shutdown):
-                    await self.orchestrator.shutdown()
+                if inspect.iscoroutinefunction(self.engine.shutdown):
+                    await self.engine.shutdown()
                 else:
-                    self.orchestrator.shutdown()
-                logger.debug("Orchestrator shutdown complete.")
+                    self.engine.shutdown()
+                logger.debug("Engine shutdown complete.")
             except Exception as e:
-                logger.error(f"Error shutting down Orchestrator: {e}")
+                logger.error(f"Error shutting down Engine: {e}")
 
         # 3. Safely Close SQLite Connections (State, Ledger, Librarian)
-        librarian = getattr(self.engine, "librarian", getattr(self.orchestrator, "librarian", None))
+        librarian = getattr(self.engine, "librarian", None)
         persistent_stores = [
             (self.state_mgr, "StateManager"),
             (self.ledger, "ExecutionLedger"),

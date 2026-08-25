@@ -5,8 +5,9 @@
 import React, { useState } from 'react';
 import { SystemdControl } from './SystemdControl';
 import { GnomeIPC } from './GnomeIPC';
+import { CharonControl } from './CharonControl';
 
-type MatrixSubTab = 'systemd' | 'gnome';
+type MatrixSubTab = 'systemd' | 'gnome' | 'charon';
 
 export function IntegrationMatrix() {
   const [activeSubTab, setActiveSubTab] = useState<MatrixSubTab>('systemd');
@@ -18,7 +19,7 @@ export function IntegrationMatrix() {
         <div>
           <h2 style={{ margin: 0, fontSize: '1.25rem', color: '#f8fafc' }}>Integration Matrix</h2>
           <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: '#94a3b8' }}>
-            Control system background services, systemd units, and desktop IPC extension hooks.
+            Control system background services, desktop IPC, and the Charon daemon.
           </p>
         </div>
 
@@ -26,43 +27,44 @@ export function IntegrationMatrix() {
         <div style={{ display: 'flex', backgroundColor: '#0f172a', borderRadius: '6px', padding: '4px', border: '1px solid #334155' }}>
           <button
             onClick={() => setActiveSubTab('systemd')}
-            style={{
-              padding: '0.4rem 1rem',
-              border: 'none',
-              borderRadius: '4px',
-              backgroundColor: activeSubTab === 'systemd' ? '#38bdf8' : 'transparent',
-              color: activeSubTab === 'systemd' ? '#0f172a' : '#94a3b8',
-              fontWeight: activeSubTab === 'systemd' ? 'bold' : 'normal',
-              cursor: 'pointer',
-              fontSize: '0.85rem',
-              transition: 'all 0.2s ease'
-            }}
+            style={getTabStyle(activeSubTab === 'systemd')}
           >
-            Systemd Control
+            Systemd
           </button>
           <button
             onClick={() => setActiveSubTab('gnome')}
-            style={{
-              padding: '0.4rem 1rem',
-              border: 'none',
-              borderRadius: '4px',
-              backgroundColor: activeSubTab === 'gnome' ? '#38bdf8' : 'transparent',
-              color: activeSubTab === 'gnome' ? '#0f172a' : '#94a3b8',
-              fontWeight: activeSubTab === 'gnome' ? 'bold' : 'normal',
-              cursor: 'pointer',
-              fontSize: '0.85rem',
-              transition: 'all 0.2s ease'
-            }}
+            style={getTabStyle(activeSubTab === 'gnome')}
           >
             Desktop IPC
+          </button>
+          <button
+            onClick={() => setActiveSubTab('charon')}
+            style={getTabStyle(activeSubTab === 'charon')}
+          >
+            Charon Daemon
           </button>
         </div>
       </div>
 
       {/* Sub-View Panel */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {activeSubTab === 'systemd' ? <SystemdControl /> : <GnomeIPC />}
+        {activeSubTab === 'systemd' && <SystemdControl />}
+        {activeSubTab === 'gnome' && <GnomeIPC />}
+        {activeSubTab === 'charon' && <CharonControl />}
       </div>
     </div>
   );
 }
+
+// Extracted style helper to keep the JSX clean
+const getTabStyle = (isActive: boolean): React.CSSProperties => ({
+  padding: '0.4rem 1rem',
+  border: 'none',
+  borderRadius: '4px',
+  backgroundColor: isActive ? '#38bdf8' : 'transparent',
+  color: isActive ? '#0f172a' : '#94a3b8',
+  fontWeight: isActive ? 'bold' : 'normal',
+  cursor: 'pointer',
+  fontSize: '0.85rem',
+  transition: 'all 0.2s ease'
+});

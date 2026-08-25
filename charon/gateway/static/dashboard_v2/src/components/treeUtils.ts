@@ -1,3 +1,9 @@
+/**
+ * @file src/components/treeUtils.ts
+ * @description
+ */
+import { DocMentionItem } from '../features/docs/types';
+
 export interface ManualNode {
   id: string;
   title: string;
@@ -34,6 +40,18 @@ export const findNodePath = (nodes: ManualNode[], targetId: string, currentPath:
     }
   }
   return null;
+};
+
+// Recursively flattens the tree structure into a flat array of DocMentionItem entries for autocomplete
+export const flattenManualTree = (nodes: ManualNode[]): DocMentionItem[] => {
+  let items: DocMentionItem[] = [];
+  for (const node of nodes) {
+    items.push({ id: node.id, title: node.title, category: 'manual' });
+    if (node.children && node.children.length > 0) {
+      items = items.concat(flattenManualTree(node.children));
+    }
+  }
+  return items;
 };
 
 // Recursively filters nodes matching query in title or content, preserving parent structures

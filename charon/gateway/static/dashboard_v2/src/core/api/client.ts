@@ -1,12 +1,19 @@
+/**
+ * @file src/core/api/client.ts
+ * @description
+ */
 export function getApiKey(): string {
-  const urlParams = new URLSearchParams(window.location.search);
-  let apiKey = urlParams.get('api_key');
+  // Use the URL object to safely parse the entire location
+  const url = new URL(window.location.href);
+  let apiKey = url.searchParams.get('api_key');
 
   if (apiKey) {
     localStorage.setItem('charon_api_key', apiKey.trim());
-    // Clean URL parameter to prevent key exposure in address bar & history
-    const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
-    window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+
+    // Surgically remove ONLY the api_key. This preserves the hash (#/journal)
+    // and any other query params you might be testing with.
+    url.searchParams.delete('api_key');
+    window.history.replaceState({ path: url.toString() }, '', url.toString());
   } else {
     apiKey = localStorage.getItem('charon_api_key');
   }

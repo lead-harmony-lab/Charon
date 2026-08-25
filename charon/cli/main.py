@@ -1,10 +1,10 @@
 """
 charon/cli/main.py
-System Version: v3.1.0 | File Revision: 2.0.0
+System Version: v3.1.0 | File Revision: 2.3.0
 
 Module: Thin CLI entrypoint and interactive shell loop execution.
-Includes direct launcher support for real-time TelemetryBus trace monitoring,
-Skill Librarian permission & registry management, and Human-in-the-Loop Skill Forge.
+Includes direct launcher support for real-time TelemetryBus trace monitoring
+and Skill Librarian permission & registry management.
 Queries the daemon-resident Concierge Service via HTTP API for dynamic briefings and proposals.
 """
 
@@ -33,16 +33,12 @@ Charon Tool Suite Subcommands:
                              Manage skill permissions, manifest validation, DB indexing,
                              and staging/quarantine workflows. Omit subcommands to launch
                              the interactive TUI Control Panel.
-  charon forge [list|resolve|interactive]
-                             Inspect skill gaps logged by agents and forge skill scaffolds.
   charon telemetry           Launch live Rich terminal telemetry trace monitor.
 
 Examples:
-  charon librarian
   charon librarian list
   charon librarian grant extract_pdf_ocr_skill The_Archivist
-  charon librarian promote hallucinated_vector_pruning_action_skill
-  charon forge resolve --gap-id 1 --action custom_action --agent The_Engineer
+  charon telemetry
   charon "Check battery level on workspace robot" -n
 """
 
@@ -51,57 +47,8 @@ async def async_main() -> None:
     """Main async entrypoint for the Charon CLI client."""
 
     # -------------------------------------------------------------------------
-    # Direct Subcommand Intercepts (Bypasses top-level argparse flag stealing)
+    # Argparse Configuration
     # -------------------------------------------------------------------------
-    if len(sys.argv) > 1:
-        subcmd = sys.argv[1].lower()
-
-        # 1. Skill Librarian Intercept
-        if subcmd in ("librarian", "skills"):
-            lib_args = sys.argv[2:]
-            try:
-                from charon.cli.librarian import main as run_librarian
-                res = run_librarian(lib_args)
-                sys.exit(res if isinstance(res, int) else 0)
-            except Exception as exc:
-                console.print(f"[bold red]Librarian Error:[/bold red] {exc}")
-                sys.exit(1)
-
-        # 2. Skill Forge Intercept
-        if subcmd in ("forge", "skill-forge", "skill_forge"):
-            forge_args = sys.argv[2:]
-            try:
-                try:
-                    from charon.skill_forge_cli import async_main as run_skill_forge
-                except ImportError:
-                    from charon.skill_forge_cli import main as run_skill_forge
-
-                if asyncio.iscoroutinefunction(run_skill_forge):
-                    res = await run_skill_forge(forge_args)
-                else:
-                    res = run_skill_forge(forge_args)
-                sys.exit(res if isinstance(res, int) else 0)
-            except Exception as exc:
-                console.print(f"[bold red]Skill Forge Error:[/bold red] {exc}")
-                sys.exit(1)
-
-        # 3. Telemetry Viewer Intercept
-        if subcmd == "telemetry":
-            try:
-                try:
-                    from charon.telemetry.viewer import async_main as run_telemetry_viewer
-                except ImportError:
-                    from charon.telemetry.viewer import main as run_telemetry_viewer
-
-                if asyncio.iscoroutinefunction(run_telemetry_viewer):
-                    await run_telemetry_viewer()
-                else:
-                    run_telemetry_viewer()
-                sys.exit(0)
-            except Exception as exc:
-                console.print(f"[bold red]Telemetry Viewer Error:[/bold red] {exc}")
-                sys.exit(1)
-
     parser = argparse.ArgumentParser(
         prog="charon",
         description="The Continental Concierge CLI Client and Ecosystem Tools for Charon.",
@@ -109,16 +56,10 @@ async def async_main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "command", nargs="*", help="Optional command string to execute immediately."
+        "command", nargs="*", help="Optional command string or subcommand to execute immediately."
     )
     parser.add_argument(
         "-a", "--agent", help="Bypass triage router and force execution on a target agent."
-    )
-    parser.add_argument(
-        "-f",
-        "--forge",
-        action="store_true",
-        help="Launch the interactive Skill Forge CLI wizard.",
     )
     parser.add_argument(
         "-k", "--api-key", default=DEFAULT_API_KEY, help="API Key for Charon daemon authorization."
@@ -128,23 +69,22 @@ async def async_main() -> None:
     )
     parser.add_argument("--ping", action="store_true", help="Check daemon reachability.")
     parser.add_argument(
-        "-t",
-        "--telemetry",
-        action="store_true",
-        help="Launch the real-time Rich telemetry trace viewer.",
+        "-t", "--telemetry", action="store_true", help="Launch the real-time Rich telemetry trace viewer."
     )
     parser.add_argument("--url", default=DEFAULT_HOST, help="Target Charon daemon HTTP URL.")
     parser.add_argument(
-        "-v",
-        "--version",
-        action="version",
-        version="Charon v3.1.0 (FastAPI Gateway Engine)",
+        "-v", "--version", action="version", version="Charon v3.1.0 (FastAPI Gateway Engine)",
     )
 
     args, unknown_args = parser.parse_known_args()
 
-    # Post-Argparse Fallback: Skill Librarian Intercept
-    if args.command and args.command[0].lower() in ("librarian", "skills"):
+    # -------------------------------------------------------------------------
+    # Centralized CLI Routing (Gracefully handles flags + subcommands)
+    # -------------------------------------------------------------------------
+    subcmd = args.command[0].lower() if args.command else None
+
+    # 1. Skill Librarian Routing
+    if subcmd in ("librarian", "skills"):
         lib_args = args.command[1:] + unknown_args
         try:
             from charon.cli.librarian import main as run_librarian
@@ -154,8 +94,8 @@ async def async_main() -> None:
             console.print(f"[bold red]Librarian Error:[/bold red] {exc}")
             sys.exit(1)
 
-    # Telemetry Viewer Intercept
-    if args.telemetry or (args.command and args.command[0].lower() == "telemetry"):
+    # 2. Telemetry Viewer Routing
+    if args.telemetry or subcmd == "telemetry":
         try:
             try:
                 from charon.telemetry.viewer import async_main as run_telemetry_viewer
@@ -166,53 +106,21 @@ async def async_main() -> None:
                 await run_telemetry_viewer()
             else:
                 run_telemetry_viewer()
+            sys.exit(0)
         except ImportError:
-            console.print(
-                "[bold red]Error:[/bold red] Telemetry viewer module (`charon.telemetry.viewer`) not found."
-            )
+            console.print("[bold red]Error:[/bold red] Telemetry module (`charon.telemetry.viewer`) not found.")
             sys.exit(1)
         except Exception as exc:
             console.print(f"[bold red]Telemetry Viewer Error:[/bold red] {exc}")
             sys.exit(1)
-        sys.exit(0)
 
-    # Skill Forge CLI Intercept (Flag-based fallback)
-    is_forge_cmd = args.forge or (
-        args.command and args.command[0].lower() in ("forge", "skill-forge", "skill_forge")
-    )
-    if is_forge_cmd:
-        if args.command and args.command[0].lower() in ("forge", "skill-forge", "skill_forge"):
-            forge_args: List[str] = args.command[1:] + unknown_args
-        else:
-            forge_args = (args.command if args.command else []) + unknown_args
-
-        try:
-            try:
-                from charon.skill_forge_cli import async_main as run_skill_forge
-            except ImportError:
-                from charon.skill_forge_cli import main as run_skill_forge
-
-            if asyncio.iscoroutinefunction(run_skill_forge):
-                await run_skill_forge(forge_args)
-            else:
-                run_skill_forge(forge_args)
-        except ImportError:
-            console.print(
-                "[bold red]Error:[/bold red] Skill Forge module (`charon.skill_forge_cli`) not found."
-            )
-            sys.exit(1)
-        except Exception as exc:
-            console.print(f"[bold red]Skill Forge Error:[/bold red] {exc}")
-            sys.exit(1)
-        sys.exit(0)
-
-    # Validate Non-Interactive Flag
     if args.non_interactive and not args.command:
-        console.print(
-            "[bold red]Error:[/bold red] Non-interactive mode (-n / --non-interactive) requires a command string."
-        )
+        console.print("[bold red]Error:[/bold red] Non-interactive mode (-n / --non-interactive) requires a command string.")
         sys.exit(1)
 
+    # -------------------------------------------------------------------------
+    # Core Client Setup & Interactive Shell Execution
+    # -------------------------------------------------------------------------
     client = CharonClient(base_url=args.url, api_key=args.api_key)
 
     try:
@@ -221,23 +129,17 @@ async def async_main() -> None:
                 console.print("[bold green]✓[/bold green] Charon daemon is online and responsive.")
                 sys.exit(0)
             else:
-                console.print(
-                    f"[bold red]✗ Connection Refused:[/bold red] Charon daemon is not responding at {args.url}."
-                )
+                console.print(f"[bold red]✗ Connection Refused:[/bold red] Charon daemon is not responding at {args.url}.")
                 sys.exit(1)
 
         if not await client.ping_daemon():
-            console.print(
-                f"[bold red]Connection Refused:[/bold red] Charon daemon is not responding at {args.url}."
-            )
+            console.print(f"[bold red]Connection Refused:[/bold red] Charon daemon is not responding at {args.url}.")
             console.print("[dim]Ensure the daemon is running (`python3 daemon.py` or systemd service).[/dim]")
             sys.exit(1)
 
         session = PromptSession(history=InMemoryHistory())
 
-        # -------------------------------------------------------------------------
         # Request Dynamic Greeting from Daemon Concierge Service
-        # -------------------------------------------------------------------------
         if not args.non_interactive and not args.command:
             with console.status("[dim]Consulting the ledger...[/dim]", spinner="dots"):
                 greeting_text = await client.get_concierge_briefing()
@@ -269,6 +171,7 @@ async def async_main() -> None:
             if args.non_interactive:
                 sys.exit(0 if success else 1)
 
+        # Main CLI Interactive Loop
         while True:
             try:
                 if staged_input:
@@ -301,13 +204,10 @@ async def async_main() -> None:
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[bold blue]A wise decision. Good evening.[/bold blue]")
                 break
+
     finally:
-        # Gracefully close underlying HTTP sessions
-        if hasattr(client, "close"):
-            if asyncio.iscoroutinefunction(client.close):
-                await client.close()
-            else:
-                client.close()
+        # Gracefully close the underlying HTTP connection pool
+        await client.close()
 
 
 def main() -> None:

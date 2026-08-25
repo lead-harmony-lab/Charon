@@ -305,9 +305,9 @@ class SkillLibrarian(
     get_tool_catalog = get_execution_tool_catalog
     get_execution_tools = get_execution_tool_catalog
 
-    # =========================================================================
+    # ======================================
     # Manifest Control & System Topology API
-    # =========================================================================
+    # ======================================
 
     def get_system_topology(self, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
         """Builds a comprehensive manifest of all active agents and their bound capabilities."""

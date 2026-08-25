@@ -36,6 +36,7 @@ export function SpecsViewer() {
       title="System Specifications"
       docType="spec"
       apiPath="/v1/docs/specs"
+      baseRoute="/docs/specs" // NEW: Required for deep linking and standard routing
       extractData={(data) => data.specs}
       filterItem={(spec, query) => {
         const q = query.toLowerCase();

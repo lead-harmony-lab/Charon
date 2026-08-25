@@ -10,7 +10,7 @@ from charon.core.coordinator.blackboard import (
     TaskBlackboard,
     TaskStatus,
 )
-from charon.core.session import SessionGateway
+from charon.core.session_delete import SessionGateway
 from charon.core.utils import (
     clean_json_string,
     get_schema_json,

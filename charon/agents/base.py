@@ -1,15 +1,17 @@
 """
 charon/agents/base.py
-System Version: v1.0.0 | File Revision: 4.3.1
+System Version: v1.1.0 | File Revision: 4.4.1
 
 Module: Core BaseAgent interface defining unified probing, health checks,
 declarative manifest capabilities, dynamic skill lookup via SkillLibrarian SSOT,
 and strict Zero-Trust Ephemeral Contract enforcement with JIT Expansion (The Interceptor).
+Refactored for unified TelemetryBus broadcasting and standard lifecycle tracing.
 """
 
 from abc import ABC, abstractmethod
 import logging
 import shutil
+import time
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -20,6 +22,7 @@ from charon.core.skills import SkillLibrarian
 from charon.core.permissions.middleware import CBACPermissionMiddleware
 from charon.core.utils import normalize_role_name
 from charon.telemetry.ledger import ExecutionLedger
+from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
 logger = logging.getLogger("charon.agents.base")
 
@@ -115,6 +118,14 @@ class BaseAgent(ABC):
         self._authorized_tools = list(payload.get("authorized_tools", []))
 
         if not self._active_contract_id:
+            telemetry_bus.emit(
+                TraceEvent(
+                    event_type=TraceEventType.ESCALATION,
+                    agent_name=self.name,
+                    action="missing_active_contract",
+                    details={"agent_id": self.agent_id},
+                )
+            )
             raise ValueError(
                 f"ZERO-TRUST VIOLATION: Execution blocked for '{self.agent_id}'. "
                 "No active_contract_id provided by the Coordinator."
@@ -129,8 +140,18 @@ class BaseAgent(ABC):
             return self._execute_container(payload)
         finally:
             # THE LOCAL BURN: Instantly wipe ephemeral keys from memory
+            burned_contract = self._active_contract_id
             self._active_contract_id = None
             self._authorized_tools = []
+            if burned_contract:
+                telemetry_bus.emit(
+                    TraceEvent(
+                        event_type=TraceEventType.CONTRACT_BURN,
+                        agent_name=self.name,
+                        action="local_contract_burn",
+                        details={"contract_id": burned_contract, "agent_id": self.agent_id},
+                    )
+                )
 
     @abstractmethod
     def _execute_container(self, payload: Dict[str, Any]) -> BaseModel:
@@ -164,7 +185,6 @@ class BaseAgent(ABC):
         Enforces active contract bounds, performs JIT expansion on demand if CBAC allows,
         and proceeds to Librarian checkout.
         """
-        # Safely handle if the caller passed `arguments=` instead of `parameters=`
         parameters = parameters or kwargs.get("arguments", {})
 
         if not self.librarian:
@@ -189,6 +209,14 @@ class BaseAgent(ABC):
 
             if jit_granted:
                 self._authorized_tools.append(skill_id)
+                telemetry_bus.emit(
+                    TraceEvent(
+                        event_type=TraceEventType.CONTRACT_MINT,
+                        agent_name=self.name,
+                        action="jit_contract_expansion",
+                        details={"contract_id": self._active_contract_id, "granted_skill": skill_id, "agent_id": self.agent_id},
+                    )
+                )
                 self.report_trace(
                     event_type="JIT_CONTRACT_EXPANSION",
                     details={"contract_id": self._active_contract_id, "granted_skill": skill_id}
@@ -198,10 +226,19 @@ class BaseAgent(ABC):
                     f"under contract '{self._active_contract_id}'."
                 )
             else:
-                raise PermissionError(
+                reason = (
                     f"ZERO-TRUST VIOLATION: '{self.agent_id}' attempted to execute unauthorized tool '{skill_id}'. "
                     f"Active contract '{self._active_contract_id}' strictly limits access to: {self._authorized_tools}"
                 )
+                telemetry_bus.emit(
+                    TraceEvent(
+                        event_type=TraceEventType.ESCALATION,
+                        agent_name=self.name,
+                        action="unauthorized_sub_skill_attempt",
+                        details={"agent_id": self.agent_id, "skill_id": skill_id, "reason": reason},
+                    )
+                )
+                raise PermissionError(reason)
 
         # Base Legal Check (Level 0 Fallback)
         if self.cbac_middleware:
@@ -209,11 +246,22 @@ class BaseAgent(ABC):
             if "target_scope" not in ctx and "target_scope" in parameters:
                 ctx["target_scope"] = parameters["target_scope"]
 
-            self.cbac_middleware.validate_execution(
-                role_name=self.role_name,
-                skill_id=skill_id,
-                execution_context=ctx,
-            )
+            try:
+                self.cbac_middleware.validate_execution(
+                    role_name=self.role_name,
+                    skill_id=skill_id,
+                    execution_context=ctx,
+                )
+            except Exception as exc:
+                telemetry_bus.emit(
+                    TraceEvent(
+                        event_type=TraceEventType.ESCALATION,
+                        agent_name=self.name,
+                        action="cbac_validation_failed",
+                        details={"agent_id": self.agent_id, "skill_id": skill_id, "error": str(exc)},
+                    )
+                )
+                raise
 
         # Checkout & Execute
         handler = self.librarian.check_out_skill(skill_id, self.agent_id)
@@ -221,7 +269,20 @@ class BaseAgent(ABC):
             raise ValueError(f"[FAIL-FAST] Dynamic skill '{skill_id}' is not registered.")
 
         logger.info(f"[{self.name}] Ephemeral & CBAC Passed. Executing '{skill_id}'.")
-        return handler(agent_name=self.name, parameters=parameters, raw_prompt=raw_prompt)
+        start_time = time.perf_counter()
+        try:
+            return handler(agent_name=self.name, parameters=parameters, raw_prompt=raw_prompt)
+        finally:
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            telemetry_bus.emit(
+                TraceEvent(
+                    event_type=TraceEventType.EXECUTION,
+                    agent_name=self.name,
+                    action=skill_id,
+                    duration_ms=duration_ms,
+                    details={"contract_id": self._active_contract_id, "agent_id": self.agent_id},
+                )
+            )
 
     # ==========================================
     # TELEMETRY & REPORTING
@@ -250,12 +311,23 @@ class BaseAgent(ABC):
                 thought_type=thought_type
             )
 
+        t_type = thought_type.value if hasattr(thought_type, "value") else str(thought_type)
+
+        telemetry_bus.emit(
+            TraceEvent(
+                event_type=TraceEventType.COT,
+                agent_name=self.name,
+                action=t_type,
+                details={"message": message, "context": context or {}, "agent_id": self.agent_id},
+            )
+        )
+
         if self._telemetry_callback:
             self._telemetry_callback({
                 "type": "agent_cot",
                 "agent_name": self.name,
                 "data": {
-                    "thought_type": thought_type.value if hasattr(thought_type, "value") else str(thought_type),
+                    "thought_type": t_type,
                     "message": message,
                     "context": context or {}
                 }
@@ -264,18 +336,25 @@ class BaseAgent(ABC):
 
     def report_response(self, content: str, **kwargs: Any) -> None:
         """Emits an explicit final agent response message to streaming buses."""
-        if not self._telemetry_callback:
-            return
-
         payload_data: Dict[str, Any] = {"content": content}
         if kwargs:
             payload_data.update(kwargs)
 
-        self._telemetry_callback({
-            "type": "agent_response",
-            "agent_name": getattr(self, "name", self.__class__.__name__),
-            "data": payload_data,
-        })
+        telemetry_bus.emit(
+            TraceEvent(
+                event_type=TraceEventType.RESPONSE,
+                agent_name=self.name,
+                action="agent_response",
+                details=payload_data,
+            )
+        )
+
+        if self._telemetry_callback:
+            self._telemetry_callback({
+                "type": "agent_response",
+                "agent_name": getattr(self, "name", self.__class__.__name__),
+                "data": payload_data,
+            })
 
     def report_progress(
         self,
@@ -286,9 +365,6 @@ class BaseAgent(ABC):
         **kwargs: Any,
     ) -> None:
         """Emits a standard progress update to the telemetry bus."""
-        if not self._telemetry_callback:
-            return
-
         payload_data: Dict[str, Any] = {
             "message": message,
             "phase": phase or action,
@@ -299,11 +375,21 @@ class BaseAgent(ABC):
         if kwargs:
             payload_data.update(kwargs)
 
-        self._telemetry_callback({
-            "type": "task_progress",
-            "agent_name": getattr(self, "name", self.__class__.__name__),
-            "data": payload_data,
-        })
+        telemetry_bus.emit(
+            TraceEvent(
+                event_type=getattr(TraceEventType, "PROGRESS", TraceEventType.EXECUTION),
+                agent_name=self.name,
+                action=phase or action or "progress_update",
+                details=payload_data,
+            )
+        )
+
+        if self._telemetry_callback:
+            self._telemetry_callback({
+                "type": "task_progress",
+                "agent_name": getattr(self, "name", self.__class__.__name__),
+                "data": payload_data,
+            })
 
     def report_trace(
         self,
@@ -313,23 +399,30 @@ class BaseAgent(ABC):
         **kwargs: Any,
     ) -> None:
         """Emits execution state changes for telemetry HUD."""
-        if not self._telemetry_callback:
-            return
-
         merged_details = dict(details) if details else {}
         if kwargs:
             merged_details.update(kwargs)
 
         resolved_event = event_type or action or "EXECUTION_TRACE"
 
-        self._telemetry_callback({
-            "type": "telemetry_trace",
-            "agent_name": getattr(self, "name", self.__class__.__name__),
-            "data": {
-                "event_type": resolved_event,
-                "details": merged_details,
-            },
-        })
+        telemetry_bus.emit(
+            TraceEvent(
+                event_type=TraceEventType.EXECUTION,
+                agent_name=self.name,
+                action=resolved_event,
+                details=merged_details,
+            )
+        )
+
+        if self._telemetry_callback:
+            self._telemetry_callback({
+                "type": "telemetry_trace",
+                "agent_name": getattr(self, "name", self.__class__.__name__),
+                "data": {
+                    "event_type": resolved_event,
+                    "details": merged_details,
+                },
+            })
 
     # ==========================================
     # DISCOVERY & PROBING

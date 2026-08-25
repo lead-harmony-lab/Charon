@@ -3,57 +3,58 @@
  * @description
  */
 export interface CharonWSFrame {
-  event_type: string;
+  event_type?: string;
+  type?: string; // Added to match CLI flexibility
   timestamp?: string;
   task_id?: string;
   client_id?: string;
   agent_name?: string;
+  active_agent?: string; // CLI uses active_agent
   data?: any;
-  payload?: {
-    text?: string;
-    avatar_state?: ConciergeAvatarState;
-    hud_overlay?: {
-      pointer_target?: string;
-      [key: string]: any;
-    };
-    [key: string]: any;
-  } | any;
-}
-
-export interface ConciergeAvatarState {
-  state?: string;
-  emotion?: string;
-  subtext?: string;
-  [key: string]: any;
+  payload?: any;
+  [key: string]: any; // Allow flat payloads
 }
 
 type MessageCallback = (frame: CharonWSFrame) => void;
+
+// src/core/ws/CharonStream.ts
 
 export class CharonStream {
   private ws: WebSocket | null = null;
   private listeners: Map<string, Set<MessageCallback>> = new Map();
   private reconnectTimer: any = null;
-  private heartbeatTimer: any = null;
   private apiKey: string = '';
+  private clientId: string = 'dashboard_ui';
 
-  public connect(apiKey: string) {
+  // Add this getter to expose the connected client ID
+  public getClientId(): string {
+    return this.clientId;
+  }
+
+  public connect(apiKey: string, clientId: string = 'dashboard_ui') {
     this.apiKey = apiKey;
+    this.clientId = clientId;
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/v1/ws?api_key=${encodeURIComponent(apiKey)}`;
+    // Fix: Add client_id to the query params just like the CLI
+    const wsUrl = `${protocol}//${host}/v1/ws?client_id=${encodeURIComponent(this.clientId)}&api_key=${encodeURIComponent(apiKey)}`;
 
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
       this.emitToSubscribers('connection_status', { event_type: 'connection_status', data: { connected: true } });
-      this.startHeartbeat();
     };
 
     this.ws.onmessage = (event) => {
       try {
         const frame: CharonWSFrame = JSON.parse(event.data);
-        if (frame.event_type) {
-          this.emitToSubscribers(frame.event_type, frame);
+
+        // Fix: Fallback to 'type' if 'event_type' is missing
+        const eventType = frame.event_type || frame.type;
+
+        if (eventType) {
+          this.emitToSubscribers(eventType, frame);
         }
         this.emitToSubscribers('*', frame);
       } catch (err) {
@@ -62,7 +63,6 @@ export class CharonStream {
     };
 
     this.ws.onclose = () => {
-      this.stopHeartbeat();
       this.emitToSubscribers('connection_status', { event_type: 'connection_status', data: { connected: false } });
       this.scheduleReconnect();
     };
@@ -87,22 +87,19 @@ export class CharonStream {
   }
 
   public disconnect() {
-    this.stopHeartbeat();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) this.ws.close();
   }
 
-  public send(eventType: string, data: any = {}, payload: any = {}) {
+  public send(frame: CharonWSFrame) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      const frame: CharonWSFrame = {
-        event_type: eventType,
-        client_id: 'desktop_concierge',
-        data: data,
-        payload: payload
+      const outFrame: CharonWSFrame = {
+        client_id: this.clientId,
+        ...frame
       };
-      this.ws.send(JSON.stringify(frame));
+      this.ws.send(JSON.stringify(outFrame));
     } else {
-      console.warn(`[CharonStream] Cannot send ${eventType}: WebSocket is not open.`);
+      console.warn(`[CharonStream] Cannot send ${frame.event_type || frame.type}: WebSocket is not open.`);
     }
   }
 
@@ -113,23 +110,10 @@ export class CharonStream {
     }
   }
 
-  private startHeartbeat() {
-    this.stopHeartbeat();
-    this.heartbeatTimer = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'ping' }));
-      }
-    }, 5000);
-  }
-
-  private stopHeartbeat() {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-  }
-
   private scheduleReconnect() {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {
-      if (this.apiKey) this.connect(this.apiKey);
+      if (this.apiKey) this.connect(this.apiKey, this.clientId);
     }, 3000);
   }
 }

@@ -1,21 +1,13 @@
-"""
-charon/core/skills/executor.py
-System Version: v0.6.3 | File Revision: 7.0.0
-
-Module: Dynamic module import and skill checkout execution mixin for SkillLibrarian.
-Resolves skill_id and handler_name to safely load disk plugins into runtime callables.
-Integrates CBAC Schema V2 permission gatechecking and Quarantine State verification.
-Enforces strict fail-fast role resolution against database registry.
-"""
-
 import importlib.util
 import inspect
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 
 from charon.core.skills.base import BaseSkill
 from charon.core.skills.roles import RoleResolutionError
+from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
 logger = logging.getLogger("Charon.Core.Skills.Executor")
 
@@ -26,21 +18,22 @@ class SkillExecutorMixin:
     def check_out_skill(
         self, action: str, agent_name: str
     ) -> Optional[Callable[..., Union[str, Dict[str, Any]]]]:
-        """
-        Validates authorization constraints, quarantine states, and CBAC permissions,
-        then signs out the plugin handler callable.
-        Resolves action_name -> skill_id -> entry_file_path + handler_name.
-        Fails fast if agent_name cannot be resolved to an active agent in SQLite.
-        """
-        # Ground Truth DB Lookup: Fails hard if unresolvable
         canonical_agent = self.resolve_agent_id_for_role(agent_name)
 
-        # 1. Look up skill metadata row to identify skill_id and status
+        # 1. Look up skill metadata row
         row = self.repo.get_skill_by_action(action)
         if not row:
             row = self.get_action_details(action)
             if not row:
                 logger.error(f"[LIBRARIAN] Action contract '{action}' not found in registry.")
+                telemetry_bus.emit(
+                    TraceEvent(
+                        event_type=TraceEventType.FAILED,
+                        agent_name=agent_name,
+                        action=action,
+                        details={"error": "Action contract not found in registry"},
+                    )
+                )
                 return None
 
         skill_id = (
@@ -55,163 +48,111 @@ class SkillExecutorMixin:
         )
 
         # 2. Check quarantine state
-        if status == "QUARANTINED":
-            quarantine_reason = (
-                row.get("quarantine_reason", "Skill is in dynamic quarantine.")
+        if status in ("QUARANTINED", "DISABLED"):
+            reason = (
+                row.get("quarantine_reason", f"Skill status is {status}.")
                 if isinstance(row, dict)
-                else getattr(row, "quarantine_reason", "Skill is in dynamic quarantine.")
+                else getattr(row, "quarantine_reason", f"Skill status is {status}.")
             )
-            logger.warning(
-                f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is QUARANTINED. Reason: {quarantine_reason}"
-            )
-            return None
-        elif status == "DISABLED":
-            logger.warning(
-                f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is DISABLED."
+            logger.warning(f"[LIBRARIAN] Checkout blocked: Skill '{skill_id}' ({action}) is {status}.")
+            telemetry_bus.emit(
+                TraceEvent(
+                    event_type=TraceEventType.FAILED,
+                    agent_name=agent_name,
+                    action=action,
+                    details={"skill_id": skill_id, "status": status, "reason": reason},
+                )
             )
             return None
 
         # 3. CBAC Authorization Gatecheck
         perm_repo = getattr(self, "permission_repo", None)
+        authorized = True
         if perm_repo is not None:
             authorized = perm_repo.authorize_execution(canonical_agent, skill_id)
-            if not authorized:
-                logger.warning(
-                    f"[LIBRARIAN] CBAC Access Denied: Agent '{canonical_agent}' unauthorized for skill '{skill_id}' ({action})."
-                )
-                return None
         else:
-            # Fallback capability check via agent_skill_map
-            if not self.is_skill_available(action, canonical_agent):
-                logger.warning(
-                    f"[LIBRARIAN] Access denied or skill unavailable for action '{action}' -> agent '{canonical_agent}' (raw: '{agent_name}')."
+            authorized = self.is_skill_available(action, canonical_agent)
+
+        if not authorized:
+            logger.warning(
+                f"[LIBRARIAN] CBAC Access Denied: Agent '{canonical_agent}' unauthorized for skill '{skill_id}' ({action})."
+            )
+            telemetry_bus.emit(
+                TraceEvent(
+                    event_type=TraceEventType.ESCALATION,
+                    agent_name=agent_name,
+                    action=action,
+                    details={"skill_id": skill_id, "error": "CBAC Access Denied", "canonical_agent": canonical_agent},
                 )
-                return None
+            )
+            return None
+
+        # Helper to emit successful checkout trace
+        def _emit_checkout_event(handler_name: str):
+            telemetry_bus.emit(
+                TraceEvent(
+                    event_type=TraceEventType.SKILL_CHECKOUT,
+                    agent_name=agent_name,
+                    action=action,
+                    details={"skill_id": skill_id, "handler": handler_name, "canonical_agent": canonical_agent},
+                )
+            )
 
         # 4. Check in-memory registered skills cache
         skills_map = getattr(self, "_skills", {})
         if action in skills_map:
             in_mem_skill = skills_map[action]
             logger.info(f"[LIBRARIAN] In-memory skill contract '{action}' checked out.")
+            _emit_checkout_event("in_memory")
             if isinstance(in_mem_skill, BaseSkill):
-                if inspect.iscoroutinefunction(in_mem_skill.execute):
-                    async def async_in_mem_wrapper(
-                        agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
-                    ):
-                        return await in_mem_skill.execute(
-                            agent_name or agent,
-                            parameters if parameters is not None else (params or {}),
-                            raw_prompt,
-                        )
-                    return async_in_mem_wrapper
-
-                return lambda agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs: in_mem_skill.execute(
-                    agent_name or agent,
-                    parameters if parameters is not None else (params or {}),
-                    raw_prompt,
-                )
+                return self._wrap_callable(in_mem_skill.execute, default_action=action, skill_id=skill_id)
             elif callable(in_mem_skill):
-                return self._wrap_callable(in_mem_skill, default_action=action)
+                return self._wrap_callable(in_mem_skill, default_action=action, skill_id=skill_id)
 
         try:
-            # Defensive property extraction
-            raw_path = (
-                row.get("entry_file_path")
-                if isinstance(row, dict)
-                else getattr(row, "entry_file_path", None)
-            )
-            handler_name = (
-                row.get("handler_name")
-                if isinstance(row, dict)
-                else getattr(row, "handler_name", "execute")
-            )
+            raw_path = row.get("entry_file_path") if isinstance(row, dict) else getattr(row, "entry_file_path", None)
+            handler_name = row.get("handler_name") if isinstance(row, dict) else getattr(row, "handler_name", "execute")
 
-            # Pre-flight Guardrail 1: DB entry missing disk path definition
             if not raw_path:
-                logger.critical(
-                    f"[PHANTOM SKILL DETECTED] Action '{action}' is registered in database (skill_id: '{skill_id}'), "
-                    f"but lacks a valid 'entry_file_path' property."
-                )
+                logger.critical(f"[PHANTOM SKILL DETECTED] Action '{action}' lacks 'entry_file_path'.")
                 return None
 
             entry_file_path = Path(raw_path)
-
-            # Pre-flight Guardrail 2: DB/Disk Desync
             if not entry_file_path.exists() or not entry_file_path.is_file():
-                logger.critical(
-                    f"[PHANTOM SKILL DETECTED] Action '{action}' is registered in database (skill_id: '{skill_id}'), "
-                    f"but plugin implementation file is missing on disk at '{entry_file_path}'. "
-                    f"Database/Disk desync detected."
-                )
+                logger.critical(f"[PHANTOM SKILL DETECTED] Missing disk file: '{entry_file_path}'.")
                 return None
 
             module_name = f"charon.skills_registry.dynamic.{skill_id}"
             spec = importlib.util.spec_from_file_location(module_name, entry_file_path)
             if spec is None or spec.loader is None:
-                logger.error(f"[LIBRARIAN] Failed to load spec for {module_name} at '{entry_file_path}'.")
                 return None
 
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
-            # Resolution Priority 1: BaseSkill sub-class instantiation within module
+            # Resolution Priority 1: BaseSkill sub-class
             for attr_name in dir(module):
                 attr = getattr(module, attr_name)
-                if (
-                    inspect.isclass(attr)
-                    and issubclass(attr, BaseSkill)
-                    and attr is not BaseSkill
-                ):
+                if inspect.isclass(attr) and issubclass(attr, BaseSkill) and attr is not BaseSkill:
                     instance = attr()
-                    logger.info(
-                        f"[LIBRARIAN] Checked out BaseSkill class '{attr_name}' for action '{action}' ({skill_id})."
-                    )
-                    if inspect.iscoroutinefunction(instance.execute):
-                        async def async_base_skill_wrapper(
-                            agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
-                        ):
-                            return await instance.execute(
-                                agent_name or agent,
-                                parameters if parameters is not None else (params or {}),
-                                raw_prompt,
-                            )
-                        return async_base_skill_wrapper
+                    logger.info(f"[LIBRARIAN] Checked out BaseSkill class '{attr_name}' for action '{action}'.")
+                    _emit_checkout_event(attr_name)
+                    return self._wrap_callable(instance.execute, default_action=action, skill_id=skill_id)
 
-                    return lambda agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs: instance.execute(
-                        agent_name or agent,
-                        parameters if parameters is not None else (params or {}),
-                        raw_prompt,
-                    )
-
-            # Resolution Priority 2: Explicit function corresponding to handler_name
+            # Resolution Priority 2: Explicit handler function
             if handler_name and hasattr(module, handler_name):
                 target_func = getattr(module, handler_name)
-                logger.info(
-                    f"[LIBRARIAN] Checked out handler function '{handler_name}' for action '{action}' ({skill_id})."
-                )
-                return self._wrap_callable(target_func, default_action=action)
+                logger.info(f"[LIBRARIAN] Checked out handler function '{handler_name}' for action '{action}'.")
+                _emit_checkout_event(handler_name)
+                return self._wrap_callable(target_func, default_action=action, skill_id=skill_id)
 
-            # Resolution Priority 3: Fallback module action entrypoint
+            # Resolution Priority 3: Fallback execute_action
             if hasattr(module, "execute_action"):
                 target_func = getattr(module, "execute_action")
-                logger.info(
-                    f"[LIBRARIAN] Checked out 'execute_action' fallback for action '{action}' ({skill_id})."
-                )
+                logger.info(f"[LIBRARIAN] Checked out 'execute_action' fallback for action '{action}'.")
+                _emit_checkout_event("execute_action")
+                return self._wrap_callable(target_func, default_action=action, skill_id=skill_id)
 
-                if inspect.iscoroutinefunction(target_func):
-                    async def async_fallback(
-                        agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs
-                    ):
-                        eff_params = parameters if parameters is not None else (params or {})
-                        return await target_func(action, eff_params)
-                    return async_fallback
-
-                return lambda agent="", params=None, raw_prompt="", agent_name=None, parameters=None, **kwargs: target_func(
-                    action,
-                    parameters if parameters is not None else (params or {}),
-                )
-
-            logger.error(f"[LIBRARIAN] Execution handler '{handler_name}' missing in '{entry_file_path}'.")
             return None
 
         except Exception as e:
@@ -219,9 +160,9 @@ class SkillExecutorMixin:
             return None
 
     def _wrap_callable(
-        self, target_func: Callable[..., Any], default_action: str = ""
+        self, target_func: Callable[..., Any], default_action: str = "", skill_id: str = ""
     ) -> Callable[..., Any]:
-        """Wraps target functions with signature inspection to normalize runtime parameter passing."""
+        """Wraps target functions with signature inspection and runtime telemetry timing."""
         sig = inspect.signature(target_func)
         params_count = len(sig.parameters)
         is_async = inspect.iscoroutinefunction(target_func)
@@ -237,15 +178,41 @@ class SkillExecutorMixin:
             ) -> Any:
                 eff_agent = agent_name or agent
                 eff_params = parameters if parameters is not None else (params if params is not None else {})
+                start_time = time.time()
 
-                if params_count >= 3:
-                    return await target_func(eff_agent, eff_params, raw_prompt)
-                elif params_count == 2:
-                    return await target_func(eff_agent, eff_params)
-                elif params_count == 1:
-                    return await target_func(eff_params)
-                else:
-                    return await target_func()
+                try:
+                    if params_count >= 3:
+                        res = await target_func(eff_agent, eff_params, raw_prompt)
+                    elif params_count == 2:
+                        res = await target_func(eff_agent, eff_params)
+                    elif params_count == 1:
+                        res = await target_func(eff_params)
+                    else:
+                        res = await target_func()
+
+                    duration_ms = (time.time() - start_time) * 1000.0
+                    telemetry_bus.emit(
+                        TraceEvent(
+                            event_type=TraceEventType.EXECUTION,
+                            agent_name=eff_agent or "Librarian",
+                            action=default_action,
+                            duration_ms=duration_ms,
+                            details={"skill_id": skill_id, "status": "success"},
+                        )
+                    )
+                    return res
+                except Exception as err:
+                    duration_ms = (time.time() - start_time) * 1000.0
+                    telemetry_bus.emit(
+                        TraceEvent(
+                            event_type=TraceEventType.FAILED,
+                            agent_name=eff_agent or "Librarian",
+                            action=default_action,
+                            duration_ms=duration_ms,
+                            details={"skill_id": skill_id, "error": str(err)},
+                        )
+                    )
+                    raise err
 
             return async_runtime_wrapper
 
@@ -259,15 +226,41 @@ class SkillExecutorMixin:
         ) -> Any:
             eff_agent = agent_name or agent
             eff_params = parameters if parameters is not None else (params if params is not None else {})
+            start_time = time.time()
 
-            if params_count >= 3:
-                return target_func(eff_agent, eff_params, raw_prompt)
-            elif params_count == 2:
-                return target_func(eff_agent, eff_params)
-            elif params_count == 1:
-                return target_func(eff_params)
-            else:
-                return target_func()
+            try:
+                if params_count >= 3:
+                    res = target_func(eff_agent, eff_params, raw_prompt)
+                elif params_count == 2:
+                    res = target_func(eff_agent, eff_params)
+                elif params_count == 1:
+                    res = target_func(eff_params)
+                else:
+                    res = target_func()
+
+                duration_ms = (time.time() - start_time) * 1000.0
+                telemetry_bus.emit(
+                    TraceEvent(
+                        event_type=TraceEventType.EXECUTION,
+                        agent_name=eff_agent or "Librarian",
+                        action=default_action,
+                        duration_ms=duration_ms,
+                        details={"skill_id": skill_id, "status": "success"},
+                    )
+                )
+                return res
+            except Exception as err:
+                duration_ms = (time.time() - start_time) * 1000.0
+                telemetry_bus.emit(
+                    TraceEvent(
+                        event_type=TraceEventType.FAILED,
+                        agent_name=eff_agent or "Librarian",
+                        action=default_action,
+                        duration_ms=duration_ms,
+                        details={"skill_id": skill_id, "error": str(err)},
+                    )
+                )
+                raise err
 
         return sync_runtime_wrapper
 

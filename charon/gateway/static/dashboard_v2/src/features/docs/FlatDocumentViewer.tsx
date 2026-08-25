@@ -1,8 +1,9 @@
 /**
  * @file src/features/docs/FlatDocumentViewer.tsx
- * @description A generic viewer/editor for flat lists of documents.
+ * @description A generic viewer/editor for flat lists of documents with standard SPA routing.
  */
 import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { authFetch } from '../../core/api/client';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { CreateDocModal } from './CreateDocModal';
@@ -11,6 +12,7 @@ interface FlatDocumentViewerProps<T extends { id: string; content: string }> {
   title: string;
   docType: 'adr' | 'spec';
   apiPath: string;
+  baseRoute: string; // NEW: The root route for this viewer (e.g., "/docs/adrs")
   extractData: (json: any) => T[];
   filterItem: (item: T, query: string) => boolean;
   renderListItem: (item: T) => React.ReactNode;
@@ -23,6 +25,7 @@ export function FlatDocumentViewer<T extends { id: string; content: string }>({
   title,
   docType,
   apiPath,
+  baseRoute,
   extractData,
   filterItem,
   renderListItem,
@@ -30,8 +33,13 @@ export function FlatDocumentViewer<T extends { id: string; content: string }>({
   renderEditForm,
   renderExtraViewerContent
 }: FlatDocumentViewerProps<T>) {
+  const navigate = useNavigate();
+  const params = useParams();
+
+  // Extract the ID from the wildcard route parameter (e.g., from path="adrs/*")
+  const selectedId = params['*'] || '';
+
   const [items, setItems] = useState<T[]>([]);
-  const [selectedId, setSelectedId] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editForm, setEditForm] = useState<Partial<T>>({});
@@ -46,9 +54,10 @@ export function FlatDocumentViewer<T extends { id: string; content: string }>({
         const data = await res.json();
         const extracted = extractData(data) || [];
         setItems(extracted);
-        // Only auto-select if we don't have a selection, or if the selection was deleted
-        if (extracted.length > 0 && (!selectedId || !extracted.find(i => i.id === selectedId))) {
-          setSelectedId(extracted[0].id);
+
+        // Auto-select the first item ONLY if there isn't already one in the URL
+        if (extracted.length > 0 && !selectedId) {
+          navigate(`${baseRoute}/${extracted[0].id}`, { replace: true });
         }
       }
     } catch (err) {
@@ -60,7 +69,13 @@ export function FlatDocumentViewer<T extends { id: string; content: string }>({
 
   useEffect(() => {
     fetchItems();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedId]); // Re-evaluate if URL changes, but backend load is handled safely
+
+  // Reset editing state whenever the URL selected ID changes
+  useEffect(() => {
+    setIsEditing(false);
+    setStatusMsg('');
+  }, [selectedId]);
 
   const activeItem = items.find((item) => item.id === selectedId);
 
@@ -106,7 +121,8 @@ export function FlatDocumentViewer<T extends { id: string; content: string }>({
 
       if (res.ok) {
         setStatusMsg('');
-        setSelectedId(''); // Clear selection so the UI falls back to the empty state or auto-selects the first item
+        // Clear selection by routing back to the base list route
+        navigate(baseRoute, { replace: true });
         await fetchItems();
       } else {
         setStatusMsg('Failed to delete.');
@@ -144,7 +160,7 @@ export function FlatDocumentViewer<T extends { id: string; content: string }>({
           {filteredItems.map((item) => (
             <button
               key={item.id}
-              onClick={() => { setSelectedId(item.id); setIsEditing(false); }}
+              onClick={() => navigate(`${baseRoute}/${item.id}`)} // Route-based selection
               style={{
                 textAlign: 'left',
                 backgroundColor: item.id === selectedId ? '#0f172a' : 'transparent',
