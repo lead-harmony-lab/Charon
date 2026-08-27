@@ -1,18 +1,18 @@
 /**
  * @file src/features/docs/ManualViewer/ManualViewer.tsx
  * @description A recursive, multi-level Markdown viewer and editor for system manuals with React Router integration,
- * Drag and Drop, Backend API Integration, internal node linking, and node search filtering.
+ * Drag and Drop, Backend API Integration, internal node linking, node search filtering, and lazy loading.
  */
 import React, { useState, useEffect, useMemo, DragEvent, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { authFetch } from '../../../core/api/client';
 import { ManualSidebar } from './ManualSidebar';
 import { ManualContent } from './ManualContent';
-import { INITIAL_TREE, parseMarkdownToNodeTree } from './manualUtils';
+import { INITIAL_TREE } from './manualUtils';
 import {
   ManualNode, findNodeById, findNodePath, filterTree,
   updateTree, addNodeToTree, isDescendant, removeNode,
-  insertNode, flattenManualTree
+  insertNode, flattenManualTree, stripContentForSave
 } from '../../../components/treeUtils';
 
 export * from './manualUtils';
@@ -22,13 +22,18 @@ export function ManualViewer() {
   const navigate = useNavigate();
 
   const [manualTree, setManualTree] = useState<ManualNode[]>(INITIAL_TREE);
-  const [selectedId, setSelectedId] = useState<string>(INITIAL_TREE[0].id);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set(['backend-orchestrator', 'desktop-avatar']));
+
+  // Safely initialize to the URL param, or fallback to an empty string if the tree is empty
+  const [selectedId, setSelectedId] = useState<string>(nodeId || '');
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editForm, setEditForm] = useState({ title: '', content: '' });
   const [statusMsg, setStatusMsg] = useState<string>('');
+
+  // Loading state for individual markdown content
+  const [isLoadingContent, setIsLoadingContent] = useState<boolean>(false);
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [createTargetParentId, setCreateTargetParentId] = useState<string | null>(null);
@@ -49,13 +54,14 @@ export function ManualViewer() {
 
   // Handle URL Parameter Syncing
   useEffect(() => {
-    if (nodeId && manualTree !== INITIAL_TREE) {
+    if (nodeId && manualTree.length > 0) {
       const path = findNodePath(manualTree, nodeId);
       if (path !== null) {
         setSelectedId(nodeId);
         setExpandedIds(prev => new Set([...prev, ...path]));
         setIsEditing(false);
       } else {
+        console.warn(`Node ID '${nodeId}' not found in tree structure.`);
         setStatusMsg(`Error: Target page '${nodeId}' not found.`);
       }
     }
@@ -85,37 +91,107 @@ export function ManualViewer() {
   const loadManualTree = async () => {
     try {
       const response = await authFetch('/v1/docs/manual');
-      const rawText = await response.text();
-      let data = { tree: INITIAL_TREE };
-      try {
-        data = JSON.parse(rawText);
-      } catch {
-        data = { tree: parseMarkdownToNodeTree(rawText) };
+      if (!response.ok) {
+        throw new Error(`HTTP Error: ${response.status}`);
       }
-      if (data.tree && data.tree.length > 0) {
-        setManualTree(data.tree);
+
+      const data = await response.json();
+      let fetchedTree: ManualNode[] = [];
+
+      if (Array.isArray(data)) {
+        fetchedTree = data;
+      } else if (data && Array.isArray(data.tree)) {
+        fetchedTree = data.tree;
+      } else if (data && data.tree && Array.isArray(data.tree.tree)) {
+        fetchedTree = data.tree.tree;
+      } else {
+        console.warn("Unexpected manual tree format from backend:", data);
+      }
+
+      if (fetchedTree && fetchedTree.length > 0) {
+        setManualTree(fetchedTree);
+
         if (!nodeId) {
-          navigate(`/docs/manual/${data.tree[0].id}`, { replace: true });
+          setTimeout(() => {
+            navigate(`/docs/manual/${fetchedTree[0].id}`, { replace: true });
+          }, 0);
         }
+      } else {
+        console.warn("Tree fetched successfully, but appears empty.");
       }
-    } catch {
-      setStatusMsg('Error: Failed to load manual data.');
+    } catch (err) {
+      console.error("Failed to load manual tree:", err);
+      setStatusMsg('Error: Failed to load manual structure.');
     }
   };
 
+  // Lazy-load content when a node is selected and lacks the content property
+  useEffect(() => {
+    const node = findNodeById(manualTree, selectedId);
+
+    if (node && typeof node.content !== 'string' && !isLoadingContent) {
+      const fetchNodeContent = async () => {
+        setIsLoadingContent(true);
+        try {
+          const response = await authFetch(`/v1/docs/manual/${selectedId}`);
+          if (response.ok) {
+            const data = await response.json();
+            setManualTree(prevTree => {
+              const targetNode = findNodeById(prevTree, selectedId);
+              if (!targetNode) return prevTree;
+              return updateTree(prevTree, selectedId, {
+                title: targetNode.title,
+                content: data.content || ''
+              });
+            });
+          } else {
+            console.error(`Failed to fetch content for ${selectedId}, HTTP ${response.status}`);
+            setStatusMsg(`Error: Failed to load content for ${selectedId}`);
+            setManualTree(prevTree => updateTree(prevTree, selectedId, { content: '' }));
+          }
+        } catch (error) {
+          console.error(`Network issue loading ${selectedId}:`, error);
+          setStatusMsg(`Error: Network issue loading ${selectedId}`);
+          setManualTree(prevTree => updateTree(prevTree, selectedId, { content: '' }));
+        } finally {
+          setIsLoadingContent(false);
+        }
+      };
+
+      fetchNodeContent();
+    }
+  }, [selectedId, manualTree, isLoadingContent]);
+
+  // API Call: Save only the tree structure
   const saveTreeToBackend = async (treeToSave: ManualNode[]) => {
-    setStatusMsg('Saving changes...');
+    setStatusMsg('Saving structure...');
     try {
+      const leanTree = stripContentForSave(treeToSave);
       await authFetch('/v1/docs/manual', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(treeToSave)
+        body: JSON.stringify(leanTree)
       });
-      await loadManualTree();
-      setStatusMsg('Section updated successfully!');
+      setStatusMsg('Structure updated successfully!');
       setTimeout(() => setStatusMsg(''), 3000);
     } catch {
-      setStatusMsg('Error: Failed to save changes.');
+      setStatusMsg('Error: Failed to save structure.');
+    }
+  };
+
+  // API Call: Save markdown content and receive updated timestamps + tree
+  const saveNodeContentToBackend = async (id: string, title: string, content: string) => {
+    try {
+      const response = await authFetch(`/v1/docs/manual/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, content })
+      });
+
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (err) {
+      return null;
     }
   };
 
@@ -159,6 +235,7 @@ export function ManualViewer() {
 
   const handleDragLeave = () => { setDragOverId(null); setDropPosition(null); };
   const handleDragEnd = () => { setDraggedId(null); setDragOverId(null); setDropPosition(null); };
+
   const toggleExpand = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setExpandedIds(prev => {
@@ -172,18 +249,25 @@ export function ManualViewer() {
   const handleCreateNode = async () => {
     if (!newTitle.trim()) return;
     const generatedId = newTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const initialContent = `## ${newTitle.trim()}\n\nStart writing documentation here...`;
+
     const newNode: ManualNode = {
       id: generatedId,
       title: newTitle.trim(),
-      content: `## ${newTitle.trim()}\n\nStart writing documentation here...`,
+      content: initialContent,
       children: []
     };
+
     const updated = addNodeToTree(manualTree, createTargetParentId, newNode);
     setManualTree(updated);
+
     if (createTargetParentId) setExpandedIds(prev => new Set(prev).add(createTargetParentId));
     setIsCreateModalOpen(false);
     setIsEditing(false);
+
     await saveTreeToBackend(updated);
+    await saveNodeContentToBackend(generatedId, newTitle.trim(), initialContent);
+
     handleInternalNavigation(generatedId);
   };
 
@@ -193,6 +277,9 @@ export function ManualViewer() {
     setManualTree(newTree);
     if (newTree.length > 0) {
       handleInternalNavigation(newTree[0].id);
+    } else {
+      navigate('/docs/manual');
+      setSelectedId('');
     }
     await saveTreeToBackend(newTree);
   };
@@ -246,16 +333,38 @@ export function ManualViewer() {
       <ManualContent
         activeNode={activeNode}
         isEditing={isEditing}
+        isLoadingContent={isLoadingContent}
         editForm={editForm}
         statusMsg={statusMsg}
         editTextareaRef={editTextareaRef}
         setEditForm={setEditForm}
         setIsEditing={setIsEditing}
         onSaveEdit={async () => {
-          setStatusMsg('Saving changes...');
-          const updated = updateTree(manualTree, selectedId, { title: editForm.title, content: editForm.content });
-          setManualTree(updated);
-          await saveTreeToBackend(updated);
+          setStatusMsg('Saving document...');
+
+          const saveResult = await saveNodeContentToBackend(selectedId, editForm.title, editForm.content);
+
+          if (!saveResult) {
+            setStatusMsg('Error: Failed to save document content.');
+            return;
+          }
+
+          // Use returned structural tree (with new timestamps) merged with current content
+          const baseTree = saveResult.tree && saveResult.tree.length > 0 ? saveResult.tree : manualTree;
+          const updatedTree = updateTree(baseTree, selectedId, {
+            title: editForm.title,
+            content: editForm.content,
+            updatedAt: saveResult.updatedAt
+          });
+          setManualTree(updatedTree);
+
+          if (activeNode?.title !== editForm.title) {
+            await saveTreeToBackend(updatedTree);
+          } else {
+            setStatusMsg('Document saved successfully!');
+            setTimeout(() => setStatusMsg(''), 3000);
+          }
+
           setIsEditing(false);
         }}
         onStartEdit={() => {

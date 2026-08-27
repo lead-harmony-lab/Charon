@@ -149,13 +149,6 @@ class CharonDaemon:
                 ledger=self.ledger,
             )
 
-        # Initialize Concierge with confidence threshold guardrails and required LLM client
-        llm_instance = getattr(self.engine, "llm_client", getattr(self.engine, "llm", self.engine))
-        self.concierge = ConciergeService(
-            llm_client=llm_instance,
-            min_confidence=concierge_min_confidence
-        )
-
         self.emitter = EventEmitter()
         self.gatekeeper = GatekeeperManager()
 

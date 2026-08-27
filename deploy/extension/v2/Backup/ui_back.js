@@ -73,11 +73,6 @@ export class CharonUI {
                 this.ext.writeOverlaySettings(data);
             }
             this._toggleAvatar(state);
-
-            // Force the GNOME Shell menu to close, releasing the pointer grab
-            if (state) {
-                this.indicator.menu.close();
-            }
         });
         this.indicator.menu.addMenuItem(this.avatarSwitch);
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());

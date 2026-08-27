@@ -169,17 +169,6 @@ class EventEmitter:
             )
         )
 
-    async def emit_concierge(self, suggestion: Dict[str, Any]) -> None:
-        """Emit concierge next-step suggestions."""
-        await self.emit_targeted(
-            WSEvent(
-                event_type="concierge_suggestion",
-                task_id=self.current_task_id,
-                agent_name="Concierge",
-                data=suggestion if isinstance(suggestion, dict) else {"suggestion": str(suggestion)},
-            )
-        )
-
     async def emit_gatekeeper(
         self, manifest_message: str, action: str, approval_id: Optional[str] = None
     ) -> str:

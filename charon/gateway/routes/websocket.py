@@ -190,6 +190,17 @@ async def _handle_incoming_ws_frame(websocket: WebSocket, raw_data: str, client_
                         except Exception as e:
                             logger.debug(f"Failed to broadcast telemetry to client: {e}")
 
+        elif action == "window_moved":
+            # Broadcast window frame updates to other connected clients (GTK overlay)
+            if hasattr(manager, "active_connections"):
+                for connection in manager.active_connections:
+                    if connection != websocket:
+                        try:
+                            # Forward the raw JSON frame directly
+                            await connection.send_text(raw_data)
+                        except Exception as e:
+                            logger.debug(f"Failed to route window_moved to client: {e}")
+
         elif action == "desktop_ipc":
             # Target the specific client ID defined in the GNOME extension (api.js)
             target_client = "gnome_shell_extension"

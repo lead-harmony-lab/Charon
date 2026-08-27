@@ -1,6 +1,6 @@
 """
 charon/config/logging.py
-System Version: v0.2.0 | File Revision: 1.1.0
+System Version: v0.2.0 | File Revision: 1.2.0
 
 Module: config/logging — Central Logging Configuration for Charon.
 
@@ -30,18 +30,22 @@ THIRD_PARTY_LOG_LEVELS: Dict[str, int] = {
 
 
 def setup_logging(
+    debug: bool = False,
     level: int = logging.INFO,
     module_overrides: Optional[Dict[str, int]] = None,
 ) -> None:
     """Configures system-wide logging with stdout and rotating file output."""
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Automatically drop base and console levels to DEBUG when debug=True
+    effective_level = logging.DEBUG if debug else level
+
     formatter = logging.Formatter(
         "%(asctime)s - [%(name)s] - %(levelname)s - %(message)s"
     )
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    root_logger.setLevel(effective_level)
 
     # Prevent duplicate handlers across re-initialization calls
     if root_logger.hasHandlers():
@@ -50,7 +54,7 @@ def setup_logging(
     # 1. Console Stream Handler (captured by systemd / journalctl / terminal)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
-    console_handler.setLevel(level)
+    console_handler.setLevel(effective_level)
     root_logger.addHandler(console_handler)
 
     # 2. Main Rotating File Handler (5 MB max, 3 backups)

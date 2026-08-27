@@ -1,6 +1,6 @@
 /**
  * @file src/features/docs/ManualViewer/ManualContent.tsx
- * @description
+ * @description Renders active manual node content or edit form with lazy-loading support, status messages, and metadata tracking.
  */
 import React, { RefObject } from 'react';
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer';
@@ -8,11 +8,12 @@ import { MarkdownToolbar } from '../../../components/MarkdownToolbar';
 import { ManualNode } from '../../../components/treeUtils';
 
 interface ManualContentProps {
-  activeNode: ManualNode | null; // Fixed: Allow null
+  activeNode: ManualNode | null;
   isEditing: boolean;
+  isLoadingContent: boolean; // Added for lazy-loading support
   editForm: { title: string; content: string };
   statusMsg: string;
-  editTextareaRef: RefObject<HTMLTextAreaElement | null>; // Fixed: Allow HTMLTextAreaElement | null
+  editTextareaRef: RefObject<HTMLTextAreaElement | null>;
   setEditForm: (form: { title: string; content: string }) => void;
   setIsEditing: (val: boolean) => void;
   onSaveEdit: () => void;
@@ -26,7 +27,7 @@ interface ManualContentProps {
 
 export function ManualContent(props: ManualContentProps) {
   const {
-    activeNode, isEditing, editForm, statusMsg, editTextareaRef,
+    activeNode, isEditing, isLoadingContent, editForm, statusMsg, editTextareaRef,
     setEditForm, setIsEditing, onSaveEdit, onStartEdit, onCopyLink,
     onAddSubTopic, onDeleteNode, onNavigate, onOpenLinkModal
   } = props;
@@ -35,6 +36,16 @@ export function ManualContent(props: ManualContentProps) {
     return (
       <div style={{ flex: 1, backgroundColor: '#1e293b', borderRadius: '8px', border: '1px solid #334155', padding: '1.5rem', overflowY: 'auto' }}>
         <p style={{ color: '#64748b' }}>Select a topic to view.</p>
+      </div>
+    );
+  }
+
+  if (isLoadingContent) {
+    return (
+      <div style={{ flex: 1, backgroundColor: '#1e293b', borderRadius: '8px', border: '1px solid #334155', padding: '1.5rem', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ color: '#38bdf8', fontSize: '1.1rem', fontWeight: 'bold' }}>
+          Loading document content...
+        </div>
       </div>
     );
   }
@@ -89,7 +100,7 @@ export function ManualContent(props: ManualContentProps) {
           </div>
         </div>
       ) : (
-        <MarkdownRenderer content={activeNode.content || '*No content provided.*'} onInternalLinkClick={onNavigate} />
+        <MarkdownRenderer content={activeNode.content !== undefined ? activeNode.content : '*No content provided.*'} onInternalLinkClick={onNavigate} />
       )}
     </div>
   );

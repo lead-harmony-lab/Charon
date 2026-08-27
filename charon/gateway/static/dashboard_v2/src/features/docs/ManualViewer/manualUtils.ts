@@ -9,31 +9,7 @@ export function triggerManualViewer(id: string) {
   window.location.hash = id;
 }
 
-export const INITIAL_TREE: ManualNode[] = [
-  {
-    id: 'getting-started',
-    title: 'Getting Started',
-    content: `## Charon Control: Getting Started\n\nWelcome to Charon Control. This system orchestrates agents, diagnostics, and integrations via a unified daemon connection. See [Backend Orchestrator](#backend-orchestrator) for more info.`
-  },
-  {
-    id: 'backend-orchestrator',
-    title: 'Backend Orchestrator',
-    content: `## Backend Orchestrator\n\nThe central rust/node daemon that manages state.`,
-    children: [
-      {
-        id: 'websocket-protocol',
-        title: 'WebSocket Protocol',
-        content: `### WebSocket Protocol\n\nAll real-time communication flows through the centralized WS router.`,
-      }
-    ]
-  },
-  {
-    id: 'desktop-avatar',
-    title: 'Desktop Avatar',
-    content: `## Desktop Avatar\n\nThe primary user-facing frontend.`,
-    children: []
-  }
-];
+export const INITIAL_TREE: ManualNode[] = [];
 
 export function parseMarkdownToNodeTree(rawMarkdown: string): ManualNode[] {
   const lines = rawMarkdown.split('\n');

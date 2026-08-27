@@ -1,6 +1,6 @@
 """
 charon/gateway/routes/__init__.py
-System Version: v3.2.0
+System Version: v3.3.0
 
 Module: Gateway API Routes Package Init.
 Aggregates sub-routers into a unified master API router for daemon mounting.
@@ -16,6 +16,7 @@ from charon.gateway.routes.concierge import router as concierge_router
 from charon.gateway.routes.docs import router as docs_router
 from charon.gateway.routes.journal import router as journal_router
 from charon.gateway.routes.system import router as system_router
+from charon.gateway.routes.avatar import router as avatar_router
 
 router = APIRouter()
 
@@ -28,3 +29,4 @@ router.include_router(concierge_router)
 router.include_router(docs_router)
 router.include_router(journal_router)
 router.include_router(system_router)
+router.include_router(avatar_router)

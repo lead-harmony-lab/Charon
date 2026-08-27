@@ -1,6 +1,6 @@
 """
 charon/concierge/speech.py
-System Version: v3.2.0 | File Revision: 3.2.0
+System Version: v3.2.0 | File Revision: 3.2.1
 
 Module: Speech Synthesis (TTS), Viseme Generator, and Audio Transcription (STT) Engine.
 Provides voice generation with timed mouth-shape (viseme) cues for avatar HUD lip-syncing,
@@ -120,6 +120,41 @@ class SpeechEngine:
             "sample_rate": self.sample_rate,
             "viseme_sequence": viseme_sequence
         }
+
+    async def synthesize_and_broadcast(
+            self,
+            text: str,
+            avatar_service: Any,  # This will be the AvatarConnectionManager
+            voice_id: Optional[str] = None,
+            speed: float = 1.0
+    ) -> None:
+        """
+        Synthesizes speech and immediately pushes the payload
+        to the provided WebSocket avatar service.
+        """
+        if not avatar_service:
+            logger.warning("[SpeechEngine] No avatar_service provided. Skipping broadcast.")
+            return
+
+        try:
+            # Generate the audio and visemes
+            tts_data = await self.synthesize_speech(text, voice_id, speed)
+
+            # Construct the inner payload data
+            payload_data = {
+                "chunk_id": 1,
+                "audio_b64": tts_data.get("audio_b64", ""),
+                "sample_rate": tts_data.get("sample_rate", self.sample_rate),
+                "visemes": tts_data.get("viseme_sequence", []),
+                "text_segment": text
+            }
+
+            # Use push_event instead of broadcast
+            await avatar_service.push_event("speech_chunk", payload_data)
+            logger.info(f"[SpeechEngine] Pushed speech payload for text: '{text[:20]}...'")
+
+        except Exception as exc:
+            logger.error(f"[SpeechEngine] Broadcaster failed: {exc}")
 
     async def transcribe_audio(
             self,

@@ -1,25 +1,30 @@
 """
 charon/gateway/routes/concierge.py
-System Version: v3.2.0 | File Revision: 3.2.0
+System Version: v3.3.0 | File Revision: 3.3.1
 
 Module: REST gateway endpoints for resident Concierge Service interactions, briefings, evaluations,
 presence indicators, multi-modal sensory context perception streams, and Speech/Audio synthesis & transcription.
+Includes FastAPI lifecycle integration for the AutonomicSystem background tasks.
 """
-
-import base64
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+
+from fastapi import APIRouter, FastAPI, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from charon.concierge.speech import SpeechEngine
 
 logger = logging.getLogger("Charon.Gateway.Routes.Concierge")
 
-router = APIRouter(prefix="/v1/concierge", tags=["Concierge Core, Perception & Speech"])
-
 # Global Speech Engine Instance
 speech_engine = SpeechEngine()
+
+# Attach the router WITHOUT the lifespan manager.
+router = APIRouter(
+    prefix="/v1/concierge",
+    tags=["Concierge Core, Perception & Speech"]
+)
 
 
 # ============================================================================
@@ -32,17 +37,14 @@ class EvaluateTaskRequest(BaseModel):
     execution_result: str = Field(..., description="Text result output from action execution")
     blackboard_artifacts: Optional[str] = Field(default="", description="Blackboard state or artifacts string")
 
-
 class InteractRequest(BaseModel):
     user_input: str = Field(..., description="Natural language interaction query from user")
-
 
 class WindowContextRequest(BaseModel):
     app_name: str = Field(..., description="Target application name (e.g. 'VSCode', 'Firefox', 'Alacritty')")
     window_title: str = Field(..., description="Active window title")
     active_file_path: Optional[str] = Field(default=None, description="Active focused file path if applicable")
     pid: Optional[int] = Field(default=None, description="Process ID of focused application")
-
 
 class IDEContextRequest(BaseModel):
     editor: str = Field(default="VSCode", description="IDE or text editor name")
@@ -51,12 +53,10 @@ class IDEContextRequest(BaseModel):
     selection_or_diff: Optional[str] = Field(default=None, description="Active selection or code diff buffer")
     diagnostics: Optional[List[Dict[str, Any]]] = Field(default=None, description="LSP compilation errors or warnings")
 
-
 class SnapshotContextRequest(BaseModel):
     ocr_text: Optional[str] = Field(default=None, description="Extracted OCR text buffer from screen snapshot")
     image_b64: Optional[str] = Field(default=None, description="Base64 encoded PNG display thumbnail")
     source_display: Optional[str] = Field(default="primary", description="Display identifier")
-
 
 class SpeechSynthesizeRequest(BaseModel):
     text: str = Field(..., description="Text string to synthesize into speech audio")
@@ -77,6 +77,11 @@ async def get_briefing(request: Request, user_id: str = "default"):
 
     try:
         greeting = await concierge.generate_greeting(user_id=user_id)
+
+        # Fire background audio broadcast
+        avatar_service = getattr(request.app.state, "avatar_service", None)
+        asyncio.create_task(speech_engine.synthesize_and_broadcast(greeting, avatar_service))
+
         return {"greeting": greeting}
     except Exception as exc:
         logger.error(f"[ConciergeRoute] Error generating briefing: {exc}")
@@ -154,6 +159,11 @@ async def interact(payload: InteractRequest, request: Request):
 
     try:
         response = await concierge.handle_user_message(payload.user_input)
+
+        # Fire background audio broadcast
+        avatar_service = getattr(request.app.state, "avatar_service", None)
+        asyncio.create_task(speech_engine.synthesize_and_broadcast(response, avatar_service))
+
         return {"response": response}
     except Exception as exc:
         logger.error(f"[ConciergeRoute] Error during interaction: {exc}")
@@ -281,5 +291,7 @@ async def reload_registry(request: Request):
     if not concierge:
         raise HTTPException(status_code=503, detail="Concierge Service is not initialized on daemon.")
 
+    # core.py's reload_registry() inherently pushes updates to its internal AutonomicSystem
     concierge.reload_registry()
+
     return {"status": "ok", "message": "Concierge configuration reloaded from registry."}

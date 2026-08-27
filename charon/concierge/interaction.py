@@ -1,0 +1,299 @@
+"""
+charon/concierge/interaction.py
+System Version: v3.4.1 | File Revision: 3.5.0
+
+Handles all direct LLM generation tasks including conversational chat,
+payload wrapping, proactive proposals, and dynamic greetings.
+"""
+
+import datetime
+import json
+import logging
+from typing import Any, Dict, Optional
+
+from pydantic import ValidationError
+
+from .constants import EXIT_PHRASES, TRIVIAL_QUERY_PATTERNS
+from .prompts import (
+    CONCIERGE_SYSTEM_PROMPT,
+    GREETING_SYSTEM_PROMPT,
+    PAYLOAD_WRAPPER_PROMPT,
+)
+from .schemas import ConciergeProposal, ConciergeResponse
+
+logger = logging.getLogger("Charon.UX.Concierge.Interaction")
+
+
+class InteractionEngine:
+    """Isolates and manages all generative AI interactions for the Concierge."""
+
+    def __init__(
+        self,
+        client: Any,
+        registry: Dict[str, Any],
+        memory: Any,
+        sensor: Any,
+        model_name: str,
+        min_confidence: float,
+        chroma_client: Optional[Any] = None,
+        memory_collection: Optional[Any] = None,
+        heuristics_collection: Optional[Any] = None,
+    ):
+        self.client = client
+        self.registry = registry
+        self.memory = memory
+        self.sensor = sensor
+        self.model_name = model_name
+        self.min_confidence = min_confidence
+        self.chroma_client = chroma_client
+        self.memory_collection = memory_collection
+        self.heuristics_collection = heuristics_collection
+
+        # Extract generation configurations
+        model_cfg = self.registry.get("model_settings", {})
+        self.temp_greeting = model_cfg.get("temperature_greeting", 0.6)
+        self.temp_proposal = model_cfg.get("temperature_proposal", 0.2)
+        self.temp_chat = model_cfg.get("temperature_chat", 0.7)
+
+    def _get_active_heuristics(self) -> str:
+        """Fetches all learned behaviors from the semantic memory bank."""
+        if not self.heuristics_collection:
+            return ""
+
+        try:
+            results = self.heuristics_collection.get()
+            if results and results.get("documents"):
+                rules = "\n".join([f"- {doc}" for doc in results["documents"]])
+                return f"\nLEARNED BEHAVIORAL DIRECTIVES:\n{rules}\n"
+        except Exception as e:
+            logger.debug(f"[Interaction] Failed to fetch heuristics: {e}")
+        return ""
+
+    async def generate_greeting(self, user_id: str = "default") -> str:
+        """Generates a dynamic greeting based on temporal and systemic deltas."""
+        if not self.registry.get("abilities", {}).get("briefings", True):
+            return "Welcome to The Continental."
+
+        now = datetime.datetime.now()
+        warmth_hours = self.registry.get("memory_settings", {}).get("session_delta_warmth_hours", 12.0)
+
+        # 1. Fetch the last briefing state from episodic memory
+        last_briefing_doc = {
+            "timestamp": (now - datetime.timedelta(days=1)).isoformat(),
+            "task_count": 0,
+            "alert_count": 0,
+        }
+        memory_id = f"{user_id}_last_briefing"
+
+        if self.memory_collection:
+            try:
+                result = self.memory_collection.get(ids=[memory_id])
+                if result and result.get("documents") and len(result["documents"]) > 0:
+                    last_briefing_doc = json.loads(result["documents"][0])
+            except Exception as e:
+                logger.debug(f"[Interaction] Could not fetch concierge memory, defaulting to cold start: {e}")
+
+        last_time = datetime.datetime.fromisoformat(last_briefing_doc["timestamp"])
+        hours_since_last = (now - last_time).total_seconds() / 3600.0
+
+        # 2. Query the TelemetrySensor for actual session deltas
+        try:
+            deltas = await self.sensor.get_session_deltas(last_briefing_doc["timestamp"])
+            current_task_count = deltas.get("task_count", 0)
+            current_alert_count = deltas.get("alert_count", 0)
+        except Exception as e:
+            logger.error(f"[Interaction] Failed to fetch session deltas from ledger: {e}")
+            current_task_count = 0
+            current_alert_count = 0
+
+        # 3. Determine Briefing Context based on actual deltas
+        has_new_tasks = current_task_count > 0
+        has_new_alerts = current_alert_count > 0
+
+        if hours_since_last < warmth_hours and not (has_new_tasks or has_new_alerts):
+            logger.debug(f"[Interaction] Briefing bypassed. Session is warm (< {warmth_hours}h) with no state delta.")
+            context_str = "Context: [Continuation] | Active Session | No new events"
+            should_update_memory = False
+
+        elif hours_since_last < warmth_hours and has_new_alerts:
+            logger.debug("[Interaction] Session warm, but new alerts detected. Triggering targeted notification.")
+            context_str = f"Context: [Continuation] | Active Session | {current_alert_count} New Alert(s)"
+            should_update_memory = True
+
+        else:
+            logger.debug("[Interaction] Triggering full system briefing.")
+            context_str = (
+                f"Context: [Full Briefing] | "
+                f"{current_task_count} New Task(s) | {current_alert_count} New Alert(s)"
+            )
+            should_update_memory = True
+
+        # 4. Generate Persona Greeting
+        prompt = f"{context_str}\nGenerate greeting:"
+        try:
+            response = await self.client.generate(
+                model=self.model_name,
+                system=GREETING_SYSTEM_PROMPT,
+                prompt=prompt,
+                options={"temperature": self.temp_greeting},
+            )
+            greeting_text = response.get("response", "Welcome to The Continental.").strip('"')
+        except Exception as e:
+            logger.error(f"[Interaction] Failed to generate greeting: {e}")
+            greeting_text = "Welcome to The Continental. How may I be of service?"
+
+        # 5. Update Memory to reset the clock if a briefing was provided
+        if should_update_memory and self.memory_collection:
+            new_state = {
+                "timestamp": now.isoformat(),
+                "task_count": current_task_count,
+                "alert_count": current_alert_count,
+            }
+            try:
+                self.memory_collection.upsert(
+                    ids=[memory_id],
+                    documents=[json.dumps(new_state)],
+                    metadatas=[{"type": "state_snapshot"}],
+                )
+            except Exception as e:
+                logger.error(f"[Interaction] Failed to save concierge memory state: {e}")
+
+        return greeting_text
+
+    async def get_next_step(
+        self,
+        user_query: str,
+        completed_action: str,
+        execution_result: str,
+        blackboard_artifacts: str = "",
+    ) -> Optional[ConciergeProposal]:
+        """Evaluates completed tasks and returns a validated Pydantic proposal."""
+        if not self.registry.get("abilities", {}).get("proactive_proposals", True):
+            return None
+
+        clean_query = user_query.strip().lower().rstrip(".!")
+
+        if clean_query in EXIT_PHRASES:
+            logger.debug("[Interaction] Exit phrase detected. Suppressing proposal.")
+            return None
+
+        if any(pattern.match(clean_query) for pattern in TRIVIAL_QUERY_PATTERNS):
+            logger.debug("[Interaction] Trivial query detected. Suppressing proposal.")
+            return None
+
+        active_rules = self._get_active_heuristics()
+
+        user_content = (
+            f"USER QUERY: {user_query}\n"
+            f"EXECUTED ACTION: {completed_action}\n"
+            f"BLACKBOARD STATE:\n{blackboard_artifacts}\n"
+            f"RESULT OUTPUT:\n{execution_result[:1500]}\n"
+            f"{active_rules}"
+        )
+        full_corpus = f"{user_query} {execution_result} {blackboard_artifacts} {active_rules}"
+
+        try:
+            response = await self.client.generate(
+                model=self.model_name,
+                system=CONCIERGE_SYSTEM_PROMPT,
+                prompt=user_content,
+                format=ConciergeResponse.model_json_schema(),
+                options={"temperature": self.temp_proposal},
+            )
+
+            if not response or not response.get("response"):
+                return None
+
+            response_data = json.loads(response["response"])
+
+            parsed = ConciergeResponse.model_validate(
+                response_data,
+                context={
+                    "user_query": user_query,
+                    "full_corpus": full_corpus,
+                    "min_confidence": self.min_confidence,
+                },
+            )
+
+            if not parsed.has_proposal or not parsed.proposal:
+                logger.debug("[Interaction] LLM explicitly declined to provide a proposal.")
+                return None
+
+            proposal = parsed.proposal
+            logger.info(f"[Interaction] Proposal accepted: {proposal.phrase} -> '{proposal.suggested_prompt}'")
+            return proposal
+
+        except ValidationError as ve:
+            logger.warning(f"[Interaction] Proposal rejected by guardrails: {ve.errors()[0]['msg']}")
+            return None
+        except Exception as e:
+            logger.error(f"[Interaction] Failed to generate dynamic proposal: {e}")
+            return None
+
+    async def wrap_payload(self, task_name: str, payload_data: Any) -> str:
+        """Intercepts dry system task outputs and translates them into a natural language briefing."""
+        try:
+            current_context = self.sensor.get_recent_desktop_context(minutes_lookback=2)
+        except AttributeError:
+            current_context = "Unknown"
+
+        if isinstance(payload_data, (dict, list)):
+            try:
+                payload_str = json.dumps(payload_data, indent=2)
+            except TypeError:
+                payload_str = str(payload_data)
+        else:
+            payload_str = str(payload_data)
+
+        prompt = (
+            f"Current User Context: {current_context}\n\n"
+            f"Task Executed: {task_name}\n"
+            f"Raw Output Data:\n{payload_str}\n\n"
+            f"Please provide a natural language summary of this output."
+        )
+
+        try:
+            logger.debug(f"[Interaction] Wrapping payload for task: {task_name}")
+            response = await self.client.generate(
+                model=self.model_name,
+                system=PAYLOAD_WRAPPER_PROMPT,
+                prompt=prompt,
+                options={"temperature": self.temp_chat},
+            )
+            return response.get("response", payload_str).strip('"')
+
+        except Exception as e:
+            logger.error(f"[Interaction] Failed to wrap payload for {task_name}: {e}")
+            return f"Task '{task_name}' completed. Output: {payload_str}"
+
+    async def handle_user_message(self, user_input: str) -> str:
+        """The primary conversational interface for Charon."""
+
+        memory_context = self.memory.get_relevant_memories(user_input) if self.chroma_client else ""
+
+        try:
+            desktop_context = self.sensor.get_recent_desktop_context(minutes_lookback=5)
+        except AttributeError:
+            desktop_context = "Unknown"
+
+        dynamic_system_prompt = (
+            f"{CONCIERGE_SYSTEM_PROMPT}\n\n"
+            f"--- SENSORY DATA ---\n"
+            f"Current Desktop Context: {desktop_context}\n"
+            f"{memory_context}"
+            f"--------------------\n"
+        )
+
+        try:
+            logger.debug("[Interaction] Generating conversational response with injected memory/context.")
+            response = await self.client.generate(
+                model=self.model_name,
+                system=dynamic_system_prompt,
+                prompt=user_input,
+                options={"temperature": self.temp_chat},
+            )
+            return response.get("response", "I seem to have encountered a cognitive error, sir.").strip('"')
+
+        except Exception as e:
+            logger.error(f"[Interaction] Failed to generate chat response: {e}")
+            return "My apologies, sir, but my communication relays are currently experiencing interference."

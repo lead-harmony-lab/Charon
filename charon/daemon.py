@@ -1,20 +1,22 @@
 """
 charon/daemon.py
-System Version: v0.1.2 | File Revision: 1.9.2
+System Version: v0.1.2 | File Revision: 2.3.0
 
 Module: Charon Daemon (`charond`) - Gateway Entry Point.
-Integrates resident ConciergeService directly into the FastAPI lifespan and gateway routing.
+Integrates resident ConciergeService and core orchestration into the FastAPI lifespan.
 """
 
 import asyncio
 from contextlib import asynccontextmanager
+import datetime
 import logging
 import os
-import ollama
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from openai import AsyncOpenAI  # Swapped from native ollama client
 import uvicorn
 
 from charon.config.logging import setup_logging
@@ -26,25 +28,18 @@ from charon.gateway.core import CharonDaemon
 from charon.gateway.middleware import APIKeyMiddleware
 from charon.gateway.models import WSEvent
 from charon.gateway.routes import router as master_api_router
+from charon.gateway.routes.avatar import avatar_stream
 from charon.gateway.ws import manager
 from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
 # 1. Ensure runtime paths exist and logging handlers are configured
 ensure_ecosystem_directories()
-setup_logging()
+setup_logging(debug=True)
 
 logger = logging.getLogger("Charon.Daemon")
 
-# 2. Initialize engine, gateway daemon wrapper, and resident Concierge
-llm_client = ollama.AsyncClient(host=OLLAMA_HOST)
-
-# Inject the client into the core engine
-engine = OrchestrationEngine(llm_client=llm_client)
-daemon = CharonDaemon(engine=engine)
-
-# Instantiate Resident Concierge Service bound to local LLM client
-concierge_service = ConciergeService(llm_client=llm_client)
-
+# NOTE: Heavy instantiations (llm_client, engine, daemon, concierge_service)
+# have been moved inside the lifespan below to prevent Uvicorn double-initialization.
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,20 +47,67 @@ async def lifespan(app: FastAPI):
         "[Charon.Daemon] Initializing Charon FastAPI Gateway, Core Engine, Persistent Journal, and Concierge..."
     )
 
-    # 1. Await daemon/journal initialization prior to exposing state and serving traffic
+    # 1. Initialize an OpenAI-compatible client pointing to Ollama's local server
+    # Ensure OLLAMA_HOST doesn't have a trailing slash before appending /v1
+    base_url = f"{OLLAMA_HOST.rstrip('/')}/v1"
+
+    llm_client = AsyncOpenAI(
+        base_url=base_url,
+        api_key="ollama"  # Required by the OpenAI client library, but ignored by Ollama
+    )
+
+    concierge_service = ConciergeService(llm_client=llm_client)
+
+    # 2. Inject Concierge directly into the Orchestrator (the Harness owner)
+    engine = OrchestrationEngine(
+        llm_client=llm_client,
+        concierge=concierge_service
+    )
+
+    # 3. Initialize Gateway Daemon wrapper
+    daemon = CharonDaemon(engine=engine)
+
+    # 4. Await daemon/journal initialization prior to exposing state and serving traffic
     if hasattr(daemon, "initialize"):
         await daemon.initialize()
     elif hasattr(daemon, "journal") and hasattr(daemon.journal, "initialize"):
         await daemon.journal.initialize()
 
-    # 2. Awaken resident Concierge (starts biological clock & loads registry options)
+    # -------------------------------------------------------------
+    # Crash handler wrapper for asyncio background tasks
+    # -------------------------------------------------------------
+    def _handle_task_crash(task: asyncio.Task) -> None:
+        try:
+            if not task.cancelled() and task.exception():
+                logger.critical(
+                    f"[Charon.Daemon] Background Task '{task.get_name()}' crashed fatally: {task.exception()}",
+                    exc_info=task.exception()
+                )
+        except asyncio.CancelledError:
+            pass
+
+    # 5. Bind Avatar Stream, Awaken resident Concierge, and Trigger Hospitality
+    # Expose the avatar service on app state for route access
+    app.state.avatar_service = avatar_stream
+
+    concierge_service.bind_avatar_service(avatar_stream)
     await concierge_service.awaken()
     daemon.concierge = concierge_service
+
+    # Fire the startup hospitality greeting asynchronously with crash handler
+    if hasattr(concierge_service, "hospitality") and concierge_service.hospitality:
+        # Dynamically check for recovered tasks from the journal/daemon
+        recovered_count = len(daemon.get_active_tasks()) if hasattr(daemon, "get_active_tasks") else 0
+        hospitality_task = asyncio.create_task(
+            concierge_service.hospitality.execute_startup_greeting(recovered_tasks=recovered_count),
+            name="hospitality_greeting"
+        )
+        hospitality_task.add_done_callback(_handle_task_crash)
 
     # Explicitly bind Gateway contexts back to OrchestrationEngine & Coordinator
     engine.bind_gateway_context(
         emitter=getattr(daemon, "emitter", None),
-        concierge=daemon.concierge,
+        concierge=concierge_service,
         state_manager=getattr(daemon, "state_mgr", None),
         ledger=getattr(daemon, "ledger", None),
     )
@@ -76,7 +118,7 @@ async def lifespan(app: FastAPI):
     app.state.engine = daemon.engine
     app.state.emitter = daemon.emitter
     app.state.gatekeeper = daemon.gatekeeper
-    app.state.concierge = concierge_service
+    app.state.concierge = concierge_service  # Solves the lifespan duplicate injection
     app.state.state_mgr = daemon.state_mgr
     app.state.ledger = daemon.ledger
     app.state.workspace_mgr = daemon.workspace_mgr
@@ -214,19 +256,6 @@ async def lifespan(app: FastAPI):
                     f"Task heartbeat worker encountered an anomaly: {e}"
                 )
 
-    # -------------------------------------------------------------
-    # Crash handler wrapper for asyncio background tasks
-    # -------------------------------------------------------------
-    def _handle_task_crash(task: asyncio.Task) -> None:
-        try:
-            if not task.cancelled() and task.exception():
-                logger.critical(
-                    f"[Charon.Daemon] Background Task '{task.get_name()}' crashed fatally: {task.exception()}",
-                    exc_info=task.exception()
-                )
-        except asyncio.CancelledError:
-            pass
-
     # Spawn background task workers with crash handlers
     queue_task = asyncio.create_task(
         daemon.process_queue(), name="queue_worker"
@@ -258,6 +287,7 @@ async def lifespan(app: FastAPI):
     queue_task.cancel()
     overseer_task.cancel()
     heartbeat_task.cancel()
+
     await asyncio.gather(
         queue_task, overseer_task, heartbeat_task, return_exceptions=True
     )

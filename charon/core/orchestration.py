@@ -1,12 +1,13 @@
 """
 charon/core/orchestration.py
-System Version: v2.2.0 | File Revision: 2.4.4
+System Version: v2.2.0 | File Revision: 2.6.0
 
 Module: Main Orchestration Engine facade for Charon.
 Refactored for the Active Execution Envelope paradigm.
 Delegates strictly to the Coordinator for execution and the Concierge for UX proposals.
-Updated: Direct SkillLibrarian encapsulation for agent hydration and tool discovery with comprehensive diagnostic logging
-and DB payload result extraction. Refactored to use native async execution via _safe_execute.
+Updated: Direct SkillLibrarian encapsulation, native async execution via _safe_execute,
+sensory context enrichment, circuit breaker safety interrupts, fail-safe state recovery,
+and passive Concierge ingress/egress observation.
 """
 
 import inspect
@@ -34,6 +35,7 @@ class OrchestrationEngine:
     def __init__(
         self,
         llm_client: Optional[Any] = None,
+        concierge: Optional[Any] = None,  # <-- Add this parameter
         heavy_model: str = "llama3.1",
         triage_model: str = "llama3.1",
         state_manager: Optional[StateManager] = None,
@@ -51,7 +53,7 @@ class OrchestrationEngine:
         self.state_mgr = state_manager
         self.ledger = ledger
         self.emitter = None
-        self.concierge = None
+        self.concierge = concierge  # <-- Bind the injected instance here
 
         self._verify_required_system_roles()
 
@@ -153,7 +155,7 @@ class OrchestrationEngine:
         task_id: Optional[str] = None,
         routing_hint: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        """Primary execution lifecycle controller."""
+        """Primary execution lifecycle controller with telemetry integration & circuit breaking."""
         raw_prompt = user_input.strip() if user_input else ""
         if not raw_prompt:
             logger.warning("[ENGINE] Received empty prompt, aborting request execution.")
@@ -164,7 +166,25 @@ class OrchestrationEngine:
             f"Override: {agent_override} | Routing Hint: {routing_hint} | Prompt: '{raw_prompt[:60]}...'"
         )
 
-        # 1. Telemetry Broadcast: Typed UI Event Emission
+        # 1. Harness State Transition -> RUNNING
+        if self.concierge and hasattr(self.concierge, "set_harness_state"):
+            await _safe_execute(self.concierge.set_harness_state, "RUNNING", task_id=task_id)
+
+        # 1.5 Concierge Ingress Observation (Long-horizon memory)
+        if self.concierge and hasattr(self.concierge, "observe_ingress"):
+            logger.debug("[ENGINE.PATHWAY] Invoking Concierge observe_ingress...")
+            await _safe_execute(self.concierge.observe_ingress, raw_prompt)
+
+        # 2. Sensory Context Enrichment
+        sensory_context = {}
+        if self.concierge and hasattr(self.concierge, "get_sensory_snapshot"):
+            try:
+                sensory_context = await _safe_execute(self.concierge.get_sensory_snapshot) or {}
+                logger.debug(f"[ENGINE.OBSERVER] Injected sensory snapshot keys: {list(sensory_context.keys())}")
+            except Exception as context_err:
+                logger.warning(f"[ENGINE.OBSERVER] Failed to capture sensory snapshot: {context_err}")
+
+        # 3. Telemetry Broadcast
         if self.emitter:
             try:
                 emit_event_fn = getattr(
@@ -176,6 +196,7 @@ class OrchestrationEngine:
                         "task_id": task_id,
                         "agent_override": agent_override,
                         "status": "in_progress",
+                        "sensory_context": sensory_context,
                     }
                     logger.debug(f"[ENGINE.PATHWAY] Emitting TaskDispatchedEvent: {event_payload}")
                     res_emit = emit_event_fn(event_payload)
@@ -187,15 +208,22 @@ class OrchestrationEngine:
             except Exception as ack_err:
                 logger.debug(f"[ENGINE] Telemetry dispatch fallback error: {ack_err}", exc_info=True)
         else:
-            logger.warning(
-                "[ENGINE.PATHWAY] self.emitter is None. Skipping initial telemetry broadcast."
-            )
+            logger.warning("[ENGINE.PATHWAY] self.emitter is None. Skipping initial telemetry broadcast.")
+
+        # 4. Safety Circuit Breaker Interrupt
+        if self.concierge and hasattr(self.concierge, "check_for_critical_alerts"):
+            critical_alert = await _safe_execute(self.concierge.check_for_critical_alerts)
+            if critical_alert:
+                logger.warning(f"[ENGINE.SAFETY] Execution halted by telemetry circuit breaker: {critical_alert}")
+                if hasattr(self.concierge, "set_harness_state"):
+                    await _safe_execute(self.concierge.set_harness_state, "FAULTED", task_id=task_id)
+                return {"error": "System Safety Interrupt", "message": critical_alert}
 
         result: Any = None
         completed_blackboard = None
 
         try:
-            # Fetch topology manifest directly via SkillLibrarian
+            # 5. Topology & Catalog Audit
             logger.debug("[ENGINE.PATHWAY] Fetching system topology from SkillLibrarian...")
             system_topology = self.librarian.get_system_topology()
 
@@ -203,14 +231,12 @@ class OrchestrationEngine:
                 "agent_override": agent_override,
                 "routing_hint": routing_hint,
                 "stream_cb": stream_cb,
+                "sensory_context": sensory_context,
             }
 
-            # --- PRE-PLANNER DIAGNOSTIC LOGGING ---
             registered_coordinator_agents = (
                 list(self.coordinator.agents.keys()) if hasattr(self.coordinator, "agents") else []
             )
-
-            # Query execution tool catalog strictly via SkillLibrarian
             skill_catalog_preview = self.librarian.get_execution_tool_catalog(as_dict=False)
 
             logger.info(
@@ -222,9 +248,8 @@ class OrchestrationEngine:
                 f"  - Librarian Skills Catalog Count: {len(skill_catalog_preview)}"
             )
 
-            # 2. Trigger Zero-Trust Execution Lifecycle
-            logger.info("[ENGINE.PATHWAY] Step 2: Triggering Coordinator Zero-Trust Lifecycle...")
-
+            # 6. Zero-Trust Execution Lifecycle Trigger
+            logger.info("[ENGINE.PATHWAY] Triggering Coordinator Zero-Trust Lifecycle...")
             await _safe_execute(
                 self.coordinator.run_task_lifecycle,
                 task_id=task_id,
@@ -232,11 +257,9 @@ class OrchestrationEngine:
                 system_topology=system_topology,
                 metadata=metadata,
             )
-            logger.info(
-                "[ENGINE.PATHWAY] Coordinator.run_task_lifecycle completed successfully."
-            )
+            logger.info("[ENGINE.PATHWAY] Coordinator.run_task_lifecycle completed successfully.")
 
-            # 3. Result Extraction via TaskBlackboard (Unwrapping "result" key)
+            # 7. Result Extraction via TaskBlackboard
             logger.debug(f"[ENGINE.PATHWAY] Fetching results from TaskBlackboard for task_id: {task_id}")
             completed_blackboard = TaskBlackboard(STATE_DB_PATH, task_id)
             raw_payload = completed_blackboard._get_results_payload()
@@ -255,7 +278,14 @@ class OrchestrationEngine:
             )
             result = {"error": "System Error", "message": str(engine_err)}
 
-        # 4. Native Output Broadcast
+        finally:
+            # 8. Fail-Safe Harness State Recovery Guard
+            if self.concierge and hasattr(self.concierge, "set_harness_state"):
+                is_error_payload = isinstance(result, dict) and "error" in result
+                final_state = "FAULTED" if is_error_payload else "IDLE"
+                await _safe_execute(self.concierge.set_harness_state, final_state, task_id=task_id)
+
+        # 9. Native Output Broadcast
         if result and self.emitter:
             emit_fn = getattr(
                 self.emitter, "emit_agent_response", getattr(self.emitter, "emit_response", None)
@@ -278,7 +308,13 @@ class OrchestrationEngine:
             else:
                 logger.warning("[ENGINE.PATHWAY] Emitter present but no emit_agent_response or emit_response method available.")
 
-        # 5. Proactive Evaluation
+        # 9.5 Concierge Egress Observation (Learning from final outcome)
+        if self.concierge and hasattr(self.concierge, "observe_egress"):
+            logger.debug("[ENGINE.PATHWAY] Invoking Concierge observe_egress...")
+            str_result_for_egress = str(result.model_dump() if hasattr(result, "model_dump") else result)
+            await _safe_execute(self.concierge.observe_egress, raw_prompt, str_result_for_egress)
+
+        # 10. Proactive Evaluation (Pass-through Observer)
         if self.concierge and self.emitter and result:
             logger.debug("[ENGINE.PATHWAY] Invoking Concierge for next step evaluation...")
             try:
@@ -315,9 +351,7 @@ class OrchestrationEngine:
                             if isinstance(suggestion, dict)
                             else "New Proposal",
                         )
-                        logger.info(
-                            f"[ENGINE.PATHWAY] Concierge generated proposal: {phrase}"
-                        )
+                        logger.info(f"[ENGINE.PATHWAY] Concierge generated proposal: {phrase}")
 
                         emit_payload = (
                             suggestion.model_dump()
@@ -349,7 +383,5 @@ class OrchestrationEngine:
                 data={"result_summary": str(result)[:300]},
             )
 
-        logger.info(
-            f"[ENGINE.PATHWAY] Exit process_request [Task ID: {task_id or 'volatile'}]"
-        )
+        logger.info(f"[ENGINE.PATHWAY] Exit process_request [Task ID: {task_id or 'volatile'}]")
         return result

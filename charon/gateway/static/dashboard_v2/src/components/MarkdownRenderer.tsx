@@ -1,9 +1,10 @@
 /**
  * @file src/components/MarkdownRenderer.tsx
- * @description Markdown renderer component supporting syntax highlighting, ticket anchors, and doc mentions.
+ * @description Markdown renderer component supporting syntax highlighting, ticket anchors, doc mentions, and tables.
  */
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Link, useNavigate } from 'react-router-dom';
@@ -20,6 +21,7 @@ export function MarkdownRenderer({ content, onInternalLinkClick, onDocLinkClick 
   return (
     <div style={{ color: '#e2e8f0', lineHeight: '1.6', fontSize: '0.9rem' }}>
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           h1: ({ children }) => (
             <h1 style={{ color: '#f8fafc', fontSize: '1.3rem', borderBottom: '1px solid #334155', paddingBottom: '0.4rem', marginTop: '1.2rem' }}>
@@ -36,6 +38,27 @@ export function MarkdownRenderer({ content, onInternalLinkClick, onDocLinkClick 
               {children}
             </h3>
           ),
+
+          // --- Table support via remark-gfm ---
+          table: ({ children }) => (
+            <div style={{ overflowX: 'auto', margin: '1rem 0' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                {children}
+              </table>
+            </div>
+          ),
+          th: ({ children }) => (
+            <th style={{ borderBottom: '2px solid #334155', padding: '0.75rem 1rem', color: '#f8fafc', fontWeight: '600', backgroundColor: '#0f172a' }}>
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td style={{ borderBottom: '1px solid #1e293b', padding: '0.75rem 1rem' }}>
+              {children}
+            </td>
+          ),
+          // ------------------------------------
+
           code({ inline, className, children, node, ...props }: any) {
             const match = /language-(\w+)/.exec(className || '');
             const language = match ? match[1] : 'text';

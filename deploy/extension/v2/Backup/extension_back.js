@@ -41,6 +41,7 @@ export default class CharonExtension extends Extension {
             Main.overview.addSearchProvider(this.searchProvider);
         }
 
+        // Hook the window safely on creation
         this._windowCreatedId = global.display.connect('window-created', (display, win) => {
             if (this._isOverlayWindow(win)) {
                 try { win.skip_taskbar = true; win.skip_pager = true; } catch (e) {}
@@ -83,21 +84,26 @@ export default class CharonExtension extends Extension {
         try {
             let clientDir = this.dir.get_child('charon').get_child('client');
             if (!clientDir.query_exists(null)) {
+                console.log(`[Charon Extension] Client directory missing, attempting to create at: ${clientDir.get_path()}`);
                 clientDir.make_directory_with_parents(null);
             }
             let file = clientDir.get_child('settings.json');
+            console.log(`[Charon Extension] Settings file path resolved to: ${file.get_path()}`);
             return file;
         } catch (e) {
             let fallbackFile = this.dir.get_child('settings.json');
+            console.warn(`[Charon Extension] Primary path failed (${e.message}). Falling back to: ${fallbackFile.get_path()}`);
             return fallbackFile;
         }
     }
 
     readOverlaySettings() {
         if (!this.overlaySettingsFile) {
+            console.error('[Charon Extension] Read failed: overlaySettingsFile object is null.');
             return {};
         }
         if (!this.overlaySettingsFile.query_exists(null)) {
+            console.warn(`[Charon Extension] Settings file does not exist at: ${this.overlaySettingsFile.get_path()}`);
             return {};
         }
 
@@ -106,10 +112,17 @@ export default class CharonExtension extends Extension {
             if (success) {
                 let decoder = new TextDecoder('utf-8');
                 let str = decoder.decode(contents).trim();
+                console.log(`[Charon Extension] Raw settings string read: '${str}'`);
+
                 let parsed = str ? JSON.parse(str) : {};
+                console.log(`[Charon Extension] Parsed settings object: ${JSON.stringify(parsed)}`);
                 return parsed;
+            } else {
+                console.warn('[Charon Extension] load_contents returned false.');
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error(`[Charon Extension] Exception while reading/parsing settings: ${e.message}`);
+        }
         return {};
     }
 
@@ -246,6 +259,7 @@ export default class CharonExtension extends Extension {
 
     _attachOverlayWindowHooks(metaWin) {
         if (this._trackedOverlayWindow === metaWin) return;
+        console.log('[Charon Extension] Avatar window identified. Attaching hooks...');
 
         this._unhookOverlayWindow();
         this._trackedOverlayWindow = metaWin;
@@ -253,9 +267,12 @@ export default class CharonExtension extends Extension {
         let currentSettings = this.readOverlaySettings();
         let isCurrentlyAbove = metaWin.is_above ? metaWin.is_above() : metaWin.above;
 
+        // Defer window adjustments until after the compositor has rendered the first frame
+        // to avoid "meta_window_set_stack_position_no_sync" assertions on Wayland.
         GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
             if (this._trackedOverlayWindow !== metaWin) return GLib.SOURCE_REMOVE;
 
+            // Restore Always-On-Top setting
             if (currentSettings.always_on_top !== undefined) {
                 if (currentSettings.always_on_top && !isCurrentlyAbove) metaWin.make_above();
                 else if (!currentSettings.always_on_top && isCurrentlyAbove) metaWin.unmake_above();
@@ -264,18 +281,26 @@ export default class CharonExtension extends Extension {
                 this.writeOverlaySettings(currentSettings);
             }
 
+            // Restore Initial Saved Position (x, y) on Startup
             if (typeof currentSettings.x === 'number' && typeof currentSettings.y === 'number') {
                 let restoredX = Math.round(currentSettings.x);
                 let restoredY = Math.round(currentSettings.y);
+                console.log(`[Charon Extension] Restoring initial window position to X:${restoredX}, Y:${restoredY}`);
 
                 this._lastSavedX = restoredX;
                 this._lastSavedY = restoredY;
 
                 if (typeof metaWin.move_frame === 'function') {
+                    console.log('[Charon Extension] Executing move_frame(true, x, y)');
                     metaWin.move_frame(true, restoredX, restoredY);
                 } else if (typeof metaWin.move_to_coordinate === 'function') {
+                    console.log('[Charon Extension] Executing move_to_coordinate(x, y)');
                     metaWin.move_to_coordinate(restoredX, restoredY);
+                } else {
+                    console.warn('[Charon Extension] Neither move_frame nor move_to_coordinate exist on this metaWin object.');
                 }
+            } else {
+                console.log('[Charon Extension] X or Y coordinates missing from parsed settings; skipping position restore.');
             }
 
             return GLib.SOURCE_REMOVE;
@@ -290,6 +315,7 @@ export default class CharonExtension extends Extension {
             }
         });
 
+        // Ignore position-changed signal for 1.5s to prevent startup overrides
         this._ignorePositionSaves = true;
         if (this._gracePeriodTimeoutId) {
             GLib.source_remove(this._gracePeriodTimeoutId);
@@ -315,13 +341,6 @@ export default class CharonExtension extends Extension {
         if (this._lastSavedX !== currX || this._lastSavedY !== currY) {
             this._lastSavedX = currX;
             this._lastSavedY = currY;
-
-            if (this.api && typeof this.api.sendTelemetry === 'function') {
-                this.api.sendTelemetry({
-                    type: 'window_moved',
-                    data: { x: currX, y: currY }
-                });
-            }
 
             if (this._savePositionDebounceId) {
                 GLib.source_remove(this._savePositionDebounceId);

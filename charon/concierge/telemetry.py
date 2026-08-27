@@ -1,6 +1,6 @@
 """
 charon/concierge/telemetry.py
-System Version: v3.1.0 | File Revision: 3.1.0
+System Version: v3.1.0 | File Revision: 3.2.1
 
 Module: System Telemetry & Heuristic Sensors
 Equips the Concierge with the ability to perceive host hardware state (CPU, GPU, RAM),
@@ -9,6 +9,7 @@ ExecutionLedger to maintain session state awareness, and ingest multi-modal sens
 (window focus, IDE buffer diffs, screen OCR snapshots).
 """
 
+import time
 import psutil
 import subprocess
 import json
@@ -16,6 +17,7 @@ import datetime
 import logging
 import asyncio
 from typing import Dict, Any, List, Optional
+from enum import Enum
 
 import chromadb
 from charon.config.paths import CONCIERGE_MEMORY_DIR
@@ -23,6 +25,12 @@ from charon.telemetry.ledger import ExecutionLedger
 from charon.db.connection import get_connection
 
 logger = logging.getLogger("Charon.Concierge.Telemetry")
+
+
+class HarnessState(Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    FAULTED = "FAULTED"
 
 
 class TelemetrySensor:
@@ -43,6 +51,78 @@ class TelemetrySensor:
 
         # 2. Initialize Audit Ledger Connection
         self.ledger = ExecutionLedger()
+
+        # 3. Initialize Harness State Tracking
+        self.harness_state = HarnessState.IDLE
+        self.active_prompt: Optional[str] = None
+        self.active_task_id: Optional[str] = None
+
+        # 4. Initialize Presence Tracking
+        self._last_lock_state = False
+        self._last_unlock_time = 0.0
+
+        # 5. Initialize Live Desktop State Cache
+        self.active_window_context: Optional[Dict[str, Any]] = None
+
+    # =========================================================================
+    # Phase 1: Agentic Lifecycle & System Health
+    # =========================================================================
+
+    def set_harness_state(self, state: HarnessState, task_id: Optional[str] = None, prompt: Optional[str] = None):
+        """Called directly by the Agentic Harness to report state transitions."""
+        self.harness_state = state
+        if task_id:
+            self.active_task_id = task_id
+        if prompt:
+            self.active_prompt = prompt
+        logger.debug(f"Harness state updated to: {state.value} (Task ID: {task_id or self.active_task_id})")
+
+    async def check_for_critical_alerts(self) -> Optional[Dict[str, str]]:
+        """Evaluates system state. Bypasses task ledger checks completely if the harness is IDLE."""
+
+        # 1. Systemd Daemon Check (Always active for OS-level crashes)
+        try:
+            sys_proc = await asyncio.create_subprocess_exec(
+                "systemctl", "--failed", "--plain", "--no-legend",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+            )
+            sys_stdout, _ = await sys_proc.communicate()
+            output = sys_stdout.decode().strip()
+            if output:
+                first_failed_unit = output.split()[0] if output.split() else "an unknown service"
+                return {"summary": f"the systemd unit {first_failed_unit} has entered a failed state"}
+        except Exception as e:
+            logger.debug(f"Failed to query systemctl: {e}")
+
+        # 2. Skip ledger queries if harness is sitting IDLE
+        if self.harness_state == HarnessState.IDLE:
+            return None
+
+        # 3. Ledger Fault Check (Only runs while an agentic workflow is active/faulted)
+        lookback = datetime.datetime.now() - datetime.timedelta(seconds=6)
+        sql_timestamp = lookback.strftime('%Y-%m-%d %H:%M:%S')
+
+        def _query_ledger():
+            with get_connection(self.ledger.db_path, read_only=True) as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT task_name, event_type
+                    FROM audit_ledger
+                    WHERE timestamp > ? AND event_type IN ('FAILED', 'ESCALATION')
+                    ORDER BY timestamp DESC
+                    LIMIT 1;
+                    """,
+                    (sql_timestamp,)
+                )
+                return cursor.fetchone()
+
+        row = await asyncio.to_thread(_query_ledger)
+        if row:
+            event_type = row["event_type"].lower()
+            task_name = row["task_name"].replace("_", " ")
+            return {"summary": f"your background task '{task_name}' resulted in an {event_type}"}
+
+        return None
 
     def _get_gpu_usage(self) -> float:
         """Attempts to read GPU utilization. Gracefully fails to 0.0 if unavailable."""
@@ -164,6 +244,84 @@ class TelemetrySensor:
             logger.error(f"Failed to synthesize idle heuristic: {e}")
 
     # =========================================================================
+    # Phase 1.5: Presence & User Idle Tracking
+    # =========================================================================
+
+    async def get_current_presence(self) -> dict:
+        """
+        Calculates user presence, idle time, and recent unlock events.
+        """
+        idle_time_seconds = await self._fetch_system_idle_time()
+        is_locked = await self._fetch_system_lock_state()
+
+        now = time.time()
+        # Detect the exact moment of unlock
+        if self._last_lock_state is True and is_locked is False:
+            self._last_unlock_time = now
+
+        self._last_lock_state = is_locked
+        just_unlocked = (now - self._last_unlock_time) < 10.0
+
+        return {
+            "idle_time": idle_time_seconds,
+            "is_locked": is_locked,
+            "unlocked_in_last_10s": just_unlocked
+        }
+
+    async def _fetch_system_idle_time(self) -> float:
+        """
+        Queries GNOME Mutter for user idle time via D-Bus.
+        Works seamlessly on both Wayland and X11 display servers.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "gdbus", "call", "--session",
+                "--dest", "org.gnome.Mutter.IdleMonitor",
+                "--object-path", "/org/gnome/Mutter/IdleMonitor/Core",
+                "--method", "org.gnome.Mutter.IdleMonitor.GetIdletime",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            stdout, _ = await proc.communicate()
+            output = stdout.decode().strip()
+
+            # Expected output format: (uint64 12345,) where 12345 is milliseconds
+            if output:
+                # Extract just the digits from the string
+                idle_ms_str = ''.join(filter(str.isdigit, output))
+                if idle_ms_str:
+                    return float(idle_ms_str) / 1000.0
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch idle time via D-Bus: {e}")
+
+        return 0.0
+
+    async def _fetch_system_lock_state(self) -> bool:
+        """
+        Queries the GNOME ScreenSaver for lock state via D-Bus.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "gdbus", "call", "--session",
+                "--dest", "org.gnome.ScreenSaver",
+                "--object-path", "/org/gnome/ScreenSaver",
+                "--method", "org.gnome.ScreenSaver.GetActive",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            stdout, _ = await proc.communicate()
+            output = stdout.decode().strip()
+
+            # Expected output format: (true,) or (false,)
+            return "true" in output.lower()
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch lock state via D-Bus: {e}")
+
+        return False
+
+    # =========================================================================
     # Phase 2: Sensory Perception Ingress Handlers
     # =========================================================================
 
@@ -177,12 +335,23 @@ class TelemetrySensor:
     ) -> None:
         """
         Ingests active window focus state (GNOME extension / Window Manager).
-        Converts the state into a semantic string for Chroma vector retrieval.
+        Updates in-memory telemetry cache and persists semantic vector records.
         """
+        now = datetime.datetime.now()
+
+        # Update in-memory live telemetry cache for instant non-blocking reads
+        self.active_window_context = {
+            "app_name": app_name,
+            "window_title": window_title,
+            "active_file_path": active_file_path or "",
+            "pid": pid or 0,
+            "workspace": workspace,
+            "timestamp": now.isoformat()
+        }
+
         if not self.context_db:
             return
 
-        now = datetime.datetime.now()
         doc_id = f"win_{now.timestamp()}"
 
         file_clause = f" active file: '{active_file_path}'" if active_file_path else ""
@@ -211,9 +380,9 @@ class TelemetrySensor:
         except Exception as e:
             logger.error(f"Failed to log window context to memory: {e}")
 
-    def log_desktop_context(self, app_name: str, window_title: str, workspace: int = 0) -> None:
-        """Backward-compatible alias for log_window_context."""
-        self.log_window_context(app_name=app_name, window_title=window_title, workspace=workspace)
+    def get_active_window_context(self) -> Optional[Dict[str, Any]]:
+        """Returns the current live window context from memory."""
+        return self.active_window_context
 
     def log_ide_context(
         self,

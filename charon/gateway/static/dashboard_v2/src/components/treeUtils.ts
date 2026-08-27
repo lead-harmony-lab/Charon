@@ -1,13 +1,13 @@
 /**
  * @file src/components/treeUtils.ts
- * @description
+ * @description Utility functions for managing the ManualNode tree structure.
  */
 import { DocMentionItem } from '../features/docs/types';
 
 export interface ManualNode {
   id: string;
   title: string;
-  content?: string;
+  content?: string; // Optional to support lazy-loading markdown
   updatedAt?: string;
   lastChildUpdate?: {
     id: string;
@@ -55,6 +55,7 @@ export const flattenManualTree = (nodes: ManualNode[]): DocMentionItem[] => {
 };
 
 // Recursively filters nodes matching query in title or content, preserving parent structures
+// Note: Lazy-loaded content won't be searched until it is fetched.
 export const filterTree = (nodes: ManualNode[], query: string): ManualNode[] => {
   if (!query.trim()) return nodes;
   const q = query.toLowerCase();
@@ -99,23 +100,27 @@ export const isDescendant = (nodes: ManualNode[], parentId: string, targetId: st
   return !!findNodeById(parentNode.children, targetId);
 };
 
-// Deep clones the tree while extracting the target node
+// Deep clones the tree natively while extracting the target node
 export const removeNode = (nodes: ManualNode[], idToRemove: string): { newTree: ManualNode[], removedNode: ManualNode | null } => {
   let removedNode: ManualNode | null = null;
+
   const filterNodes = (list: ManualNode[]): ManualNode[] => {
-    return list.filter(node => {
-      if (node.id === idToRemove) {
-        removedNode = { ...node }; // Copy to detach
-        return false;
-      }
-      if (node.children) {
-        node.children = filterNodes(node.children);
-      }
-      return true;
-    }).map(node => ({ ...node })); // Deep clone step
+    return list
+      .filter(node => {
+        if (node.id === idToRemove) {
+          removedNode = { ...node }; // Copy to detach
+          return false;
+        }
+        return true;
+      })
+      .map(node => ({
+        ...node,
+        // Recursively clone children if they exist
+        children: node.children ? filterNodes(node.children) : undefined
+      }));
   };
 
-  const newTree = filterNodes(JSON.parse(JSON.stringify(nodes))); // Ensure total decoupling
+  const newTree = filterNodes(nodes);
   return { newTree, removedNode };
 };
 
@@ -138,4 +143,15 @@ export const insertNode = (nodes: ManualNode[], targetId: string, newNode: Manua
     }
     return acc;
   }, []);
+};
+
+// Recursively strips the 'content' field from nodes before saving the structural map
+export const stripContentForSave = (nodes: ManualNode[]): Omit<ManualNode, 'content'>[] => {
+  return nodes.map(node => {
+    const { content, ...rest } = node;
+    return {
+      ...rest,
+      children: node.children && node.children.length > 0 ? stripContentForSave(node.children) as ManualNode[] : []
+    };
+  });
 };

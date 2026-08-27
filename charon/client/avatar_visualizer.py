@@ -53,6 +53,10 @@ class AvatarVisualizer(Gtk.DrawingArea):
         self.is_blinking = False
         self.next_blink_timer = random.randint(120, 240)
 
+        # --- Speech Viseme Tracking ---
+        self.target_speech_aperture = 0.0
+        self.current_speech_aperture = 0.0
+
         # Interpolated Parameters
         target = EXPRESSIVE_STATES["observing"]
         self.curr_pulse_speed = target["pulse_speed"]
@@ -70,6 +74,19 @@ class AvatarVisualizer(Gtk.DrawingArea):
     # -------------------------------------------------------------------------
     # Public API & Gaze Math
     # -------------------------------------------------------------------------
+
+    def set_speech_viseme(self, scale: float):
+        """
+        Called by the synchronized audio playback thread.
+        Scale should be 0.0 (silent) to 1.0 (loudest).
+        """
+        self.target_speech_aperture = scale
+
+        # Auto-state management based on speech
+        if scale > 0.05 and self.state_name == "observing":
+            self.set_expressive_state("expressing")
+        elif scale == 0.0 and self.state_name == "expressing":
+            self.set_expressive_state("observing")
 
     def set_expressive_state(self, state_name: str):
         if state_name in EXPRESSIVE_STATES:
@@ -191,6 +208,13 @@ class AvatarVisualizer(Gtk.DrawingArea):
     def _on_tick(self, widget, frame_clock):
         self._poll_global_mouse_position()
 
+        # Smooth the raw audio scale (use a fast factor like 0.4 for snappy lipsync)
+        self.current_speech_aperture = self._lerp(
+            self.current_speech_aperture,
+            self.target_speech_aperture,
+            0.4
+        )
+
         target = EXPRESSIVE_STATES.get(self.state_name, EXPRESSIVE_STATES["observing"])
 
         # Base lerps
@@ -268,7 +292,9 @@ class AvatarVisualizer(Gtk.DrawingArea):
         r_body = min(width, height) * 0.38
         r_bezel = r_body * 0.68
         r_core = r_bezel * 0.72
-        pulse = 1.0 + 0.06 * math.sin(self.phase * 2)
+
+        # Add speech_aperture to the baseline sine wave pulse
+        pulse = 1.0 + 0.06 * math.sin(self.phase * 2) + (self.current_speech_aperture * 0.15)
 
         cr.set_operator(cairo.OPERATOR_CLEAR)
         cr.paint()
@@ -407,8 +433,14 @@ class AvatarVisualizer(Gtk.DrawingArea):
 
     def _draw_shutter_eyelids(self, cr: cairo.Context, cx: float, cy: float, R: float):
         blink_factor = math.sin(self.blink_phase * math.pi) if self.is_blinking else 0.0
-        effective_top = self.curr_top_lid * (1.0 - blink_factor)
-        effective_bottom = self.curr_bottom_lid * (1.0 - blink_factor)
+
+        # Speech makes the eyelids open wider (max 20% wider at peak volume)
+        speech_bounce = self.current_speech_aperture * 0.20
+
+        # Ensure lids don't go below 0 (fully open)
+        effective_top = max(0.1, self.curr_top_lid - speech_bounce) * (1.0 - blink_factor)
+        effective_bottom = max(0.1, self.curr_bottom_lid - speech_bounce) * (1.0 - blink_factor)
+
         top_y = cy - (R * effective_top)
         bottom_y = cy + (R * effective_bottom)
         tilt = self.curr_lid_tilt * R
