@@ -1,0 +1,278 @@
+[
+  {
+    "id": "dashboard-v2-architecture",
+    "title": "Dashboard v2 System Architecture",
+    "updatedAt": "2026-08-26T00:48:07.778097+00:00",
+    "lastChildUpdate": {
+      "id": "user-manual",
+      "title": "Manual Viewer",
+      "timestamp": "2026-08-26T02:26:16Z"
+    },
+    "children": [
+      {
+        "id": "app-shell",
+        "title": "App Shell & Routing",
+        "updatedAt": "2026-08-24T03:29:56+00:00",
+        "children": []
+      },
+      {
+        "id": "tech-stack",
+        "title": "Technology Stack",
+        "updatedAt": "2026-08-24T03:29:56+00:00",
+        "children": []
+      },
+      {
+        "id": "network-and-auth",
+        "title": "Authentication & Network Layer",
+        "updatedAt": "2026-08-24T03:29:56+00:00",
+        "children": []
+      },
+      {
+        "id": "websocket-stream",
+        "title": "Real-time Telemetry (CharonStream)",
+        "updatedAt": "2026-08-24T03:29:56+00:00",
+        "children": []
+      },
+      {
+        "id": "docs-subsystem",
+        "title": "Knowledge Base Subsystem",
+        "updatedAt": "2026-08-24T03:37:00.869481+00:00",
+        "lastChildUpdate": {
+          "id": "user-manual",
+          "title": "Manual Viewer",
+          "timestamp": "2026-08-26T02:26:16Z"
+        },
+        "children": [
+          {
+            "id": "user-manual",
+            "title": "Manual Viewer",
+            "updatedAt": "2026-08-26T02:26:16Z",
+            "children": []
+          },
+          {
+            "id": "document-creator",
+            "title": "Document Creator",
+            "updatedAt": "2026-08-26T01:52:06Z",
+            "children": []
+          },
+          {
+            "id": "specs-viewer",
+            "title": "Specs Viewer",
+            "updatedAt": "2026-08-26T02:06:41Z",
+            "children": []
+          },
+          {
+            "id": "adr-viewer",
+            "title": "ADR Viewer",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          },
+          {
+            "id": "docs-api-storage",
+            "title": "Docs API & Storage Layer",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "diagnostics-subsystem",
+        "title": "System Diagnostics",
+        "updatedAt": "2026-08-24T03:29:56+00:00",
+        "lastChildUpdate": {
+          "id": "blackboard-observer",
+          "title": "Blackboard Observer (Live Telemetry)",
+          "timestamp": "2026-08-24T03:29:56+00:00"
+        },
+        "children": [
+          {
+            "id": "blackboard-observer",
+            "title": "Blackboard Observer (Live Telemetry)",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "lastChildUpdate": {
+              "id": "dag-visualizer",
+              "title": "DAG Visualizer",
+              "timestamp": "2026-08-24T03:29:56+00:00"
+            },
+            "children": [
+              {
+                "id": "dag-visualizer",
+                "title": "DAG Visualizer",
+                "updatedAt": "2026-08-24T03:29:56+00:00",
+                "children": []
+              },
+              {
+                "id": "blackboard-trace",
+                "title": "Blackboard Trace",
+                "updatedAt": "2026-08-24T03:29:56+00:00",
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "audit-ledger",
+            "title": "Audit Ledger (Historical)",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "agent-studio-subsystem",
+        "title": "Agent Studio",
+        "updatedAt": "2026-08-24T03:29:56+00:00",
+        "lastChildUpdate": {
+          "id": "skill-matrix",
+          "title": "Skill Matrix",
+          "timestamp": "2026-08-24T03:29:56+00:00"
+        },
+        "children": [
+          {
+            "id": "skill-matrix",
+            "title": "Skill Matrix",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          },
+          {
+            "id": "prompt-editor",
+            "title": "Prompt Editor",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "system-integration-subsystem",
+        "title": "System & Integration",
+        "updatedAt": "2026-08-24T03:29:56+00:00",
+        "lastChildUpdate": {
+          "id": "systemd-control",
+          "title": "Systemd Control",
+          "timestamp": "2026-08-24T03:29:56+00:00"
+        },
+        "children": [
+          {
+            "id": "systemd-control",
+            "title": "Systemd Control",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          },
+          {
+            "id": "gnome-ipc",
+            "title": "Desktop IPC Dispatcher",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          },
+          {
+            "id": "avatar-stream",
+            "title": "Avatar Stream Visualizer",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "journal-subsystem",
+        "title": "Dev Journal",
+        "updatedAt": "2026-08-25T17:18:44+00:00",
+        "lastChildUpdate": {
+          "id": "dev-log-editor",
+          "title": "Dev Log Editor",
+          "timestamp": "2026-08-25T17:18:44+00:00"
+        },
+        "children": [
+          {
+            "id": "dev-log-editor",
+            "title": "Dev Log Editor",
+            "updatedAt": "2026-08-25T17:18:44+00:00",
+            "children": []
+          },
+          {
+            "id": "issue-tracker",
+            "title": "Issue Tracker",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          },
+          {
+            "id": "doc-queue",
+            "title": "Automated Doc Queue",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "shared-components",
+        "title": "Shared UI Components",
+        "updatedAt": "2026-08-24T03:29:56+00:00",
+        "lastChildUpdate": {
+          "id": "markdown-renderer",
+          "title": "MarkdownRenderer",
+          "timestamp": "2026-08-24T03:29:56+00:00"
+        },
+        "children": [
+          {
+            "id": "markdown-renderer",
+            "title": "MarkdownRenderer",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          },
+          {
+            "id": "markdown-toolbar",
+            "title": "MarkdownToolbar",
+            "updatedAt": "2026-08-24T03:29:56+00:00",
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "concierge",
+    "title": "Concierge Subsystem",
+    "children": [
+      {
+        "id": "sensory-perception-telemetry",
+        "title": "Sensory Perception & Telemetry",
+        "children": [],
+        "updatedAt": "2026-08-26T02:55:39Z"
+      },
+      {
+        "id": "speech-persona-engine",
+        "title": "Speech & Persona Engine",
+        "children": [],
+        "updatedAt": "2026-08-26T02:57:11Z"
+      },
+      {
+        "id": "guardrails-intent-filters",
+        "title": "Guardrails & Intent Filters",
+        "children": [],
+        "updatedAt": "2026-08-26T02:58:25Z"
+      },
+      {
+        "id": "core-orchestration-scheduler",
+        "title": "Core Orchestration & Scheduler",
+        "children": [],
+        "updatedAt": "2026-08-26T02:58:08Z"
+      },
+      {
+        "id": "agent-harness-integration",
+        "title": "Agent Harness Integration",
+        "children": [],
+        "updatedAt": "2026-08-26T03:25:32Z"
+      },
+      {
+        "id": "concierge-ui-proposal-events",
+        "title": "Concierge UI Proposal Events",
+        "children": [],
+        "updatedAt": "2026-08-26T03:37:53Z"
+      }
+    ],
+    "updatedAt": "2026-08-26T02:44:02Z",
+    "lastChildUpdate": {
+      "id": "concierge-ui-proposal-events",
+      "title": "Concierge UI Proposal Events",
+      "timestamp": "2026-08-26T03:37:53Z"
+    }
+  }
+]
