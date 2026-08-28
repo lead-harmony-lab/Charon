@@ -17,8 +17,6 @@ from charon.concierge.speech import SpeechEngine
 from charon.concierge.telemetry import TelemetrySensor
 from charon.concierge.hospitality import HospitalitySubroutine
 
-from charon.gateway.models import WSEvent
-
 from .autonomic import AutonomicSystem
 from .interaction import InteractionEngine
 from .observer import ConciergeObserver
@@ -104,6 +102,7 @@ class ConciergeService:
         self.hospitality.ws_manager = manager
         self.interactions.ws_manager = manager
         self.observer.ws_manager = manager
+        self.autonomics.ws_manager = manager
 
     async def broadcast(self, message: str, context: str = "general") -> None:
         """
@@ -125,25 +124,31 @@ class ConciergeService:
                 )
             )
         else:
-            # Pathway B: Silent Text-Only Broadcast via Unified Manager
-            event = WSEvent(
-                event_type="concierge_suggestion",
-                task_id="system",
-                agent_name="Concierge",
-                data={
-                    "suggestion": message,
-                    "context": context
+            # Pathway B: Silent Text-Only Broadcast mimicking dispatch.py
+            event_payload = {
+                "type": "concierge_suggestion",
+                "payload": {
+                    "text": message,
+                    "suggested_action": context,
+                    "avatar_state": {
+                        "emotion": "speaking",
+                        "viseme_sequence": []
+                    },
+                    "hud_overlay": {
+                        "target_app": None,
+                        "urgency": "medium",
+                        "pointer_target": None
+                    }
                 }
-            )
+            }
 
-            payload = event.model_dump() if hasattr(event, "model_dump") else event.dict()
-
+            # Broadcast manually to bypass WSEvent strict typing
             if hasattr(self.ws_manager, "active_connections"):
                 for connection in list(self.ws_manager.active_connections):
                     try:
-                        await connection.send_json(payload)
+                        await connection.send_json(event_payload)
                     except Exception as e:
-                        logger.error(f"Failed to push silent broadcast to socket: {e}")
+                        logger.error(f"[Concierge] Failed to push text broadcast to socket: {e}")
 
     def _load_registry(self) -> Dict[str, Any]:
         """Loads central configuration settings from JSON registry."""
