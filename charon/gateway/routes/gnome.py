@@ -1,0 +1,58 @@
+"""
+charon/gateway/routes/gnome.py
+"""
+
+import logging
+import secrets
+from typing import Optional
+
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+
+from charon.config import API_KEY_HEADER_NAME, CHARON_API_KEY
+from charon.gateway.models import WSEvent
+from charon.gateway.ws import manager
+from charon.gateway.dispatch import handle_incoming_ws_frame
+
+logger = logging.getLogger("Charon.Gateway.Routes.GNOME")
+router = APIRouter(tags=["GNOME Extension IPC"])
+
+def _extract_ws_token(websocket: WebSocket, query_api_key: Optional[str]) -> Optional[str]:
+    custom_header = websocket.headers.get(API_KEY_HEADER_NAME.lower()) if API_KEY_HEADER_NAME else None
+    if custom_header: return custom_header.strip()
+    auth_header = websocket.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "): return auth_header[7:].strip()
+    if query_api_key: return query_api_key.strip()
+    return None
+
+@router.websocket("/v1/ws")
+async def gnome_extension_endpoint(
+    websocket: WebSocket,
+    client_id: Optional[str] = Query(None),
+    api_key: Optional[str] = Query(None, alias="api_key"),
+):
+    token = _extract_ws_token(websocket, api_key)
+    if CHARON_API_KEY:
+        if not token or not secrets.compare_digest(token, CHARON_API_KEY):
+            logger.warning(f"[GNOME WS AUTH REJECT] Connection rejected for client '{client_id}'")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+    await manager.connect(websocket, client_id=client_id)
+    websocket.client_id = client_id
+    logger.info(f"[GNOME WS CONNECT] Connected client_id='{client_id}' | Socket ID={id(websocket)} | Manager active_connections count={len(manager.active_connections)}")
+
+    try:
+        await manager.send_event(websocket, WSEvent.model_construct(
+            event_type="status_change", agent_name="System", client_id=client_id,
+            data={"status": "connected", "client_id": client_id, "message": "GNOME Shell connected to Charon"}
+        ))
+        while True:
+            raw_data = await websocket.receive_text()
+            await handle_incoming_ws_frame(websocket, raw_data, client_id, manager)
+    except WebSocketDisconnect:
+        logger.info(f"[GNOME WS DISCONNECT] Extension disconnected: '{client_id}' | Socket ID={id(websocket)}")
+    except Exception as e:
+        logger.error(f"[GNOME WS ERROR] Loop error for '{client_id}': {e}")
+    finally:
+        manager.disconnect(websocket)
+        logger.info(f"[GNOME WS CLEANUP] Socket removed. Manager active_connections count={len(manager.active_connections)}")

@@ -1,6 +1,6 @@
 """
 charon/concierge/core.py
-System Version: v3.4.1 | File Revision: 3.8.2
+System Version: v3.6.5
 
 Module: Core Concierge Service
 """
@@ -17,7 +17,7 @@ from charon.concierge.speech import SpeechEngine
 from charon.concierge.telemetry import TelemetrySensor
 from charon.concierge.hospitality import HospitalitySubroutine
 
-from charon.gateway.models import WSEvent  # Added for silent text broadcasts
+from charon.gateway.models import WSEvent
 
 from .autonomic import AutonomicSystem
 from .interaction import InteractionEngine
@@ -50,17 +50,15 @@ class ConciergeService:
 
         self.sensor = TelemetrySensor()
         self.speech_engine = SpeechEngine()
-        self.avatar_service = None  # Will be bound during FastAPI lifespan
+        self.ws_manager = None  # Will be bound during FastAPI lifespan
         self._init_memory()
 
         # 1. Initialize Sub-Systems via Composition
-
-        # Initialize without the avatar_service (it gets injected during FastAPI lifespan)
         self.hospitality = HospitalitySubroutine(
             llm_client=self.client,
             memory=self.memory
         )
-        self.hospitality.concierge = self  # Give hospitality access to central broadcast
+        self.hospitality.concierge = self
 
         self.interactions = InteractionEngine(
             client=self.client,
@@ -73,7 +71,7 @@ class ConciergeService:
             memory_collection=self.memory_collection,
             heuristics_collection=self.heuristics_collection,
         )
-        self.interactions.concierge = self  # Give interactions access to central broadcast
+        self.interactions.concierge = self
 
         self.autonomics = AutonomicSystem(
             registry=self.registry,
@@ -81,7 +79,7 @@ class ConciergeService:
             speech_engine=self.speech_engine,
             interaction_engine=self.interactions,
             memory_collection=self.memory_collection,
-            hospitality=self.hospitality  # Pass it down to the biological clock
+            hospitality=self.hospitality
         )
 
         self.observer = ConciergeObserver(
@@ -100,20 +98,20 @@ class ConciergeService:
         self.get_next_step = self.interactions.get_next_step
         self.wrap_payload = self.interactions.wrap_payload
 
-    def bind_avatar_service(self, avatar_service: Any):
-        """Injects the live WebSocket manager into active subsystems."""
-        self.avatar_service = avatar_service
-        self.hospitality.avatar_service = avatar_service
-        # Bind it to the interaction engine so it can push visual states
-        self.interactions.avatar_service = avatar_service
+    def bind_ws_manager(self, manager: Any):
+        """Injects the unified live WebSocket manager into active subsystems."""
+        self.ws_manager = manager
+        self.hospitality.ws_manager = manager
+        self.interactions.ws_manager = manager
+        self.observer.ws_manager = manager
 
     async def broadcast(self, message: str, context: str = "general") -> None:
         """
         Central multimodal emission channel.
         Routes to Text-Only or Text+TTS based on the voice_synthesis registry flag.
         """
-        if not self.avatar_service:
-            logger.warning(f"Broadcast suppressed: No avatar_service bound. Message was: {message}")
+        if not self.ws_manager:
+            logger.warning(f"Broadcast suppressed: No ws_manager bound. Message was: {message}")
             return
 
         audio_enabled = self.registry.get("abilities", {}).get("voice_synthesis", False)
@@ -123,11 +121,11 @@ class ConciergeService:
             asyncio.create_task(
                 self.speech_engine.synthesize_and_broadcast(
                     text=message,
-                    avatar_stream=self.avatar_service
+                    ws_manager=self.ws_manager
                 )
             )
         else:
-            # Pathway B: Silent Text-Only Broadcast
+            # Pathway B: Silent Text-Only Broadcast via Unified Manager
             event = WSEvent(
                 event_type="concierge_suggestion",
                 task_id="system",
@@ -137,7 +135,15 @@ class ConciergeService:
                     "context": context
                 }
             )
-            await self.avatar_service.broadcast(event)
+
+            payload = event.model_dump() if hasattr(event, "model_dump") else event.dict()
+
+            if hasattr(self.ws_manager, "active_connections"):
+                for connection in list(self.ws_manager.active_connections):
+                    try:
+                        await connection.send_json(payload)
+                    except Exception as e:
+                        logger.error(f"Failed to push silent broadcast to socket: {e}")
 
     def _load_registry(self) -> Dict[str, Any]:
         """Loads central configuration settings from JSON registry."""

@@ -1,6 +1,6 @@
 """
 charon/concierge/hospitality.py
-System Version: v3.6.0 | File Revision: 3.6.2
+System Version: v3.6.5
 
 Module: Concierge Hospitality Subroutine
 """
@@ -13,9 +13,9 @@ logger = logging.getLogger("Charon.Concierge.Hospitality")
 
 
 class HospitalitySubroutine:
-    def __init__(self, llm_client: Any, avatar_service: Optional[Any] = None, memory: Optional[Any] = None):
+    def __init__(self, llm_client: Any, ws_manager: Optional[Any] = None, memory: Optional[Any] = None):
         self.llm_client = llm_client
-        self.avatar_service = avatar_service
+        self.ws_manager = ws_manager
         self.memory = memory
         self.concierge = None  # Will be injected by core.py during initialization
 
@@ -65,14 +65,14 @@ class HospitalitySubroutine:
 
         # --- RACE CONDITION FIX ---
         # Poll for an active UI connection for up to 5 seconds
-        if self.avatar_service:
+        if self.ws_manager:
             retries = 0
-            while not self.avatar_service.active_connections and retries < 10:
+            while not getattr(self.ws_manager, "active_connections", None) and retries < 10:
                 await asyncio.sleep(0.5)
                 retries += 1
 
-            if not self.avatar_service.active_connections:
-                logger.warning(f"[Hospitality] No Avatar connected after 5s. Aborting {context} greeting.")
+            if not getattr(self.ws_manager, "active_connections", None):
+                logger.warning(f"[Hospitality] No UI connected after 5s. Aborting {context} greeting.")
                 return
 
         try:

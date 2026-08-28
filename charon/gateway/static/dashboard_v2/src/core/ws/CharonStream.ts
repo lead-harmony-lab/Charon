@@ -3,6 +3,7 @@
  * @description
  */
 export interface CharonWSFrame {
+  action?: string; // Added for outbound routing (submit_task, gatekeeper_respond)
   event_type?: string;
   type?: string; // Added to match CLI flexibility
   timestamp?: string;

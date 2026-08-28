@@ -1,6 +1,6 @@
 """
 charon/concierge/memory.py
-System Version: v2.4.1
+System Version: v2.4.2
 
 Module: Semantic User Memory
 Extracts, stores, and retrieves long-term user facts and preferences using ChromaDB.
@@ -46,15 +46,20 @@ class SemanticMemory:
         if not self.user_db or not user_input.strip():
             return
 
+        raw_text = ""
+
         try:
-            response = await self.client.generate(
+            # Updated for AsyncOpenAI v1.0+ API syntax
+            response = await self.client.chat.completions.create(
                 model=self.model_name,
-                system=MEMORY_EXTRACTION_PROMPT,
-                prompt=f"User Input: {user_input}",
-                options={"temperature": 0.1}
+                messages=[
+                    {"role": "system", "content": MEMORY_EXTRACTION_PROMPT},
+                    {"role": "user", "content": f"User Input: {user_input}"}
+                ],
+                temperature=0.1
             )
 
-            raw_text = response.get("response", "[]").strip()
+            raw_text = response.choices[0].message.content.strip()
 
             if raw_text.startswith("```json"):
                 raw_text = raw_text[7:-3].strip()

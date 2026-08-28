@@ -1,6 +1,6 @@
 """
 charon/concierge/autonomic.py
-System Version: v3.6.0 | File Revision: 3.6.2
+System Version: v3.6.5
 
 Manages Charon's internal biological rhythms, background task scheduling,
 autonomic spontaneous interactions, and persistent alert debouncing via ChromaDB.
@@ -12,7 +12,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from charon.gateway.routes.avatar import avatar_stream
 from .scheduler import ConciergeScheduler
 
 logger = logging.getLogger("Charon.UX.Autonomic")
@@ -67,6 +66,7 @@ class AutonomicSystem:
         self.interactions = interaction_engine
         self.memory_collection = memory_collection
         self.hospitality = hospitality
+        self.ws_manager = None  # Will be bound during FastAPI lifespan
 
         # Initialize the agent's sense of time
         self.temporal_context = TemporalContext()
@@ -114,12 +114,25 @@ class AutonomicSystem:
         self.scheduler.stop()
         logger.info("Autonomic scheduling routines halted.")
 
+    async def _push_event(self, event_type: str, payload: Dict[str, Any]):
+        """Safely pushes raw event frames to all unified HUD/Avatar websocket connections."""
+        if not self.ws_manager or not hasattr(self.ws_manager, "active_connections"):
+            logger.debug(f"Dropped {event_type} event: No ws_manager bound to AutonomicSystem.")
+            return
+
+        message = {"type": event_type, "payload": payload}
+
+        for connection in list(self.ws_manager.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.error(f"Failed to push {event_type} to socket: {e}")
+
     async def _autonomic_awareness_check(self):
         """
         The internal monologue. Evaluates desktop state and decides
         whether to spontaneously interact with the user via tiered alerts.
         """
-        # --- TRACE LOG ---
         logger.debug("--- [Autonomic Pulse] Awareness loop triggered ---")
 
         if not self.registry.get("abilities", {}).get("spontaneous_speech", True):
@@ -152,7 +165,6 @@ class AutonomicSystem:
                 self.temporal_context.mark_interaction()
 
                 if self.hospitality:
-                    # This will now route directly to avatar_stream.push_event
                     await self.hospitality.evaluate_user_return(idle_duration_seconds=idle_time)
                 return
             # ------------------------------------
@@ -182,7 +194,7 @@ class AutonomicSystem:
                     ide_summary = self.sensor.get_ide_diagnostic_summary(lookback_seconds=180)
                     if ide_summary and ide_summary.get("error_count", 0) > 0:
                         logger.info(f"[Autonomic Pulse] IDE errors detected: {ide_summary.get('error_count')} errors.")
-                        # ... (existing ide alert logic) ...
+                        # Insert existing IDE alert logic here if needed
                         return
                 except Exception as ide_err:
                     logger.error(f"[Autonomic Pulse] Failed to check IDE diagnostics: {ide_err}")
@@ -219,7 +231,6 @@ class AutonomicSystem:
         alert_msg = f"Sir, forgive the intrusion, but {summary}."
 
         if not self.memory_collection:
-            # Fallback to single push if vector memory is offline
             await self._route_alert(urgency, alert_msg, actions)
             return
 
@@ -277,22 +288,16 @@ class AutonomicSystem:
     async def _push_visual_state_change(self, emotion: str):
         """Escalation Level 1: Subtle visual HUD shift."""
         logger.info(f"Initiating visual state change: {emotion}")
-        try:
-            await avatar_stream.push_event("state_change", {"emotion": emotion})
-        except Exception as e:
-            logger.error(f"Failed to push visual state change: {e}")
+        await self._push_event("state_change", {"emotion": emotion})
 
     async def _push_proposal_card(self, text: str, actions: list = None, play_chime: bool = True):
         """Escalation Level 2: Interactive HUD proposal card."""
         logger.info(f"Initiating proposal card: '{text}'")
-        try:
-            await avatar_stream.push_event("proposal_card", {
-                "text": text,
-                "actions": actions or [{"label": "Acknowledge", "event": "dismiss"}],
-                "play_chime": play_chime
-            })
-        except Exception as e:
-            logger.error(f"Failed to push proposal card: {e}")
+        await self._push_event("proposal_card", {
+            "text": text,
+            "actions": actions or [{"label": "Acknowledge", "event": "dismiss"}],
+            "play_chime": play_chime
+        })
 
     async def _push_spontaneous_speech(self, text: str):
         """Escalation Level 3: Spontaneous synthesized speech."""
@@ -301,8 +306,8 @@ class AutonomicSystem:
             # 1. Synthesize audio and visemes
             speech_data = await self.speech_engine.synthesize_speech(text=text)
 
-            # 2. Push down the WebSocket to the GNOME extension
-            await avatar_stream.push_event("spontaneous_speech", {
+            # 2. Push down the unified WebSocket
+            await self._push_event("spontaneous_speech", {
                 "text": text,
                 "audio_b64": speech_data.get("audio_b64"),
                 "visemes": speech_data.get("visemes"),

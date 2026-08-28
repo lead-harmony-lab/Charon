@@ -1,6 +1,6 @@
 """
 charon/daemon.py
-System Version: v0.1.2 | File Revision: 2.3.0
+System Version: v3.6.5
 
 Module: Charon Daemon (`charond`) - Gateway Entry Point.
 Integrates resident ConciergeService and core orchestration into the FastAPI lifespan.
@@ -28,7 +28,6 @@ from charon.gateway.core import CharonDaemon
 from charon.gateway.middleware import APIKeyMiddleware
 from charon.gateway.models import WSEvent
 from charon.gateway.routes import router as master_api_router
-from charon.gateway.routes.avatar import avatar_stream
 from charon.gateway.ws import manager
 from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
@@ -86,11 +85,8 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    # 5. Bind Avatar Stream, Awaken resident Concierge, and Trigger Hospitality
-    # Expose the avatar service on app state for route access
-    app.state.avatar_service = avatar_stream
-
-    concierge_service.bind_avatar_service(avatar_stream)
+    # 5. Bind Unified WebSocket Manager, Awaken resident Concierge, and Trigger Hospitality
+    concierge_service.bind_ws_manager(manager)
     await concierge_service.awaken()
     daemon.concierge = concierge_service
 

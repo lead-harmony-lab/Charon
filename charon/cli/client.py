@@ -1,10 +1,3 @@
-"""
-charon/cli/client.py
-System Version: v0.2.0 | File Revision: 1.4.1
-
-Module: Daemon integration client managing HTTP REST and WebSocket streaming.
-"""
-
 import asyncio
 import json
 import logging
@@ -37,8 +30,9 @@ class CharonClient:
         # State tracked during an active stream
         self._streamed_any_chunk = False
         self._staged_prompt: Optional[str] = None
+        self._active_ws: Optional[websockets.WebSocketClientProtocol] = None
 
-        # Persistent HTTP client pool
+        # Persistent HTTP client pool for stateless checks/Concierge APIs
         self.http_client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"X-API-Key": self.api_key}
@@ -70,6 +64,7 @@ class CharonClient:
         self._staged_prompt = None
 
         ws_uri = f"{self.ws_url}?client_id={self.client_id}&api_key={self.api_key}"
+        task_id = None
 
         try:
             # Removed ping_interval and ping_timeout so the CLI won't drop the connection
@@ -80,11 +75,15 @@ class CharonClient:
                 ping_interval=None,
                 ping_timeout=None,
             ) as ws:
+                self._active_ws = ws
 
-                # 1. Post Task via REST API
-                task_id = await self._post_task(prompt, agent_override)
-                if not task_id:
-                    return False, None
+                # 1. Post Task via WebSocket
+                await ws.send(json.dumps({
+                    "action": "submit_task",
+                    "prompt": prompt,
+                    "client_id": self.client_id,
+                    "agent_override": agent_override,
+                }))
 
                 # 2. Consume WebSocket Event Stream
                 while True:
@@ -95,6 +94,12 @@ class CharonClient:
                     event_task_id = event.get("task_id")
                     data = event.get("data", {}) if "data" in event else event
 
+                    # 3. Capture dynamically generated task_id from queuing ack
+                    if event_type == "status_change" and data.get("status") == "queued":
+                        if not task_id and event_task_id:
+                            task_id = event_task_id
+                        continue
+
                     # Ignore events belonging to other active tasks
                     if self._should_ignore_event(event_task_id, task_id, event_type):
                         continue
@@ -104,9 +109,6 @@ class CharonClient:
                     if is_complete:
                         return success, self._staged_prompt
 
-        except httpx.RequestError as e:
-            self._handle_connection_error(e)
-            return False, None
         except websockets.exceptions.ConnectionClosed:
             self.spinner.stop()
             console.print("\n[dim][System]: Event stream disconnected.[/dim]")
@@ -119,28 +121,12 @@ class CharonClient:
             self.spinner.stop()
             console.print(f"\n[bold red][System Error]: Stream error ({e})[/bold red]")
             return False, None
+        finally:
+            self._active_ws = None
 
     # --- Internal Stream Handlers ---
 
-    async def _post_task(self, prompt: str, agent_override: Optional[str]) -> Optional[str]:
-        """Submits the initial task payload to the REST API."""
-        payload = {
-            "prompt": prompt,
-            "client_id": self.client_id,
-            "agent_override": agent_override,
-        }
-
-        # Extended the timeout to 60s in case the API is sluggish under load
-        resp = await self.http_client.post("/v1/task", json=payload, timeout=60.0)
-        if resp.status_code != 200:
-            self.spinner.stop()
-            console.print(
-                f"\n[bold red][System Error]: Task submission failed ({resp.status_code}: {resp.text})[/bold red]"
-            )
-            return None
-        return resp.json().get("task_id")
-
-    def _should_ignore_event(self, event_task_id: Optional[str], task_id: str, event_type: str) -> bool:
+    def _should_ignore_event(self, event_task_id: Optional[str], task_id: Optional[str], event_type: str) -> bool:
         """Determines if an event belongs to a different task and should be dropped."""
         global_events = ["system_alert", "overseer_report"]
         return bool(event_task_id and task_id and event_task_id != task_id and event_type not in global_events)
@@ -230,15 +216,14 @@ class CharonClient:
         decision = await session.prompt_async(HTML("<ansiyellow><b>Authorization [proceed/cancel] > </b></ansiyellow>"))
         decision_str = decision.strip().lower()
 
-        await self.http_client.post(
-            "/v1/gatekeeper/respond",
-            json={
+        if self._active_ws:
+            await self._active_ws.send(json.dumps({
+                "action": "gatekeeper_respond",
                 "approval_id": approval_id,
                 "decision": decision_str,
                 "client_id": self.client_id,
-            },
-            timeout=10.0
-        )
+            }))
+
         self.spinner.start("Resuming task execution...")
 
     def _handle_proposal(self, data: Dict[str, Any]) -> None:
@@ -290,10 +275,6 @@ class CharonClient:
         if isinstance(error_msg, dict):
             error_msg = json.dumps(error_msg, indent=2)
         console.print(f"\n[bold red][System Error]: {error_msg}[/bold red]")
-
-    def _handle_connection_error(self, e: Exception) -> None:
-        self.spinner.stop()
-        console.print(f"\n[bold red]Connection Error:[/bold red] Unable to reach daemon at {self.base_url} ({e})")
 
     # --- REST Endpoints ---
 

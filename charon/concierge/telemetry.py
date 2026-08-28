@@ -1,6 +1,6 @@
 """
 charon/concierge/telemetry.py
-System Version: v3.1.0 | File Revision: 3.2.1
+System Version: v3.1.0 | File Revision: 3.2.2
 
 Module: System Telemetry & Heuristic Sensors
 Equips the Concierge with the ability to perceive host hardware state (CPU, GPU, RAM),
@@ -106,7 +106,7 @@ class TelemetrySensor:
             with get_connection(self.ledger.db_path, read_only=True) as conn:
                 cursor = conn.execute(
                     """
-                    SELECT task_name, event_type
+                    SELECT task_id, event_type
                     FROM audit_ledger
                     WHERE timestamp > ? AND event_type IN ('FAILED', 'ESCALATION')
                     ORDER BY timestamp DESC
@@ -119,7 +119,8 @@ class TelemetrySensor:
         row = await asyncio.to_thread(_query_ledger)
         if row:
             event_type = row["event_type"].lower()
-            task_name = row["task_name"].replace("_", " ")
+            task_identifier = row["task_id"] or self.active_task_id or "unknown_task"
+            task_name = str(task_identifier).replace("_", " ")
             return {"summary": f"your background task '{task_name}' resulted in an {event_type}"}
 
         return None

@@ -1,13 +1,13 @@
 """
 charon/core/orchestration.py
-System Version: v2.2.0 | File Revision: 2.6.0
+System Version: v2.2.0 | File Revision: 2.7.1
 
 Module: Main Orchestration Engine facade for Charon.
 Refactored for the Active Execution Envelope paradigm.
 Delegates strictly to the Coordinator for execution and the Concierge for UX proposals.
 Updated: Direct SkillLibrarian encapsulation, native async execution via _safe_execute,
 sensory context enrichment, circuit breaker safety interrupts, fail-safe state recovery,
-and passive Concierge ingress/egress observation.
+and passive Concierge ingress/egress observation hooks.
 """
 
 import inspect
@@ -35,7 +35,7 @@ class OrchestrationEngine:
     def __init__(
         self,
         llm_client: Optional[Any] = None,
-        concierge: Optional[Any] = None,  # <-- Add this parameter
+        concierge: Optional[Any] = None,
         heavy_model: str = "llama3.1",
         triage_model: str = "llama3.1",
         state_manager: Optional[StateManager] = None,
@@ -53,13 +53,12 @@ class OrchestrationEngine:
         self.state_mgr = state_manager
         self.ledger = ledger
         self.emitter = None
-        self.concierge = concierge  # <-- Bind the injected instance here
+        self.concierge = concierge
 
         self._verify_required_system_roles()
 
         logger.debug(f"[ENGINE] Initializing Coordinator with STATE_DB_PATH='{STATE_DB_PATH}'")
 
-        # Pass dependencies explicitly during instantiation
         self.coordinator = Coordinator(
             db_path=STATE_DB_PATH,
             gatekeeper=self.gatekeeper,
@@ -114,7 +113,8 @@ class OrchestrationEngine:
         """Bind Gateway contexts and cascade them down to the Coordinator."""
         logger.info("[ENGINE] Binding Gateway context...")
         self.emitter = emitter
-        self.concierge = concierge
+        if concierge:
+            self.concierge = concierge
         if state_manager:
             self.state_mgr = state_manager
         if ledger:
@@ -161,19 +161,37 @@ class OrchestrationEngine:
             logger.warning("[ENGINE] Received empty prompt, aborting request execution.")
             return "Error: Empty prompt received."
 
+        # Guard against NoneType defaults crashing down-stream merges
+        routing_hint = routing_hint or {}
+
         logger.info(
             f"[ENGINE.PATHWAY] Enter process_request [Task ID: {task_id or 'volatile'}] "
             f"Override: {agent_override} | Routing Hint: {routing_hint} | Prompt: '{raw_prompt[:60]}...'"
         )
 
+        exec_prompt = raw_prompt
+
         # 1. Harness State Transition -> RUNNING
         if self.concierge and hasattr(self.concierge, "set_harness_state"):
             await _safe_execute(self.concierge.set_harness_state, "RUNNING", task_id=task_id)
 
-        # 1.5 Concierge Ingress Observation (Long-horizon memory)
+        # 1.5 Concierge Ingress Observation (Context enrichment & memory capture)
         if self.concierge and hasattr(self.concierge, "observe_ingress"):
-            logger.debug("[ENGINE.PATHWAY] Invoking Concierge observe_ingress...")
-            await _safe_execute(self.concierge.observe_ingress, raw_prompt)
+            logger.debug(f"[ENGINE.PATHWAY] Invoking Concierge observe_ingress [Task ID: {task_id}]...")
+            ingress_result = await _safe_execute(
+                self.concierge.observe_ingress,
+                task_id=task_id,
+                prompt=raw_prompt,
+                metadata=routing_hint,
+            )
+            # Safely capture BOTH modified prompt and enriched metadata
+            if isinstance(ingress_result, tuple):
+                if len(ingress_result) >= 1:
+                    exec_prompt = ingress_result[0] or exec_prompt
+                if len(ingress_result) >= 2 and isinstance(ingress_result[1], dict):
+                    routing_hint.update(ingress_result[1])
+            elif isinstance(ingress_result, str) and ingress_result:
+                exec_prompt = ingress_result
 
         # 2. Sensory Context Enrichment
         sensory_context = {}
@@ -192,17 +210,17 @@ class OrchestrationEngine:
                 )
                 if emit_event_fn:
                     event_payload = {
-                        "event_type": "TaskDispatchedEvent",
+                        "event_type": "task_progress", # Fixed Pydantic Validation Error
                         "task_id": task_id,
                         "agent_override": agent_override,
                         "status": "in_progress",
                         "sensory_context": sensory_context,
                     }
-                    logger.debug(f"[ENGINE.PATHWAY] Emitting TaskDispatchedEvent: {event_payload}")
+                    logger.debug(f"[ENGINE.PATHWAY] Emitting task_progress event: {event_payload}")
                     res_emit = emit_event_fn(event_payload)
                     if inspect.isawaitable(res_emit):
                         await res_emit
-                    logger.info("[ENGINE.PATHWAY] Initial TaskDispatchedEvent emitted.")
+                    logger.info("[ENGINE.PATHWAY] Initial task_progress event emitted.")
                 else:
                     logger.warning("[ENGINE.PATHWAY] Emitter present but no valid emit_event method found.")
             except Exception as ack_err:
@@ -253,7 +271,7 @@ class OrchestrationEngine:
             await _safe_execute(
                 self.coordinator.run_task_lifecycle,
                 task_id=task_id,
-                user_input=raw_prompt,
+                user_input=exec_prompt,
                 system_topology=system_topology,
                 metadata=metadata,
             )
@@ -279,13 +297,9 @@ class OrchestrationEngine:
             result = {"error": "System Error", "message": str(engine_err)}
 
         finally:
-            # 8. Fail-Safe Harness State Recovery Guard
-            if self.concierge and hasattr(self.concierge, "set_harness_state"):
-                is_error_payload = isinstance(result, dict) and "error" in result
-                final_state = "FAULTED" if is_error_payload else "IDLE"
-                await _safe_execute(self.concierge.set_harness_state, final_state, task_id=task_id)
+            pass  # State recovery is now cleanly delegated entirely to the observe_egress hook below
 
-        # 9. Native Output Broadcast
+        # 8. Native Output Broadcast
         if result and self.emitter:
             emit_fn = getattr(
                 self.emitter, "emit_agent_response", getattr(self.emitter, "emit_response", None)
@@ -308,73 +322,25 @@ class OrchestrationEngine:
             else:
                 logger.warning("[ENGINE.PATHWAY] Emitter present but no emit_agent_response or emit_response method available.")
 
-        # 9.5 Concierge Egress Observation (Learning from final outcome)
+        # 9. Concierge Egress Observation (Learning & UX processing)
         if self.concierge and hasattr(self.concierge, "observe_egress"):
-            logger.debug("[ENGINE.PATHWAY] Invoking Concierge observe_egress...")
+            logger.debug(f"[ENGINE.PATHWAY] Invoking Concierge observe_egress [Task ID: {task_id}]...")
             str_result_for_egress = str(result.model_dump() if hasattr(result, "model_dump") else result)
-            await _safe_execute(self.concierge.observe_egress, raw_prompt, str_result_for_egress)
+            artifacts_str = (
+                str(completed_blackboard._get_results_payload())
+                if completed_blackboard
+                else ""
+            )
+            await _safe_execute(
+                self.concierge.observe_egress,
+                task_id=task_id,
+                user_query=raw_prompt,
+                execution_result=str_result_for_egress,
+                blackboard_artifacts=artifacts_str,
+                emitter=self.emitter,
+            )
 
-        # 10. Proactive Evaluation (Pass-through Observer)
-        if self.concierge and self.emitter and result:
-            logger.debug("[ENGINE.PATHWAY] Invoking Concierge for next step evaluation...")
-            try:
-                eval_fn = getattr(
-                    self.concierge,
-                    "evaluate_next_step",
-                    getattr(self.concierge, "get_next_step", None),
-                )
-                if eval_fn:
-                    artifacts = (
-                        str(completed_blackboard._get_results_payload())
-                        if completed_blackboard
-                        else ""
-                    )
-                    str_result = str(
-                        result.model_dump() if hasattr(result, "model_dump") else result
-                    )
-
-                    res_coro = eval_fn(
-                        user_query=raw_prompt,
-                        completed_action="coordinator_loop",
-                        execution_result=str_result,
-                        blackboard_artifacts=artifacts,
-                    )
-                    suggestion = (
-                        await res_coro if inspect.iscoroutine(res_coro) else res_coro
-                    )
-
-                    if suggestion:
-                        phrase = getattr(
-                            suggestion,
-                            "phrase",
-                            suggestion.get("phrase", "New Proposal")
-                            if isinstance(suggestion, dict)
-                            else "New Proposal",
-                        )
-                        logger.info(f"[ENGINE.PATHWAY] Concierge generated proposal: {phrase}")
-
-                        emit_payload = (
-                            suggestion.model_dump()
-                            if hasattr(suggestion, "model_dump")
-                            else suggestion
-                        )
-                        emit_concierge_fn = getattr(
-                            self.emitter,
-                            "emit_concierge",
-                            getattr(self.emitter, "emit_event", None),
-                        )
-                        if emit_concierge_fn:
-                            res_c = emit_concierge_fn(emit_payload)
-                            if inspect.isawaitable(res_c):
-                                await res_c
-                            logger.debug("[ENGINE.PATHWAY] Concierge proposal emitted to UI.")
-
-            except Exception as concierge_err:
-                logger.warning(
-                    f"[ENGINE.PATHWAY] Concierge evaluation failed gracefully: {concierge_err}",
-                    exc_info=True,
-                )
-
+        # 10. Execution Ledger Event
         if self.ledger and task_id:
             logger.debug(f"[ENGINE.PATHWAY] Writing execution ledger event for task_id: {task_id}")
             await self.ledger.log_event(

@@ -280,21 +280,17 @@ class SkillLibrarian(
                     continue
             filtered_skills.append(skill)
 
-        # Dual index by action_name and skill_id
+        # Single index by skill_id to prevent downstream schema duplication
         if as_dict:
             catalog: Dict[str, Dict[str, Any]] = {}
             for skill in filtered_skills:
-                action_key = skill.get("action_name")
                 skill_id_key = skill.get("skill_id")
 
-                if action_key:
-                    catalog[action_key] = skill
                 if skill_id_key:
                     catalog[skill_id_key] = skill
 
                 logger.debug(
-                    f"[SkillLibrarian.Trace] Indexed skill: skill_id='{skill_id_key}', "
-                    f"action_name='{action_key}' into catalog keys."
+                    f"[SkillLibrarian.Trace] Indexed skill: skill_id='{skill_id_key}' into catalog keys."
                 )
 
             logger.info(f"[SkillLibrarian.Trace] Final catalog key count: {len(catalog)}. Keys: {list(catalog.keys())}")

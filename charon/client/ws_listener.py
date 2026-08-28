@@ -1,9 +1,9 @@
 """
 charon/client/ws_listener.py
-System Version: v3.3.1 | File Revision: 3.3.1
+System Version: v3.6.5
 
 Module: Asynchronous WebSocket client bridge running in a background thread.
-Dispatches incoming stream events and connection state lifecycle events to GTK main loop.
+Dispatches incoming unified stream events and connection state lifecycle events to GTK main loop.
 Includes threaded SpeechStreamPlayer for synchronized audio and Cairo viseme animations.
 """
 
@@ -93,7 +93,7 @@ class SpeechStreamPlayer:
 
 
 class OverlayWSListener(threading.Thread):
-    """Background listener thread consuming ws://localhost:8000/v1/concierge/stream."""
+    """Background listener thread consuming the unified Charon websocket stream."""
 
     def __init__(self, uri: str, api_key: Optional[str], on_event_callback: Callable[[dict], None]):
         super().__init__(daemon=True)
@@ -109,7 +109,7 @@ class OverlayWSListener(threading.Thread):
         self.loop.run_until_complete(self._listen_loop())
 
     async def _listen_loop(self):
-        logger.info(f"[WSListener] Connecting to stream at: {self.uri}")
+        logger.info(f"Connecting to unified stream at: {self.uri}")
 
         connect_params = inspect.signature(websockets.connect).parameters
         header_kwarg = "additional_headers" if "additional_headers" in connect_params else "extra_headers"
@@ -120,12 +120,13 @@ class OverlayWSListener(threading.Thread):
 
         while self.running:
             try:
+                logger.debug("Attempting websockets.connect...")
                 async with websockets.connect(self.uri, **connect_kwargs) as ws:
-                    logger.info("[WSListener] Stream connected successfully.")
+                    logger.info("Stream connected successfully!")
 
                     # Dispatch connection status event to GTK main loop
                     GLib.idle_add(self.on_event_callback, {
-                        "event_type": "system",
+                        "type": "system_state",
                         "payload": {
                             "text": "Data link established",
                             "category": "thought",
@@ -137,13 +138,22 @@ class OverlayWSListener(threading.Thread):
                         raw_msg = await ws.recv()
                         try:
                             data = json.loads(raw_msg)
+
+                            # Extract event type handling GTK vs Server schema variations
+                            ev_type = data.get("type") or data.get("event_type") or "UNKNOWN_TYPE"
+                            logger.debug(f"Received event of type: {ev_type}")
+
+                            if ev_type == "pointer_telemetry":
+                                logger.debug(f"Raw pointer telemetry data: {data}")
+
                             GLib.idle_add(self.on_event_callback, data)
                         except json.JSONDecodeError:
+                            logger.warning(f"Received non-JSON message: {raw_msg[:50]}...")
                             pass
             except Exception as err:
-                logger.warning(f"[WSListener] Stream disconnected ({err}). Reconnecting in 3s...")
+                logger.error(f"Connection failed or dropped ({err}). Reconnecting in 3s...")
                 GLib.idle_add(self.on_event_callback, {
-                    "event_type": "system",
+                    "type": "system_state",
                     "payload": {
                         "text": "Data link lost",
                         "category": "warning",

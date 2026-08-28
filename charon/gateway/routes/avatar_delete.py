@@ -1,6 +1,6 @@
 """
 charon/gateway/routes/avatar.py
-System Version: v3.4.0 | File Revision: 3.4.2
+System Version: v3.4.0 | File Revision: 3.4.3
 
 Module: Live WebSockets pipeline for the Desktop Avatar HUD.
 Provides the bidirectional stream required for the Concierge to push spontaneous
@@ -24,6 +24,7 @@ class AvatarConnectionManager:
 
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        self._background_tasks: set = set()
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -38,6 +39,23 @@ class AvatarConnectionManager:
             self.active_connections.remove(websocket)
         logger.info("Avatar HUD disconnected from live feed.")
 
+    def _create_safe_task(self, coro):
+        """Spawns a background task with strong reference keeping and error logging."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _on_complete(t: asyncio.Task):
+            self._background_tasks.discard(t)
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.error(f"Unhandled exception in Avatar background task: {exc}", exc_info=True)
+
+        task.add_done_callback(_on_complete)
+        return task
+
     async def push_event(self, event_type: str, payload: Dict[str, Any]):
         """
         The autonomic push method.
@@ -49,7 +67,8 @@ class AvatarConnectionManager:
 
         message = {"type": event_type, "payload": payload}
 
-        for connection in self.active_connections:
+        # Snapshot list to avoid mutation issues during iteration if a socket disconnects
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
             except Exception as e:
@@ -72,7 +91,8 @@ class AvatarConnectionManager:
         else:
             message = event
 
-        for connection in self.active_connections:
+        # Snapshot list to avoid mutation issues during iteration if a socket disconnects
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
             except Exception as e:
@@ -102,7 +122,7 @@ class AvatarConnectionManager:
         # --------------------------------------------------------------------
         if event_type == "window_moved":
             logger.debug(f"Broadcasting window coordinates: {payload}")
-            asyncio.create_task(self.broadcast(event_data))
+            self._create_safe_task(self.broadcast(event_data))
 
         # --------------------------------------------------------------------
         # 2. CONCIERGE PERCEPTION ROUTING
@@ -130,7 +150,6 @@ class AvatarConnectionManager:
         # 3. PROPOSAL & DIALOGUE ROUTING
         # --------------------------------------------------------------------
         elif event_type == "proposal_action":
-            # Handled when user clicks an action button on a HUD Proposal Card
             action_event = payload.get("event")
             alert_id = payload.get("alert_id")
 
@@ -146,15 +165,13 @@ class AvatarConnectionManager:
                         logger.error(f"Failed to update alert status in memory: {err}")
 
             elif action_event == "fix_ide_errors" and concierge:
-                # Trigger an autonomic resolution interaction sequence
                 prompt = "Please inspect and offer a resolution context for the active IDE compilation errors."
-                asyncio.create_task(concierge.handle_user_message(prompt))
+                self._create_safe_task(concierge.handle_user_message(prompt))
 
         elif event_type == "user_input" and concierge:
-            # Direct text/voice submission from HUD prompt bar
             user_text = payload.get("text", "")
             if user_text:
-                asyncio.create_task(concierge.handle_user_message(user_text))
+                self._create_safe_task(concierge.handle_user_message(user_text))
 
         elif event_type == "ping":
             await websocket.send_json({"type": "pong", "payload": {}})
@@ -165,6 +182,7 @@ class AvatarConnectionManager:
 
 # Global singleton to be imported across the service
 avatar_stream = AvatarConnectionManager()
+
 
 @router.websocket("/stream")
 async def avatar_websocket_endpoint(websocket: WebSocket):

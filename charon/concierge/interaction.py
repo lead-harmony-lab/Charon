@@ -131,13 +131,15 @@ class InteractionEngine:
         # 4. Generate Persona Greeting
         prompt = f"{context_str}\nGenerate greeting:"
         try:
-            response = await self.client.generate(
+            response = await self.client.chat.completions.create(
                 model=self.model_name,
-                system=GREETING_SYSTEM_PROMPT,
-                prompt=prompt,
-                options={"temperature": self.temp_greeting},
+                messages=[
+                    {"role": "system", "content": GREETING_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=self.temp_greeting,
             )
-            greeting_text = response.get("response", "Welcome to The Continental.").strip('"')
+            greeting_text = response.choices[0].message.content.strip('"')
         except Exception as e:
             logger.error(f"[Interaction] Failed to generate greeting: {e}")
             greeting_text = "Welcome to The Continental. How may I be of service?"
@@ -193,18 +195,26 @@ class InteractionEngine:
         full_corpus = f"{user_query} {execution_result} {blackboard_artifacts} {active_rules}"
 
         try:
-            response = await self.client.generate(
+            response = await self.client.chat.completions.create(
                 model=self.model_name,
-                system=CONCIERGE_SYSTEM_PROMPT,
-                prompt=user_content,
-                format=ConciergeResponse.model_json_schema(),
-                options={"temperature": self.temp_proposal},
+                messages=[
+                    {"role": "system", "content": CONCIERGE_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=self.temp_proposal,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "concierge_proposal",
+                        "schema": ConciergeResponse.model_json_schema(),
+                    },
+                },
             )
 
-            if not response or not response.get("response"):
+            if not response or not response.choices:
                 return None
 
-            response_data = json.loads(response["response"])
+            response_data = json.loads(response.choices[0].message.content)
 
             parsed = ConciergeResponse.model_validate(
                 response_data,
@@ -254,13 +264,15 @@ class InteractionEngine:
 
         try:
             logger.debug(f"[Interaction] Wrapping payload for task: {task_name}")
-            response = await self.client.generate(
+            response = await self.client.chat.completions.create(
                 model=self.model_name,
-                system=PAYLOAD_WRAPPER_PROMPT,
-                prompt=prompt,
-                options={"temperature": self.temp_chat},
+                messages=[
+                    {"role": "system", "content": PAYLOAD_WRAPPER_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=self.temp_chat,
             )
-            return response.get("response", payload_str).strip('"')
+            return response.choices[0].message.content.strip('"')
 
         except Exception as e:
             logger.error(f"[Interaction] Failed to wrap payload for {task_name}: {e}")
@@ -286,13 +298,15 @@ class InteractionEngine:
 
         try:
             logger.debug("[Interaction] Generating conversational response with injected memory/context.")
-            response = await self.client.generate(
+            response = await self.client.chat.completions.create(
                 model=self.model_name,
-                system=dynamic_system_prompt,
-                prompt=user_input,
-                options={"temperature": self.temp_chat},
+                messages=[
+                    {"role": "system", "content": dynamic_system_prompt},
+                    {"role": "user", "content": user_input},
+                ],
+                temperature=self.temp_chat,
             )
-            return response.get("response", "I seem to have encountered a cognitive error, sir.").strip('"')
+            return response.choices[0].message.content.strip('"')
 
         except Exception as e:
             logger.error(f"[Interaction] Failed to generate chat response: {e}")

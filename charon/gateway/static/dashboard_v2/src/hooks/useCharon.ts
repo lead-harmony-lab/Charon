@@ -1,10 +1,5 @@
-/**
- * @file src/hooks/useCharon.ts
- * @description
- */
 import { useState, useEffect } from 'react';
 import { wsClient, CharonWSFrame } from '../core/ws/CharonStream';
-import { authFetch } from '../core/api/client';
 
 export const useCharon = () => {
   const [activeTask, setActiveTask] = useState<any>(null);
@@ -12,6 +7,19 @@ export const useCharon = () => {
   const [finalResult, setFinalResult] = useState<any>(null);
 
   useEffect(() => {
+    // 0. Status Stream (Captures initial "queued" acknowledgment and task_id)
+    const unsubStatus = wsClient.subscribe('status_change', (frame: CharonWSFrame) => {
+      const data = frame.data || frame;
+      if (data.status === 'queued') {
+        setActiveTask((prev: any) => ({
+          ...prev,
+          task_id: frame.task_id || data.task_id,
+          status: 'Queued',
+          timestamp: frame.timestamp || new Date().toISOString(),
+        }));
+      }
+    });
+
     // 1. Daemon Heartbeat Stream (Engine Pulse)
     const unsubHeartbeat = wsClient.subscribe('task_heartbeat', (frame: CharonWSFrame) => {
       const data = frame.data || frame;
@@ -43,6 +51,7 @@ export const useCharon = () => {
     });
 
     return () => {
+      unsubStatus();
       unsubHeartbeat();
       unsubTrace();
       unsubProgress();
@@ -51,27 +60,20 @@ export const useCharon = () => {
     };
   }, []);
 
-  const submitTask = async (prompt: string, agentOverride?: string) => {
+  const submitTask = (prompt: string, agentOverride?: string) => {
     setFinalResult(null);
     setTelemetry([]);
     setActiveTask({ status: 'Submitting task...', active_agent: 'Gateway' });
 
-    const response = await authFetch(`/v1/task`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt,
-        client_id: wsClient.getClientId(),
-        agent_override: agentOverride,
-      }),
+    // Push task strictly over the WebSocket (Fire-and-forget)
+    wsClient.send({
+      action: 'submit_task',
+      prompt,
+      agent_override: agentOverride,
     });
 
-    if (!response.ok) {
-      setActiveTask(null);
-      throw new Error(`Task submission failed: ${response.status}`);
-    }
-
-    return await response.json();
+    // Note: We no longer return a promise because the acknowledgment
+    // will arrive asynchronously via the 'status_change' event listener above.
   };
 
   return { activeTask, telemetry, finalResult, submitTask };

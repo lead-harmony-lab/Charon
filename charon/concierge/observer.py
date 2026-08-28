@@ -1,15 +1,17 @@
 """
 charon/concierge/observer.py
-System Version: v3.4.1 | File Revision: 3.5.0
+System Version: v3.6.5
 
 Handles Ingress/Egress hooks for the Orchestration Engine, managing telemetry
 injection, state tracking, and UI emission decoupling.
 """
 
 import asyncio
+import inspect
 import logging
 from typing import Any, Dict, Optional, Tuple
 
+from charon.gateway.models import WSEvent
 from .telemetry import HarnessState
 
 logger = logging.getLogger("Charon.UX.Concierge.Observer")
@@ -19,28 +21,29 @@ class ConciergeObserver:
     """Pass-through observer for the core orchestration execution loop."""
 
     def __init__(
-        self,
-        sensor: Any,
-        memory: Any,
-        interactions: Any,
-        registry: Dict[str, Any]
+            self,
+            sensor: Any,
+            memory: Any,
+            interactions: Any,
+            registry: Dict[str, Any]
     ):
         self.sensor = sensor
         self.memory = memory
         self.interactions = interactions
         self.registry = registry
+        self.ws_manager = None  # Bound dynamically by ConciergeService
 
     # =========================================================================
     # Window & Sensory Ingress Event Handlers
     # =========================================================================
 
     def record_window_context(
-        self,
-        app_name: str,
-        window_title: str,
-        active_file_path: Optional[str] = None,
-        pid: Optional[int] = None,
-        workspace: int = 0
+            self,
+            app_name: str,
+            window_title: str,
+            active_file_path: Optional[str] = None,
+            pid: Optional[int] = None,
+            workspace: int = 0
     ) -> None:
         """
         Ingests active desktop window focus events, logs telemetry into sensor cache,
@@ -69,10 +72,10 @@ class ConciergeObserver:
     # =========================================================================
 
     async def observe_ingress(
-        self,
-        task_id: Optional[str],
-        prompt: str,
-        metadata: Dict[str, Any]
+            self,
+            task_id: Optional[str],
+            prompt: str,
+            metadata: Dict[str, Any]
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Pre-flight hook for the Orchestration Engine.
@@ -80,6 +83,9 @@ class ConciergeObserver:
         """
         safe_task_id = task_id or "volatile"
         logger.debug(f"[Observer.Ingress] Observing ingress for task: {safe_task_id}")
+
+        # Guard against NoneType metadata from the engine
+        metadata = metadata or {}
 
         # 1. Fetch live cached window state and semantic history vector context
         try:
@@ -103,12 +109,12 @@ class ConciergeObserver:
         return prompt, metadata
 
     async def observe_egress(
-        self,
-        task_id: Optional[str],
-        user_query: str,
-        execution_result: str,
-        blackboard_artifacts: str,
-        emitter: Any
+            self,
+            task_id: Optional[str],
+            user_query: str,
+            execution_result: str,
+            blackboard_artifacts: str,
+            emitter: Any = None  # Kept as optional kwarg to prevent TypeError from legacy engine calls
     ) -> None:
         """
         Post-flight hook for the Orchestration Engine.
@@ -127,19 +133,32 @@ class ConciergeObserver:
             is_error="error" in execution_result.lower() if isinstance(execution_result, str) else False
         )
 
-        # 2. Native Output Broadcast via UI Emitter
-        if emitter and hasattr(emitter, "emit"):
+        # 2. Native Output Broadcast via WebSocket
+        if getattr(self, "ws_manager", None):
             try:
-                payload = {
-                    "task_id": safe_task_id,
-                    "summary": egress_data.get("summary"),
-                    "proposal": egress_data.get("proposal")
-                }
-                # Pushes the evaluated next-step UX directly to the frontend
-                await emitter.emit(event="task_completed", data=payload)
-                logger.info(f"[Observer.Egress] Successfully emitted UX payload for task {safe_task_id}")
+                event = WSEvent(
+                    event_type="task_completed",
+                    task_id=safe_task_id,
+                    agent_name="Concierge",
+                    data={
+                        "summary": egress_data.get("summary"),
+                        "proposal": egress_data.get("proposal")
+                    }
+                )
+
+                # Check if manager implements broadcast method directly, otherwise iterate manually
+                if hasattr(self.ws_manager, "broadcast"):
+                    await self.ws_manager.broadcast(event)
+                elif hasattr(self.ws_manager, "active_connections"):
+                    payload = event.model_dump() if hasattr(event, "model_dump") else event.dict()
+                    for connection in list(self.ws_manager.active_connections):
+                        await connection.send_json(payload)
+
+                logger.info(f"[Observer.Egress] Successfully broadcasted UX payload for task {safe_task_id}")
             except Exception as e:
-                logger.error(f"[Observer.Egress] Failed to emit egress UX payload: {e}")
+                logger.error(f"[Observer.Egress] Failed to broadcast egress UX payload: {e}", exc_info=True)
+        else:
+            logger.debug("[Observer.Egress] No ws_manager bound. Egress telemetry suppressed.")
 
     # =========================================================================
     # Internal Lifecycle Hooks
@@ -161,18 +180,18 @@ class ConciergeObserver:
             asyncio.create_task(self.memory.extract_and_store(user_prompt))
 
     async def on_egress(
-        self,
-        task_id: str,
-        user_prompt: str,
-        completed_action: str,
-        execution_result: str,
-        blackboard_artifacts: str = "",
-        is_error: bool = False
+            self,
+            task_id: str,
+            user_prompt: str,
+            completed_action: str,
+            execution_result: str,
+            blackboard_artifacts: str = "",
+            is_error: bool = False
     ) -> Dict[str, Any]:
         """Handles post-execution evaluation, natural language wrapping, and state reset."""
         logger.info(f"[Observer.Lifecycle] Processing execution output for Task {task_id}")
 
-        # 1. Update Harness State based on success/error
+        # 1. Update Harness State based on success/error (Persistent)
         new_state = HarnessState.FAULTED if is_error else HarnessState.IDLE
         self.sensor.set_harness_state(state=new_state, task_id=task_id)
 
@@ -189,9 +208,6 @@ class ConciergeObserver:
             execution_result=execution_result,
             blackboard_artifacts=blackboard_artifacts
         )
-
-        # 4. Final Reset of Harness State back to IDLE
-        self.sensor.set_harness_state(state=HarnessState.IDLE)
 
         return {
             "task_id": task_id,
