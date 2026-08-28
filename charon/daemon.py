@@ -33,7 +33,7 @@ from charon.telemetry.trace import TraceEvent, TraceEventType, telemetry_bus
 
 # 1. Ensure runtime paths exist and logging handlers are configured
 ensure_ecosystem_directories()
-setup_logging(debug=True)
+setup_logging(debug=False)
 
 logger = logging.getLogger("Charon.Daemon")
 
@@ -85,20 +85,10 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    # 5. Bind Unified WebSocket Manager, Awaken resident Concierge, and Trigger Hospitality
+    # 5. Bind Unified WebSocket Manager and Awaken resident Concierge
     concierge_service.bind_ws_manager(manager)
     await concierge_service.awaken()
     daemon.concierge = concierge_service
-
-    # Fire the startup hospitality greeting asynchronously with crash handler
-    if hasattr(concierge_service, "hospitality") and concierge_service.hospitality:
-        # Dynamically check for recovered tasks from the journal/daemon
-        recovered_count = len(daemon.get_active_tasks()) if hasattr(daemon, "get_active_tasks") else 0
-        hospitality_task = asyncio.create_task(
-            concierge_service.hospitality.execute_startup_greeting(recovered_tasks=recovered_count),
-            name="hospitality_greeting"
-        )
-        hospitality_task.add_done_callback(_handle_task_crash)
 
     # Explicitly bind Gateway contexts back to OrchestrationEngine & Coordinator
     engine.bind_gateway_context(

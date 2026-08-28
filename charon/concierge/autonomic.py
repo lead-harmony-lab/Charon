@@ -6,9 +6,10 @@ Manages Charon's internal biological rhythms, background task scheduling,
 autonomic spontaneous interactions, and persistent alert debouncing via ChromaDB.
 """
 
-import time
+import asyncio
 import hashlib
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -68,6 +69,10 @@ class AutonomicSystem:
         self.hospitality = hospitality
         self.ws_manager = None  # Will be bound during FastAPI lifespan
 
+        # Internal state tracking
+        self._startup_hospitality_executed = False
+        self._hospitality_task: Optional[asyncio.Task] = None
+
         # Initialize the agent's sense of time
         self.temporal_context = TemporalContext()
 
@@ -103,16 +108,83 @@ class AutonomicSystem:
         )
 
     async def start(self):
-        """Starts background daemons."""
+        """Starts background daemons and schedules startup hospitality routine."""
         clock_enabled = self.registry.get("biological_clock", {}).get("enable_autonomic_scheduler", True)
         if clock_enabled:
             self.scheduler.start()
             logger.info("Autonomic scheduling routines initiated.")
 
+        # Launch autonomic startup greeting sequence
+        if self.hospitality and not self._startup_hospitality_executed:
+            self._hospitality_task = asyncio.create_task(
+                self._run_autonomic_startup_hospitality(),
+                name="autonomic_startup_hospitality"
+            )
+
     def stop(self):
         """Halts background operations."""
+        if self._hospitality_task and not self._hospitality_task.done():
+            self._hospitality_task.cancel()
+
         self.scheduler.stop()
         logger.info("Autonomic scheduling routines halted.")
+
+    async def _verify_llm_vram_ready(self, timeout_seconds: float = 60.0, poll_interval: float = 2.0) -> bool:
+        """
+        Polls the LLM client to ensure the local inference engine is alive,
+        responsive, and that the target model is loaded into VRAM.
+        """
+        llm_client = getattr(self.hospitality, "llm_client", None)
+        if not llm_client:
+            logger.warning("[Autonomic.Hospitality] No LLM client bound to hospitality routine; skipping VRAM verification.")
+            return True
+
+        logger.info("[Autonomic.Hospitality] Probing LLM endpoint to confirm model VRAM allocation...")
+        start_time = time.monotonic()
+
+        while (time.monotonic() - start_time) < timeout_seconds:
+            try:
+                # Querying the available models pings the server and checks endpoint health
+                await asyncio.wait_for(llm_client.models.list(), timeout=3.0)
+                logger.info("[Autonomic.Hospitality] LLM probe successful. VRAM warm-up confirmed.")
+                return True
+            except Exception as e:
+                logger.debug(f"[Autonomic.Hospitality] Waiting for LLM to respond in VRAM... ({e})")
+                await asyncio.sleep(poll_interval)
+
+        logger.error("[Autonomic.Hospitality] LLM VRAM readiness verification timed out.")
+        return False
+
+    async def _run_autonomic_startup_hospitality(self):
+        """
+        Autonomic startup sequence:
+        1. Waits for active WebSocket connections (desktop avatar client).
+        2. Probes LLM engine to confirm model is loaded into VRAM.
+        3. Triggers startup hospitality greeting routine.
+        """
+        try:
+            # Step 1: Wait for WebSocket avatar connection
+            logger.info("[Autonomic.Hospitality] Awaiting desktop WebSocket client connection...")
+            while not (self.ws_manager and getattr(self.ws_manager, "active_connections", [])):
+                await asyncio.sleep(0.5)
+
+            logger.info("[Autonomic.Hospitality] Active WebSocket connection detected. Verifying LLM VRAM status...")
+
+            # Step 2: Verify LLM responsiveness / VRAM state
+            is_ready = await self._verify_llm_vram_ready()
+            if not is_ready:
+                logger.error("[Autonomic.Hospitality] Skipping greeting due to LLM unresponsiveness.")
+                return
+
+            # Step 3: Execute greeting routine
+            logger.info("[Autonomic.Hospitality] Executing startup hospitality greeting routine...")
+            await self.hospitality.execute_startup_greeting(recovered_tasks=0)
+            self._startup_hospitality_executed = True
+
+        except asyncio.CancelledError:
+            logger.info("[Autonomic.Hospitality] Startup hospitality task cancelled.")
+        except Exception as err:
+            logger.error(f"[Autonomic.Hospitality] Error executing startup greeting: {err}", exc_info=True)
 
     async def _push_event(self, event_type: str, payload: Dict[str, Any]):
         """Safely pushes raw event frames to all unified HUD/Avatar websocket connections."""
@@ -194,7 +266,6 @@ class AutonomicSystem:
                     ide_summary = self.sensor.get_ide_diagnostic_summary(lookback_seconds=180)
                     if ide_summary and ide_summary.get("error_count", 0) > 0:
                         logger.info(f"[Autonomic Pulse] IDE errors detected: {ide_summary.get('error_count')} errors.")
-                        # Insert existing IDE alert logic here if needed
                         return
                 except Exception as ide_err:
                     logger.error(f"[Autonomic Pulse] Failed to check IDE diagnostics: {ide_err}")

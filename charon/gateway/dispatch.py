@@ -187,11 +187,6 @@ async def handle_incoming_ws_frame(websocket: WebSocket, raw_data: str, client_i
                 total_conns = len(manager.active_connections)
                 recipients = [c for c in manager.active_connections if c != websocket]
 
-                logger.info(
-                    f"[TELEMETRY LOG] Frame from sender '{client_id}' ({id(websocket)}). "
-                    f"Total active sockets: {total_conns}. Forwarding to {len(recipients)} other sockets."
-                )
-
                 if not recipients:
                     logger.warning("[TELEMETRY WARNING] Telemetry received but NO other sockets exist to receive it!")
 
