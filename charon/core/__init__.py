@@ -10,7 +10,6 @@ from charon.core.coordinator.blackboard import (
     TaskBlackboard,
     TaskStatus,
 )
-from charon.core.session_delete import SessionGateway
 from charon.core.utils import (
     clean_json_string,
     get_schema_json,
@@ -20,9 +19,6 @@ __all__ = [
     # Stateful Reflection & Blackboard
     "TaskBlackboard",
     "TaskStatus",
-
-    # Session Gateway (Single Entry Point)
-    "SessionGateway",
 
     # Utility Primitives
     "clean_json_string",
