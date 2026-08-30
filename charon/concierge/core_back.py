@@ -47,6 +47,8 @@ class MultimodalRouter:
         # -------------------------------------------------------------
         # LANE A: The GNOME Shell "Smuggling Vector" (Broadcast)
         # -------------------------------------------------------------
+        # GNOME only cares about PROCESS updates and needs the WSEvent schema.
+        # We broadcast this so it doesn't fail if the extension isn't awake yet.
         if signal.modality == Modality.PROCESS:
             metadata = signal.metadata or {}
             ws_event = WSEvent.model_construct(
@@ -59,9 +61,7 @@ class MultimodalRouter:
                 }
             )
             try:
-                # FIX: Serialize the Pydantic model to a dict before broadcasting to prevent malformed JSON strings
-                payload = ws_event.model_dump() if hasattr(ws_event, "model_dump") else ws_event.dict()
-                await ws_manager.broadcast(payload)
+                await ws_manager.broadcast(ws_event)
             except Exception as e:
                 logger.error(f"[Router] Failed to broadcast PROCESS signal to GNOME: {e}")
 
@@ -120,7 +120,6 @@ class ConciergeService:
             llm_client=self.client,
             sensor=self.sensor,
             broadcast_callback=self.broadcast,
-            process_callback=self.emit_process,
             model_name=self.model_name,
             memory=self.memory
         )

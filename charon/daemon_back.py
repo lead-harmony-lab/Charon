@@ -1,7 +1,7 @@
-# charon/daemon.py
-# System Version: v3.6.5
-
 """
+charon/daemon.py
+System Version: v3.6.5
+
 Module: Charon Daemon (`charond`) - Gateway Entry Point.
 Integrates resident ConciergeService and core orchestration into the FastAPI lifespan.
 """
@@ -99,29 +99,6 @@ async def lifespan(app: FastAPI):
     )
     logger.info("[Charon.Daemon] Gateway and Concierge contexts successfully bound to OrchestrationEngine.")
 
-    # Grab the running loop here so all sync callbacks can dispatch websocket events
-    loop = asyncio.get_running_loop()
-
-    # -------------------------------------------------------------
-    # Setup HIL / Gatekeeper WebSocket Broadcast
-    # -------------------------------------------------------------
-    def broadcast_gatekeeper_intercept(action_data: dict):
-        """
-        Pushes HIL pauses to the GNOME extension via WebSocket,
-        triggering the approval prompt.
-        """
-        logger.info("[Charon.Daemon] Broadcasting Gatekeeper intercept to UI.")
-        event = WSEvent.model_construct(
-            event_type="gatekeeper_intercept",
-            data=action_data,
-            client_id="desktop_concierge"
-        )
-        asyncio.run_coroutine_threadsafe(manager.broadcast(event), loop)
-
-    # Bind the HIL event to the WebSocket broadcast
-    if hasattr(daemon, "gatekeeper") and daemon.gatekeeper:
-        daemon.gatekeeper.on_intercept = broadcast_gatekeeper_intercept
-
     # Expose runtime instances on FastAPI app.state for HTTP and WS route handlers
     app.state.daemon = daemon
     app.state.engine = daemon.engine
@@ -138,6 +115,8 @@ async def lifespan(app: FastAPI):
         daemon.is_ready = True
 
     # Bridge central TelemetryBus & Agent Progress Callbacks -> Daemon WebSocket Emitter
+    loop = asyncio.get_running_loop()
+
     # Direct UI Telemetry Bridge for Injected Agent Callbacks
     def ui_telemetry_bridge(payload: dict) -> None:
         """Callback injected into agents to push live progress updates directly to the GNOME HUD via WebSocket."""
@@ -177,27 +156,21 @@ async def lifespan(app: FastAPI):
             else:
                 event_dict = vars(event)
 
+            details = event_dict.get("details") or {}
+            safe_details = {str(k): str(v) for k, v in details.items()}
+
             raw_event_type = event_dict.get("event_type", "THINKING")
             event_type_str = (
                 raw_event_type.value
                 if hasattr(raw_event_type, "value")
                 else str(raw_event_type)
             )
-
-            # Drop DAG and execution traces (these now route to your new dashboard)
-            # as well as noisy internal loop states that the GNOME extension doesn't need.
-            if event_type_str in ["telemetry_trace", "dag_node_start", "dag_node_complete", "agent_progress", "THINKING", "ACTION", "OBSERVATION"]:
-                return
-
-            details = event_dict.get("details") or {}
-            safe_details = {str(k): str(v) for k, v in details.items()}
             agent_name_str = event_dict.get("agent_name", "Coordinator")
 
-            # Forward remaining relevant global states
             ws_event = WSEvent.model_construct(
-                event_type=event_type_str,
+                event_type="telemetry_trace",
                 task_id=str(details.get("task_id", "system")),
-                client_id="desktop_concierge",
+                client_id="telemetry_viewer",
                 agent_name=agent_name_str,
                 data={
                     "event_type": event_type_str,
@@ -219,7 +192,7 @@ async def lifespan(app: FastAPI):
                 gap_event = WSEvent.model_construct(
                     event_type="skill_gap_detected",
                     task_id=str(details.get("task_id", "system")),
-                    client_id="desktop_concierge",
+                    client_id="telemetry_viewer",
                     agent_name=agent_name_str,
                     data={
                         "agent_name": agent_name_str,

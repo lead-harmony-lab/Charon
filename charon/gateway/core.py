@@ -1,6 +1,6 @@
 """
 charon/gateway/core.py
-System Version: v0.1.1 | File Revision: 2.1.5
+System Version: v0.1.1 | File Revision: 2.1.6
 
 Module: Charon Core Daemon Orchestrator.
 
@@ -193,7 +193,7 @@ class CharonDaemon:
         params: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Flexible Concierge evaluator with dynamic parameter inspection and authorization guards."""
-        if not self.concierge or not self.emitter:
+        if not hasattr(self, "concierge") or not self.concierge or not self.emitter:
             return
 
         # Explicit Authorization Guardrail: Suppress suggestions if result indicates gatekeeper intercept
@@ -270,6 +270,42 @@ class CharonDaemon:
         """Start background telemetry reporting task."""
         await self.telemetry.start_loop(interval=interval)
 
+    async def _ingest_next_task(self):
+        """Pulls the next task from the journal and updates the GNOME top-bar status."""
+        item = await self.journal.get()
+
+        # Handle legacy dicts and new JournalEntry objects
+        prompt = item.get("prompt") if isinstance(item, dict) else getattr(item, "prompt", None)
+        concierge = getattr(self, "concierge", None)
+
+        if not prompt or not concierge or not getattr(concierge, "ws_manager", None):
+            return item
+
+        # GNOME top-bar constraint: 35 characters maximum
+        display_text = str(prompt).strip()
+        if len(display_text) > 35:
+            display_text = f"{display_text[:32]}..."
+
+        # Import dynamically to avoid circular dependencies if schemas aren't already imported
+        from charon.concierge.schemas import CharonSignal, Modality
+        from charon.concierge.core import MultimodalRouter
+
+        signal = CharonSignal(
+            modality=Modality.PROCESS,
+            content=display_text,
+            context="daemon_ingest",
+            metadata={
+                "event_type": "status_change",
+                "status": "active"
+            }
+        )
+
+        asyncio.create_task(
+            MultimodalRouter.dispatch(signal, concierge.ws_manager)
+        )
+
+        return item
+
     async def process_queue(self) -> None:
         """Primary queue processing loop for incoming task directives and gatekeeper decisions."""
         while not await self.verify_engine():
@@ -303,7 +339,7 @@ class CharonDaemon:
 
         while True:
             try:
-                item = await self.journal.get()
+                item = await self._ingest_next_task()
             except asyncio.CancelledError:
                 break
 

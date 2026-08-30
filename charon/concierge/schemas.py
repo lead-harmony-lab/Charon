@@ -1,14 +1,18 @@
 """
 charon/concierge/schemas.py
-System Version: v2.2.0
+System Version: v2.3.0
 
 Module: Concierge Data Structures
-Provides Pydantic models and strict validation guardrails for LLM outputs.
+Provides Pydantic models, strict validation guardrails for LLM outputs,
+and standardized multimodal signal routing for the frontend.
 """
 
 import re
-from typing import Optional
+import datetime
+from enum import Enum
+from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, ValidationInfo, model_validator
+
 
 def _levenshtein_ratio(s1: str, s2: str) -> float:
     """Calculates semantic similarity ratio between 0.0 and 1.0 using Levenshtein distance."""
@@ -29,6 +33,10 @@ def _levenshtein_ratio(s1: str, s2: str) -> float:
     max_len = max(len(s1), len(s2))
     return 1.0 - (distance / max_len)
 
+
+# =========================================================================
+# LLM Validation & Guardrail Schemas
+# =========================================================================
 
 class ConciergeProposal(BaseModel):
     """Pydantic schema representing a structured proactive suggestion."""
@@ -71,3 +79,22 @@ class ConciergeResponse(BaseModel):
     """Parent schema providing an escape hatch to prevent forced hallucinations."""
     has_proposal: bool = Field(..., description="Set to false if no logical follow-up exists.")
     proposal: Optional[ConciergeProposal] = Field(None, description="The proposal details, if applicable.")
+
+
+# =========================================================================
+# UI Multimodal Routing Schemas
+# =========================================================================
+
+class Modality(str, Enum):
+    PROCESS = "process"
+    THOUGHT = "thought"
+    DIALOGUE = "dialogue"
+
+
+class CharonSignal(BaseModel):
+    """Standardized envelope for routing Charon's output to disparate UI layers."""
+    modality: Modality
+    content: str
+    context: str = "general"
+    timestamp: str = Field(default_factory=lambda: datetime.datetime.now().isoformat())
+    metadata: Optional[Dict[str, Any]] = None

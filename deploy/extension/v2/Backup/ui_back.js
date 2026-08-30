@@ -61,25 +61,43 @@ export class CharonUI {
         this.indicator.menu.addMenuItem(this.overseerDetails);
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // --- Avatar Toggle Switch ---
+        // --- Avatar Action (Fake Toggle) ---
         let currentSettings = this.ext.readOverlaySettings();
         let shouldShowAvatar = currentSettings.show_avatar === true;
 
-        this.avatarSwitch = new PopupMenu.PopupSwitchMenuItem('Show Avatar:', shouldShowAvatar);
-        this.avatarSwitch.connect('toggled', (item, state) => {
+        // Use a BaseMenuItem so we can build a custom layout inside it
+        this.avatarAction = new PopupMenu.PopupBaseMenuItem();
+
+        let avatarActionBox = new St.BoxLayout({ x_expand: true, vertical: false });
+        let avatarActionLabel = new St.Label({ text: 'Display Avatar', y_align: Clutter.ActorAlign.CENTER, x_expand: true });
+
+        // Create the pill that will look like a toggle state
+        this.avatarStatusPill = new St.Label({
+            text: '',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        avatarActionBox.add_child(avatarActionLabel);
+        avatarActionBox.add_child(this.avatarStatusPill);
+        this.avatarAction.add_child(avatarActionBox);
+
+        this._updateAvatarActionUI(shouldShowAvatar);
+
+        this.avatarAction.connect('activate', () => {
+            let isCurrentlyShowing = this.ext.readOverlaySettings().show_avatar === true;
+            let newState = !isCurrentlyShowing;
+
             if (!this._isDestroying) {
                 let data = this.ext.readOverlaySettings();
-                data.show_avatar = state;
+                data.show_avatar = newState;
                 this.ext.writeOverlaySettings(data);
             }
-            this._toggleAvatar(state);
 
-            // Force the GNOME Shell menu to close, releasing the pointer grab
-            if (state) {
-                this.indicator.menu.close();
-            }
+            this._updateAvatarActionUI(newState);
+            this._toggleAvatar(newState);
         });
-        this.indicator.menu.addMenuItem(this.avatarSwitch);
+
+        this.indicator.menu.addMenuItem(this.avatarAction);
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // Response Card
@@ -146,6 +164,20 @@ export class CharonUI {
         }
     }
 
+    _updateAvatarActionUI(isActive) {
+        if (!this.avatarStatusPill) return;
+
+        if (isActive) {
+            this.avatarStatusPill.set_text('ON');
+            // Active state: GNOME Blue pill with white text
+            this.avatarStatusPill.style = 'background-color: #3584e4; color: #ffffff; border-radius: 12px; padding: 2px 12px; font-weight: bold; font-size: 0.85em;';
+        } else {
+            this.avatarStatusPill.set_text('OFF');
+            // Inactive state: Faded pill matching default dark mode aesthetics
+            this.avatarStatusPill.style = 'background-color: rgba(255, 255, 255, 0.1); color: #aaaaaa; border-radius: 12px; padding: 2px 10px; font-weight: bold; font-size: 0.85em;';
+        }
+    }
+
     _toggleAvatar(enabled) {
         if (enabled) {
             if (this._avatarSubprocess) return;
@@ -155,7 +187,8 @@ export class CharonUI {
 
             try {
                 let homeDir = GLib.get_home_dir();
-                let venvPython = `${homeDir}/Projects/Tools/Charon/.venv/bin/python`;
+                // Check environment variable first, then fallback to hardcoded path
+                let venvPython = GLib.getenv('CHARON_VENV_PATH') || `${homeDir}/Projects/Tools/Charon/.venv/bin/python`;
 
                 this._avatarSubprocess = new Gio.Subprocess({
                     argv: [
@@ -175,15 +208,20 @@ export class CharonUI {
                         // Handled exit/termination
                     }
                     this._avatarSubprocess = null;
-                    if (this.avatarSwitch && this.avatarSwitch.state) {
-                        this.avatarSwitch.setToggleState(false);
+                    this._updateAvatarActionUI(false);
+
+                    // Sync the settings file if the process crashes/closes externally
+                    if (!this._isDestroying) {
+                        let data = this.ext.readOverlaySettings();
+                        data.show_avatar = false;
+                        this.ext.writeOverlaySettings(data);
                     }
                 });
 
             } catch (err) {
                 console.error(`[Charon] Failed to spawn Avatar overlay: ${err.message}`);
                 this._avatarSubprocess = null;
-                if (this.avatarSwitch) this.avatarSwitch.setToggleState(false);
+                this._updateAvatarActionUI(false);
             }
         } else {
             if (this._avatarSubprocess) {
@@ -288,11 +326,18 @@ export class CharonUI {
             }
 
             else if (ipcPayload.command === 'toggle_avatar') {
-                // Toggle the UI switch, which inherently fires the 'toggled' signal
-                // and launches/kills the avatar subprocess
-                if (this.avatarSwitch) {
-                    this.avatarSwitch.setToggleState(!this.avatarSwitch.state);
+                // Programmatically flip the state, sync UI, and launch/kill the subprocess
+                let isCurrentlyShowing = this.ext.readOverlaySettings().show_avatar === true;
+                let newState = !isCurrentlyShowing;
+
+                if (!this._isDestroying) {
+                    let data = this.ext.readOverlaySettings();
+                    data.show_avatar = newState;
+                    this.ext.writeOverlaySettings(data);
                 }
+
+                this._updateAvatarActionUI(newState);
+                this._toggleAvatar(newState);
             }
 
             else {

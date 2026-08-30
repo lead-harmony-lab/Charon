@@ -7,18 +7,31 @@ Module: Concierge Hospitality Subroutine
 import asyncio
 import logging
 import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from charon.concierge.prompts import GREETING_SYSTEM_PROMPT
+from charon.concierge.schemas import Modality
 
 logger = logging.getLogger("Charon.Concierge.Hospitality")
 
 
 class HospitalitySubroutine:
-    def __init__(self, llm_client: Any, ws_manager: Optional[Any] = None, memory: Optional[Any] = None):
+    def __init__(
+        self,
+        llm_client: Any,
+        sensor: Any,
+        broadcast_callback: Callable,
+        model_name: str,
+        process_callback: Optional[Callable] = None,
+        ws_manager: Optional[Any] = None,
+        memory: Optional[Any] = None
+    ):
         self.llm_client = llm_client
+        self.sensor = sensor
+        self.broadcast = broadcast_callback
+        self.process_callback = process_callback
+        self.model_name = model_name
         self.ws_manager = ws_manager
         self.memory = memory
-        self.concierge = None  # Will be injected by core.py during initialization
 
         self.SHORT_AWAY_THRESHOLD = 300  # 5 minutes
         self.EXTENDED_AWAY_THRESHOLD = 14400  # 4 hours
@@ -64,28 +77,38 @@ class HospitalitySubroutine:
         Generates a context-aware greeting using the LLM and emits it
         via the central Concierge multimodal dual pathway.
         """
-        if not self.concierge:
-            logger.warning(f"[Hospitality] Concierge reference not bound. Suppressing broadcast for {context}.")
+        if not self.broadcast:
+            logger.warning(f"[Hospitality] Broadcast callback not bound. Suppressing broadcast for {context}.")
             return
 
-        # --- RACE CONDITION FIX ---
-        # Poll for an active UI connection for up to 5 seconds
         if self.ws_manager:
             retries = 0
-            while not getattr(self.ws_manager, "active_connections", None) and retries < 10:
+            while not getattr(self.ws_manager, "active_connections", None) and retries < 4:
                 await asyncio.sleep(0.5)
                 retries += 1
 
-            if not getattr(self.ws_manager, "active_connections", None):
-                logger.warning(f"[Hospitality] No UI connected after 5s. Aborting {context} greeting.")
-                return
+        # -------------------------------------------------------------
+        # 1. EMIT PROCESS SIGNAL (Feeds GNOME Top-Bar Lane A)
+        # -------------------------------------------------------------
+        if context == "system_startup":
+            process_msg = "Composing welcome message..."
+        elif context == "dynamic_return":
+            process_msg = "Analyzing telemetry context..."
+        else:
+            process_msg = "Drafting greeting..."
+
+        if self.process_callback:
+            if asyncio.iscoroutinefunction(self.process_callback):
+                await self.process_callback(process_msg, context=context, status="working")
+            else:
+                self.process_callback(process_msg, context=context, status="working")
 
         try:
-            # Generate the greeting
-            model_name = getattr(self.concierge, "model_name", "llama3.1")
-
+            # -------------------------------------------------------------
+            # 2. GENERATE GREETING
+            # -------------------------------------------------------------
             response = await self.llm_client.chat.completions.create(
-                model=model_name,
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content": GREETING_SYSTEM_PROMPT},
                     {"role": "user", "content": user_message}
@@ -95,18 +118,37 @@ class HospitalitySubroutine:
             )
 
             greeting_text = response.choices[0].message.content.strip()
-
             logger.debug(f"[Hospitality] Broadcasting greeting: {greeting_text}")
-            await self.concierge.broadcast(greeting_text, context=context)
+
+            # -------------------------------------------------------------
+            # 3. EMIT DIALOGUE SIGNAL (Feeds GTK4 Avatar Lane B)
+            # -------------------------------------------------------------
+            if asyncio.iscoroutinefunction(self.broadcast):
+                await self.broadcast(greeting_text, context=context, modality=Modality.DIALOGUE)
+            else:
+                self.broadcast(greeting_text, context=context, modality=Modality.DIALOGUE)
+
+            # -------------------------------------------------------------
+            # 4. RESET PROCESS SIGNAL (Clears GNOME Top-Bar)
+            # -------------------------------------------------------------
+            if self.process_callback:
+                if asyncio.iscoroutinefunction(self.process_callback):
+                    await self.process_callback("active", context="idle", status="active")
+                else:
+                    self.process_callback("active", context="idle", status="active")
 
         except Exception as e:
             logger.error(f"[Hospitality] Failed to generate/broadcast greeting for {context}: {e}")
+            # Reset top-bar on failure
+            if self.process_callback:
+                if asyncio.iscoroutinefunction(self.process_callback):
+                    await self.process_callback("active", context="error", status="error")
+                else:
+                    self.process_callback("active", context="error", status="error")
 
     async def _gather_telemetry_context(self, idle_duration_seconds: float) -> str:
-        if not self.concierge or not getattr(self.concierge, "sensor", None):
+        if not self.sensor:
             return "Context unavailable: TelemetrySensor not linked."
-
-        sensor = self.concierge.sensor
 
         # Calculate exact time the user went idle
         idle_since_dt = datetime.datetime.now() - datetime.timedelta(seconds=idle_duration_seconds)
@@ -114,7 +156,7 @@ class HospitalitySubroutine:
 
         # 1. Fetch Ledger Deltas (Background activity while away)
         try:
-            ledger_deltas = await sensor.get_session_deltas(idle_since_iso)
+            ledger_deltas = await self.sensor.get_session_deltas(idle_since_iso)
             bg_tasks = ledger_deltas.get("task_count", 0)
             bg_alerts = ledger_deltas.get("alert_count", 0)
         except Exception as e:
@@ -122,17 +164,17 @@ class HospitalitySubroutine:
             bg_tasks, bg_alerts = 0, 0
 
         # 2. Hardware & System Metrics
-        metrics = sensor.capture_and_log_metrics()
+        metrics = self.sensor.capture_and_log_metrics()
         cpu = metrics.get("cpu_percent", 0)
         ram = metrics.get("memory_percent", 0)
 
         # 3. Alerts & Harness State
-        harness_state = sensor.harness_state.value if hasattr(sensor, "harness_state") else "UNKNOWN"
-        alerts = await sensor.check_for_critical_alerts()
+        harness_state = self.sensor.harness_state.value if hasattr(self.sensor, "harness_state") else "UNKNOWN"
+        alerts = await self.sensor.check_for_critical_alerts()
         alert_text = alerts["summary"] if alerts else "Nominal"
 
         # 4. Sensory Desktop Context
-        desktop_context = sensor.get_recent_desktop_context(minutes_lookback=15)
+        desktop_context = self.sensor.get_recent_desktop_context(minutes_lookback=15)
 
         # 5. Semantic Memory Context
         mem_context = await self._gather_memory_context()

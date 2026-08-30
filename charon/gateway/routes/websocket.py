@@ -32,8 +32,6 @@ def _extract_ws_token(websocket: WebSocket, query_api_key: Optional[str]) -> Opt
         return query_api_key.strip()
     return None
 
-
-@router.websocket("/v1/ws")
 @router.websocket("/v1/concierge/stream")
 @router.websocket("/v1/avatar/stream")
 async def websocket_endpoint(

@@ -1,11 +1,11 @@
 """
 charon/concierge/interaction.py
-System Version: v3.4.1 | File Revision: 3.5.0
+System Version: v3.5.1
 
 Handles all direct LLM generation tasks including conversational chat,
 payload wrapping, proactive proposals, and dynamic greetings.
 """
-
+import asyncio
 import datetime
 import json
 import logging
@@ -19,7 +19,7 @@ from .prompts import (
     GREETING_SYSTEM_PROMPT,
     PAYLOAD_WRAPPER_PROMPT,
 )
-from .schemas import ConciergeProposal, ConciergeResponse
+from .schemas import ConciergeProposal, ConciergeResponse, Modality
 
 logger = logging.getLogger("Charon.UX.Concierge.Interaction")
 
@@ -31,13 +31,14 @@ class InteractionEngine:
         self,
         client: Any,
         registry: Dict[str, Any],
-        memory: Any,
+        memory: Optional[Any],
         sensor: Any,
         model_name: str,
         min_confidence: float,
         chroma_client: Optional[Any] = None,
         memory_collection: Optional[Any] = None,
         heuristics_collection: Optional[Any] = None,
+        broadcast_callback: Optional[Any] = None,
     ):
         self.client = client
         self.registry = registry
@@ -48,6 +49,7 @@ class InteractionEngine:
         self.chroma_client = chroma_client
         self.memory_collection = memory_collection
         self.heuristics_collection = heuristics_collection
+        self.broadcast = broadcast_callback
 
         # Extract generation configurations
         model_cfg = self.registry.get("model_settings", {})
@@ -281,7 +283,22 @@ class InteractionEngine:
     async def handle_user_message(self, user_input: str) -> str:
         """The primary conversational interface for Charon."""
 
-        memory_context = self.memory.get_relevant_memories(user_input) if self.chroma_client else ""
+        # 1. EMIT PROCESS SIGNAL (Active)
+        if self.broadcast:
+            active_metadata = {"event_type": "agent_status", "status": "active"}
+            process_msg = "Processing query..."
+
+            if asyncio.iscoroutinefunction(self.broadcast):
+                await self.broadcast(process_msg, context="chat_generation", modality=Modality.PROCESS,
+                                     metadata=active_metadata)
+            else:
+                self.broadcast(process_msg, context="chat_generation", modality=Modality.PROCESS,
+                               metadata=active_metadata)
+
+        memory_context = ""
+        # Safe memory check to prevent amnesiac mode crashes
+        if self.memory and hasattr(self.memory, 'get_relevant_memories'):
+            memory_context = self.memory.get_relevant_memories(user_input)
 
         try:
             desktop_context = self.sensor.get_recent_desktop_context(minutes_lookback=5)
@@ -306,8 +323,35 @@ class InteractionEngine:
                 ],
                 temperature=self.temp_chat,
             )
-            return response.choices[0].message.content.strip('"')
+
+            response_text = response.choices[0].message.content.strip('"')
+
+            # 2. EMIT DIALOGUE SIGNAL (Feeds GTK4 Avatar Lane B)
+            if self.broadcast:
+                if asyncio.iscoroutinefunction(self.broadcast):
+                    await self.broadcast(response_text, context="chat_reply", modality=Modality.DIALOGUE)
+                else:
+                    self.broadcast(response_text, context="chat_reply", modality=Modality.DIALOGUE)
+
+            # 3. RESET PROCESS SIGNAL (Clears GNOME Top-Bar)
+            if self.broadcast:
+                ready_metadata = {"event_type": "agent_status", "status": "ready"}
+                if asyncio.iscoroutinefunction(self.broadcast):
+                    await self.broadcast("Ready", context="idle", modality=Modality.PROCESS, metadata=ready_metadata)
+                else:
+                    self.broadcast("Ready", context="idle", modality=Modality.PROCESS, metadata=ready_metadata)
+
+            return response_text
 
         except Exception as e:
             logger.error(f"[Interaction] Failed to generate chat response: {e}")
+
+            # RESET ON FAILURE
+            if self.broadcast:
+                error_metadata = {"event_type": "agent_status", "status": "ready"}
+                if asyncio.iscoroutinefunction(self.broadcast):
+                    await self.broadcast("Ready", context="error", modality=Modality.PROCESS, metadata=error_metadata)
+                else:
+                    self.broadcast("Ready", context="error", modality=Modality.PROCESS, metadata=error_metadata)
+
             return "My apologies, sir, but my communication relays are currently experiencing interference."

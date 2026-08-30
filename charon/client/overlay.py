@@ -1,10 +1,5 @@
-"""
-charon/client/overlay.py
-System Version: v3.9.0 | File Revision: 3.9.24
-
-Module: Native GTK4 Desktop HUD Overlay with Cairo-drawn dynamic badges,
-Wheatley aperture core visualizer, cursor gaze tracking, and click-through regions.
-"""
+# charon/client/overlay.py
+# System Version: v3.9.0 | File Revision: 3.9.26
 
 import argparse
 import base64
@@ -34,7 +29,6 @@ if not is_gnome:
 
 from gi.repository import Gdk, GLib, Gtk
 
-# Import the wrapper widget to preserve do_contains hit-testing behavior
 from charon.client.avatar_widget import AvatarVisualizer, AvatarWidget
 from charon.client.ws_listener import OverlayWSListener, SpeechStreamPlayer
 from charon.client.avatar_states import EXPRESSIVE_STATES
@@ -95,11 +89,10 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
 
         self._pending_telemetry = None
         self._telemetry_idle_queued = False
-        self._latest_message_text = "..."  # Initialize empty message state
-        self._last_active_pos = (-1, -1)   # Position tracking for input region sync
-        self._bubble_timeout_id = None     # Timer ID for auto-closing the message bubble
+        self._latest_message_text = "..."
+        self._last_active_pos = (-1, -1)
+        self._bubble_timeout_id = None
 
-        # Position cache tracking for disk I/O optimization
         self._current_window_x = None
         self._current_window_y = None
 
@@ -122,8 +115,6 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
             self.set_resizable(False)
 
         self.connect("realize", lambda win: self._on_realize())
-
-        # Defer the websocket connection until the window is fully mapped (drawn)
         self.connect("map", lambda win: self._start_websocket())
 
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -137,25 +128,23 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
         self.avatar_container.set_cursor_from_name("grab")
         self._setup_avatar_drag_feedback()
 
-        # Attach the right-click context menu manager
         self.context_menu_manager = AvatarContextMenu(self, self.avatar_container)
 
-        # Transparent padding container to offset layout coordinates
         self.avatar_align_box = Gtk.Box()
         self.avatar_align_box.set_halign(Gtk.Align.CENTER)
         self.avatar_align_box.set_valign(Gtk.Align.END)
-        self.avatar_align_box.set_margin_bottom(20)  # Gives him a little breathing room off the bottom edge
+        self.avatar_align_box.set_margin_bottom(20)
         self.avatar_align_box.append(self.avatar_container)
 
         self.avatar_overlay.set_child(self.avatar_align_box)
 
-        # Initialize Threaded Speech & Viseme Player
         self.speech_player = SpeechStreamPlayer(visualizer=self.avatar)
 
         # --- DYNAMIC BADGE ---
         self.badge = DynamicBadge()
         self.badge.set_halign(Gtk.Align.START)
         self.badge.set_valign(Gtk.Align.START)
+        self.badge.bubble_type = "idle" # Initialize as idle
         self.badge.click_gesture.connect(
             "pressed", lambda gesture, n, x, y: self._toggle_thought_bubble()
         )
@@ -165,7 +154,7 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
         self.bubble = MessageBubble()
         self.bubble.set_halign(Gtk.Align.START)
         self.bubble.set_valign(Gtk.Align.START)
-        self.bubble.set_visible(False)  # Hide initially so it doesn't block badge clicks
+        self.bubble.set_visible(False)
         self.bubble.on_dismissed_callback = self._on_bubble_dismissed
         self.avatar_overlay.add_overlay(self.bubble)
 
@@ -173,26 +162,24 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
         self.set_child(self.main_box)
         self._apply_css()
 
-        # Add the tick callback to dynamically anchor the badge to the eye
         self.add_tick_callback(self._sync_badge_position)
 
 
     def _start_websocket(self):
-        """Starts the websocket connection after the window is successfully mapped to avoid Mutter race conditions."""
-        ws_uri = "ws://localhost:8000/v1/concierge/stream?client_id=gtk_overlay"
+        ws_uri = "ws://localhost:8000/v1/concierge/stream?client_id=gtk4_avatar"
         if CHARON_API_KEY:
             ws_uri += f"&api_key={CHARON_API_KEY}"
 
         self.ws_thread = OverlayWSListener(
             uri=ws_uri,
             api_key=CHARON_API_KEY,
-            on_event_callback=self.handle_stream_event
+            on_event_callback=self.handle_stream_event,
+            client_id="gtk4_avatar"
         )
         self.ws_thread.start()
 
 
     def _sync_badge_position(self, widget, frame_clock):
-        """Calculates the center of the eye and positions the speech bubble dynamically."""
         vis = self.avatar
         vw = vis.get_width()
         vh = vis.get_height()
@@ -200,14 +187,12 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
         if vw == 0 or vh == 0:
             return GLib.SOURCE_CONTINUE
 
-        # Body geometry identical to visualizer logic
         cx = vw / 2.0
         cy = vh / 2.0
         r_body = min(vw, vh) * 0.38
         r_bezel = r_body * 0.68
         max_travel = r_bezel * 0.35
 
-        # 1. Obtain the center of Wheatley's eye (clamping travel to bezel constraints)
         dx = vis.current_dx
         dy = vis.current_dy
         dist = math.hypot(dx, dy)
@@ -219,13 +204,11 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
         eye_cx = cx + dx
         eye_cy = cy + dy
 
-        # 2. Position the speech bubble in relation to that location
         angle = -math.pi / 4.0
 
         touch_x = eye_cx + math.cos(angle) * (r_body * 1.05)
         touch_y = eye_cy + math.sin(angle) * (r_body * 1.05)
 
-        # Dynamically map the visualizer's coordinates into the overlay's coordinate space
         res, avatar_rect = self.avatar.compute_bounds(self.avatar_overlay)
         if res:
             touch_x += avatar_rect.origin.x
@@ -233,7 +216,6 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
 
         pos_changed = False
 
-        # 3. Align the Badges / Bubbles based on which is visible
         if self.badge.get_visible():
             badge_w = self.badge.get_width() or 70
             badge_h = self.badge.get_height() or 60
@@ -266,7 +248,6 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
                 self._last_active_pos = (b_final_x, b_final_y)
                 pos_changed = True
 
-        # Keep click-through mask updated with motion
         if pos_changed:
             self.update_input_region()
 
@@ -274,19 +255,16 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
 
     def _on_realize(self):
         self._restore_position_if_saved()
-        # Initial call
         GLib.idle_add(self.update_input_region)
-        # Deferred calls to ensure Mutter has finished positioning the Wayland surface
         GLib.timeout_add(100, self._force_input_region_sync)
         GLib.timeout_add(500, self._force_input_region_sync)
 
     def _force_input_region_sync(self):
-        self._last_active_pos = (-1, -1)  # Invalidate cached position
+        self._last_active_pos = (-1, -1)
         self.update_input_region()
-        return False  # Do not repeat GLib timeout
+        return False
 
     def update_input_region(self):
-        """Updates click-through bounds so both badges and expanded bubbles are clickable."""
         native = self.get_native()
         if not native: return
         surface = native.get_surface()
@@ -356,63 +334,70 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
         self._apply_position(clamped_x, clamped_y)
 
     def _auto_close_bubble(self):
-        """Automatically dismisses the bubble when the timer expires."""
         self._bubble_timeout_id = None
         if self.bubble.get_visible():
             self._on_bubble_dismissed()
         return GLib.SOURCE_REMOVE
 
     def _toggle_thought_bubble(self):
-        """Hides the badge and shows the expanded text bubble with a dynamic timer."""
         self._last_active_pos = (-1, -1)
         self.badge.set_visible(False)
         self.bubble.set_visible(True)
 
         bubble_style = getattr(self.badge, "bubble_type", "thought")
+        if bubble_style == "idle":
+            bubble_style = "thought" # Fallback if clicked while idle
+
         self.bubble.show_message(self._latest_message_text, msg_type=bubble_style)
 
         GLib.idle_add(self.update_input_region)
 
-        # Clear existing timer if one is already running
         if self._bubble_timeout_id is not None:
             GLib.source_remove(self._bubble_timeout_id)
 
-        # Calculate display time: 3 seconds baseline + ~250ms per word
         word_count = len(self._latest_message_text.split())
         display_ms = 3000 + (word_count * 250)
 
         self._bubble_timeout_id = GLib.timeout_add(display_ms, self._auto_close_bubble)
 
     def _on_bubble_dismissed(self):
-        """Brings the badge back once the text bubble is closed."""
-        # Cancel the timer if the user manually closes the bubble early
+        """Reverts back to an observing/idle state once the bubble times out or is closed."""
         if self._bubble_timeout_id is not None:
             GLib.source_remove(self._bubble_timeout_id)
             self._bubble_timeout_id = None
 
         self._last_active_pos = (-1, -1)
         self.bubble.set_visible(False)
+
+        # Preserve the active modality (e.g., "speech") so the badge tail remains correct
+        current_style = getattr(self.badge, "bubble_type", "thought")
+        if current_style == "idle":
+            current_style = "thought"
+
+        # Explicitly pass bubble_type to override the "thought" default in set_state
+        self.badge.set_state("...", 0.22, 0.74, 0.97, bubble_type=current_style)
         self.badge.set_visible(True)
 
+        self.avatar.set_expressive_state("observing")
         GLib.idle_add(self.update_input_region)
 
     def set_indicator_type(self, msg_type: str, custom_symbol: str = None):
-        """Binds semantic categories to explicit color values and idiomatic symbols."""
+        """Legacy helper for setting color values and symbols."""
         if msg_type == "warning":
             text = custom_symbol or "!!"
-            self.badge.set_state(text, 0.98, 0.75, 0.14)
+            self.badge.set_state(text, 0.98, 0.75, 0.14, bubble_type="thought")
             if hasattr(self.bubble, "glow_color"): self.bubble.glow_color = (0.98, 0.75, 0.14, 1.0)
         elif msg_type == "urgent":
             text = custom_symbol or "$#@!"
-            self.badge.set_state(text, 0.93, 0.26, 0.26)
+            self.badge.set_state(text, 0.93, 0.26, 0.26, bubble_type="thought")
             if hasattr(self.bubble, "glow_color"): self.bubble.glow_color = (0.93, 0.26, 0.26, 1.0)
         elif msg_type == "inbox":
             text = custom_symbol or "@"
-            self.badge.set_state(text, 0.66, 0.33, 0.97)
+            self.badge.set_state(text, 0.66, 0.33, 0.97, bubble_type="thought")
             if hasattr(self.bubble, "glow_color"): self.bubble.glow_color = (0.66, 0.33, 0.97, 1.0)
         else:
             text = custom_symbol or "...."
-            self.badge.set_state(text, 0.22, 0.74, 0.97)
+            self.badge.set_state(text, 0.22, 0.74, 0.97, bubble_type="thought")
             if hasattr(self.bubble, "glow_color"): self.bubble.glow_color = (0.22, 0.74, 0.97, 1.0)
 
     def _setup_avatar_drag_feedback(self):
@@ -420,37 +405,20 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
         drag_gesture.set_button(1)
 
         def on_drag_begin(gesture, start_x, start_y):
-            print(f"[Charon Overlay DEBUG] drag-begin triggered at ({start_x}, {start_y})")
             native = self.avatar_container.get_native()
-            print(f"[Charon Overlay DEBUG] native: {native}")
-
-            if not native:
-                print("[Charon Overlay DEBUG] ABORT: No native found.")
-                return
-
+            if not native: return
             surface = native.get_surface()
-            print(f"[Charon Overlay DEBUG] surface: {surface}")
 
             if surface and isinstance(surface, Gdk.Toplevel):
                 seq = gesture.get_current_sequence()
                 event = gesture.get_last_event(seq)
-                print(f"[Charon Overlay DEBUG] event: {event}")
-
                 if event:
                     surface.begin_move(event.get_device(), 1, start_x, start_y, event.get_time())
                     gesture.set_state(Gtk.EventSequenceState.CLAIMED)
                     self.avatar_container.set_cursor_from_name("grabbing")
-                    print("[Charon Overlay DEBUG] surface.begin_move() called successfully.")
-                else:
-                    print("[Charon Overlay DEBUG] ABORT: No event found from sequence.")
-            else:
-                print(f"[Charon Overlay DEBUG] ABORT: Surface is None or not a Gdk.Toplevel. Type: {type(surface)}")
 
         def on_drag_end(gesture, offset_x, offset_y):
-            print(f"[Charon Overlay DEBUG] drag-end triggered. offset: ({offset_x}, {offset_y})")
             self.avatar_container.set_cursor_from_name("grab")
-
-            print(f"[Charon Overlay DEBUG] Saving pos: ({self._current_window_x}, {self._current_window_y})")
             if self._current_window_x is not None and self._current_window_y is not None:
                 self.settings.update(
                     x=self._current_window_x,
@@ -465,11 +433,9 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
         click_gesture.set_button(1)
 
         def on_click_pressed(g, n, x, y):
-            print(f"[Charon Overlay DEBUG] click-pressed at ({x}, {y})")
             self.avatar_container.set_cursor_from_name("grabbing")
 
         def on_click_released(g, n, x, y):
-            print(f"[Charon Overlay DEBUG] click-released at ({x}, {y})")
             self.avatar_container.set_cursor_from_name("grab")
 
         click_gesture.connect("pressed", on_click_pressed)
@@ -494,8 +460,6 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
             if "x" in data and "y" in data:
                 self._current_window_x = data["x"]
                 self._current_window_y = data["y"]
-
-                # Force GTK to re-sync the Cairo click-through mask
                 GLib.idle_add(self.update_input_region)
             return
 
@@ -511,14 +475,39 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
 
     def _process_stream_event_ui(self, event: dict):
         event_type = event.get("type") or event.get("event_type")
+        modality = event.get("modality")
 
-        # --- 1. POINTER TELEMETRY ---
+        # --- 1. MULTIMODAL SIGNAL ROUTING (NEW) ---
+        if modality:
+            content = event.get("content", "")
+
+            if modality == "dialogue":
+                self.badge.set_state("...", 0.22, 0.74, 0.97, bubble_type="speech")
+                self.badge.set_visible(True)
+                self._latest_message_text = content
+                self.avatar.set_expressive_state("expressing")
+                self._toggle_thought_bubble()
+
+            elif modality == "thought":
+                self.badge.set_state("...", 0.22, 0.74, 0.97, bubble_type="thought")
+                self.badge.set_visible(True)
+                self._latest_message_text = content
+                self.avatar.set_expressive_state("thinking")
+                self._toggle_thought_bubble()
+
+            elif modality == "process":
+                # Background processes should not trigger bubbles; fall back to observing/idle
+                self.badge.set_state("...", 0.22, 0.74, 0.97, bubble_type="idle")
+                self.bubble.set_visible(False)
+                self.avatar.set_expressive_state("observing")
+                GLib.idle_add(self.update_input_region)
+            return
+
+        # --- 2. POINTER TELEMETRY ---
         if event_type == "pointer_telemetry":
             data = event.get("data", {})
             cursor = data.get("cursor", {})
             window_center = data.get("window_center")
-
-            print(f"[Charon Gaze DEBUG] Parsed UI coords - cursor: {cursor}, window_center: {window_center}")
 
             if cursor and window_center and "x" in cursor and "y" in cursor and "x" in window_center and "y" in window_center:
                 win_w = self.get_width()
@@ -529,17 +518,14 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
                 win_top_left_x = float(window_center["x"]) - (win_w / 2.0)
                 win_top_left_y = float(window_center["y"]) - (win_h / 2.0)
 
-                # Cache the true coordinates emitted by Mutter telemetry
                 self._current_window_x = win_top_left_x
                 self._current_window_y = win_top_left_y
 
-                # Dynamically calculate the avatar's actual position inside the window
                 res, avatar_rect = self.avatar_container.compute_bounds(self)
                 if res:
                     eye_center_x = win_top_left_x + avatar_rect.origin.x + (avatar_rect.size.width / 2.0)
                     eye_center_y = win_top_left_y + avatar_rect.origin.y + (avatar_rect.size.height / 2.0)
                 else:
-                    # Fallback if bounds are not yet allocated
                     eye_center_x = win_top_left_x + (avatar_w / 2.0)
                     eye_center_y = win_top_left_y + (avatar_h / 2.0)
 
@@ -558,18 +544,17 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
 
         payload = event.get("payload", {})
 
-        # --- 2. SPEECH CHUNKS (SYNCHRONIZED AUDIO & VISEMES) ---
+        # --- 3. SPEECH CHUNKS (SYNCHRONIZED AUDIO) ---
         if event_type == "speech_chunk":
             text_segment = payload.get("text_segment", "") or payload.get("text", "")
             audio_b64 = payload.get("audio_b64", "")
             visemes = payload.get("visemes", [])
             sample_rate = payload.get("sample_rate", 24000)
 
-            # Update thought bubble text state
             if text_segment:
+                self.badge.set_state("...", 0.22, 0.74, 0.97, bubble_type="speech")
                 self._latest_message_text = text_segment
 
-            # Non-blocking synced audio playback and mouth/aperture modulation
             if audio_b64:
                 self.speech_player.play_chunk(
                     audio_b64=audio_b64,
@@ -577,11 +562,10 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
                     visemes=visemes
                 )
 
-            # Set expressive state
             self.avatar.set_expressive_state("expressing")
             return
 
-        # --- 3. GENERAL NOTIFICATIONS & STATES ---
+        # --- 4. GENERAL NOTIFICATIONS & STATES (Legacy Fallback) ---
         state_name = payload.get("state", "expressing")
         category = payload.get("category", "thought")
         symbol = payload.get("symbol", None)
@@ -596,10 +580,9 @@ class CharonOverlayWindow(Gtk.ApplicationWindow):
 
         self.set_indicator_type(category, custom_symbol=symbol)
 
-        # Update the hidden message text and auto-expand the bubble
         if "text" in payload:
             self._latest_message_text = payload["text"]
-            self._toggle_thought_bubble()  # Auto-display the message
+            self._toggle_thought_bubble()
 
     def _apply_css(self):
         css_provider = Gtk.CssProvider()

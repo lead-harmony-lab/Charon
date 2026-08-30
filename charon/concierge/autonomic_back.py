@@ -93,26 +93,20 @@ class AutonomicSystem:
         reflection_sec = clock_cfg.get("idle_heuristic_reflection_seconds", 86400)
         awareness_sec = clock_cfg.get("awareness_interval_seconds", 5)
 
-        # Create wrappers to broadcast the process state and clear it when done
+        # Create wrappers to broadcast the process state
         async def _run_telemetry():
-            await self._push_process("Capturing System Telemetry...", status="working")
-            try:
-                if asyncio.iscoroutinefunction(self.sensor.capture_and_log_metrics):
-                    await self.sensor.capture_and_log_metrics()
-                else:
-                    self.sensor.capture_and_log_metrics()
-            finally:
-                await self._push_process("active", status="active")
+            await self._push_process("Capturing System Telemetry...", status="active")
+            if asyncio.iscoroutinefunction(self.sensor.capture_and_log_metrics):
+                await self.sensor.capture_and_log_metrics()
+            else:
+                self.sensor.capture_and_log_metrics()
 
         async def _run_reflection():
-            await self._push_process("Synthesizing Idle Heuristics...", status="working")
-            try:
-                if asyncio.iscoroutinefunction(self.sensor.synthesize_idle_heuristic):
-                    await self.sensor.synthesize_idle_heuristic()
-                else:
-                    self.sensor.synthesize_idle_heuristic()
-            finally:
-                await self._push_process("active", status="active")
+            await self._push_process("Synthesizing Idle Heuristics...", status="active")
+            if asyncio.iscoroutinefunction(self.sensor.synthesize_idle_heuristic):
+                await self.sensor.synthesize_idle_heuristic()
+            else:
+                self.sensor.synthesize_idle_heuristic()
 
         # 1. Heartbeat: Log telemetry at specified interval
         if hasattr(self.sensor, "capture_and_log_metrics"):
@@ -167,7 +161,7 @@ class AutonomicSystem:
         if self._hospitality_task and not self._hospitality_task.done():
             logger.info(
                 f"[Autonomic] Cancelling hanging hospitality task to prioritize active connection from '{client_id}'...")
-            await self._push_process("Re-routing Hospitality Sequence...", status="working")
+            await self._push_process("Re-routing Hospitality Sequence...", status="loading")
             self._hospitality_task.cancel()
 
             # Yield control briefly to ensure the cancellation propagates before recreating
@@ -193,7 +187,7 @@ class AutonomicSystem:
             return True
 
         logger.info("[Autonomic.Hospitality] Probing LLM endpoint to confirm model VRAM allocation...")
-        await self._push_process("Allocating Models to VRAM...", status="working")
+        await self._push_process("Allocating Models to VRAM...", status="loading")
 
         start_time = time.monotonic()
 
@@ -202,14 +196,14 @@ class AutonomicSystem:
                 # Querying the available models pings the server and checks endpoint health
                 await asyncio.wait_for(llm_client.models.list(), timeout=3.0)
                 logger.info("[Autonomic.Hospitality] LLM probe successful. VRAM warm-up confirmed.")
-                await self._push_process("VRAM Allocation Confirmed", status="working")
+                await self._push_process("Confirming VRAM Allocation", status="ready")
                 return True
             except Exception as e:
                 logger.debug(f"[Autonomic.Hospitality] Waiting for LLM to respond in VRAM... ({e})")
                 await asyncio.sleep(poll_interval)
 
         logger.error("[Autonomic.Hospitality] LLM VRAM readiness verification timed out.")
-        await self._push_process("active", status="error")
+        await self._push_process("Aborting VRAM Allocation (Timeout)", status="error")
         return False
 
     async def _run_autonomic_startup_hospitality(self):
@@ -231,7 +225,7 @@ class AutonomicSystem:
                 logger.warning("[Autonomic.Hospitality] Broadcast pipeline verification timed out. Proceeding anyway.")
             else:
                 logger.info("[Autonomic.Hospitality] Broadcast pipeline ready.")
-                await self._push_process("Establishing Broadcast Pipeline...", status="working")
+                await self._push_process("Establishing Broadcast Pipeline", status="ready")
 
             logger.info("[Autonomic.Hospitality] Verifying LLM VRAM status...")
 
@@ -239,28 +233,21 @@ class AutonomicSystem:
             is_ready = await self._verify_llm_vram_ready()
             if not is_ready:
                 logger.error("[Autonomic.Hospitality] Skipping greeting due to LLM unresponsiveness.")
-                # Ensure we clear the pipeline establishment message if we abort here
-                await self._push_process("active", status="active")
                 return
 
             # Step 3: Execute greeting routine
             logger.info("[Autonomic.Hospitality] Executing startup hospitality greeting routine...")
-            await self._push_process("Executing Hospitality Routine...", status="working")
+            await self._push_process("Executing Hospitality Routine...", status="active")
             await self.hospitality.execute_startup_greeting(recovered_tasks=0)
             self._startup_hospitality_executed = True
 
-            # [FIX] Clear the process message upon successful completion
-            await self._push_process("active", status="active")
-
         except asyncio.CancelledError:
             logger.info("[Autonomic.Hospitality] Startup hospitality task cancelled.")
-            # [FIX] Clear the process message if the boot sequence is overridden
-            await self._push_process("active", status="active")
         except Exception as err:
             logger.error(f"[Autonomic.Hospitality] Error executing startup greeting: {err}", exc_info=True)
-            await self._push_process("active", status="error")
+            await self._push_process("Halting Hospitality Sequence (Error)", status="error")
 
-    async def _push_process(self, message: str, status: str = "working") -> None:
+    async def _push_process(self, message: str, status: str = "active") -> None:
         """Silently pushes non-verbal system state updates directly to UI clients."""
         if not self.process_callback:
             return
@@ -323,17 +310,11 @@ class AutonomicSystem:
             # --- HOSPITALITY: EVALUATE RETURN ---
             if just_unlocked:
                 logger.info("[Autonomic Pulse] System unlock detected. Evaluating hospitality routing.")
-                await self._push_process("Acknowledging User Unlock...", status="working")
+                await self._push_process("Acknowledging User Unlock...", status="active")
                 self.temporal_context.mark_interaction()
 
                 if self.hospitality:
-                    try:
-                        await self.hospitality.evaluate_user_return(idle_duration_seconds=idle_time)
-                    finally:
-                        # [FIX] Guarantee the process message clears when complete or if it errors
-                        await self._push_process("active", status="active")
-                else:
-                    await self._push_process("active", status="active")
+                    await self.hospitality.evaluate_user_return(idle_duration_seconds=idle_time)
                 return
             # ------------------------------------
 

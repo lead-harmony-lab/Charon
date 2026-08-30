@@ -1,6 +1,6 @@
 """
 charon/concierge/telemetry.py
-System Version: v3.1.0 | File Revision: 3.2.2
+System Version: v3.1.0 | File Revision: 3.2.3
 
 Module: System Telemetry & Heuristic Sensors
 Equips the Concierge with the ability to perceive host hardware state (CPU, GPU, RAM),
@@ -8,10 +8,9 @@ synthesize long-term idle heuristics based on historical vector memory, read the
 ExecutionLedger to maintain session state awareness, and ingest multi-modal sensory context
 (window focus, IDE buffer diffs, screen OCR snapshots).
 """
-
+import re
 import time
 import psutil
-import subprocess
 import json
 import datetime
 import logging
@@ -125,19 +124,20 @@ class TelemetrySensor:
 
         return None
 
-    def _get_gpu_usage(self) -> float:
+    async def _get_gpu_usage(self) -> float:
         """Attempts to read GPU utilization. Gracefully fails to 0.0 if unavailable."""
         try:
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, check=True
+            proc = await asyncio.create_subprocess_exec(
+                "nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
             )
-            usages = [float(x.strip()) for x in result.stdout.strip().split('\n') if x.strip().isdigit()]
+            stdout, _ = await proc.communicate()
+            usages = [float(x.strip()) for x in stdout.decode().strip().split('\n') if x.strip().isdigit()]
             return max(usages) if usages else 0.0
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except Exception:
             return 0.0
 
-    def capture_and_log_metrics(self) -> Dict[str, Any]:
+    async def capture_and_log_metrics(self) -> Dict[str, Any]:
         """Gathers point-in-time system load and writes to episodic memory."""
         now = datetime.datetime.now()
 
@@ -147,16 +147,20 @@ class TelemetrySensor:
             "day_of_week": now.weekday(),
             "cpu_percent": psutil.cpu_percent(interval=1.0),
             "memory_percent": psutil.virtual_memory().percent,
-            "gpu_percent": self._get_gpu_usage()
+            "gpu_percent": await self._get_gpu_usage()
         }
 
         if self.telemetry_db:
             doc_id = f"telemetry_{now.timestamp()}"
-            self.telemetry_db.add(
-                ids=[doc_id],
-                documents=[json.dumps(metrics)],
-                metadatas=[{"hour": now.hour, "type": "hardware_telemetry"}]
-            )
+
+            def _write_db():
+                self.telemetry_db.add(
+                    ids=[doc_id],
+                    documents=[json.dumps(metrics)],
+                    metadatas=[{"hour": now.hour, "type": "hardware_telemetry"}]
+                )
+
+            await asyncio.to_thread(_write_db)
             logger.debug(f"Logged system metrics: CPU {metrics['cpu_percent']}% | GPU {metrics['gpu_percent']}%")
 
         return metrics
@@ -189,7 +193,7 @@ class TelemetrySensor:
 
         return await asyncio.to_thread(_query_db)
 
-    def synthesize_idle_heuristic(self) -> None:
+    async def synthesize_idle_heuristic(self) -> None:
         """
         Analyzes historical telemetry to identify consistent daily idle windows.
         Creates a semantic rule (heuristic) for task scheduling.
@@ -197,7 +201,7 @@ class TelemetrySensor:
         if not self.telemetry_db or not self.heuristics_db:
             return
 
-        try:
+        def _process_heuristics():
             records = self.telemetry_db.get(where={"type": "hardware_telemetry"})
             if not records or not records.get("documents"):
                 logger.info("Insufficient telemetry data for heuristic synthesis.")
@@ -241,6 +245,8 @@ class TelemetrySensor:
 
             logger.info(f"Synthesized new heuristic: {heuristic_statement}")
 
+        try:
+            await asyncio.to_thread(_process_heuristics)
         except Exception as e:
             logger.error(f"Failed to synthesize idle heuristic: {e}")
 
@@ -288,10 +294,10 @@ class TelemetrySensor:
 
             # Expected output format: (uint64 12345,) where 12345 is milliseconds
             if output:
-                # Extract just the digits from the string
-                idle_ms_str = ''.join(filter(str.isdigit, output))
-                if idle_ms_str:
-                    return float(idle_ms_str) / 1000.0
+                # Extract only the digits following 'uint64'
+                match = re.search(r'uint64\s+(\d+)', output)
+                if match:
+                    return float(match.group(1)) / 1000.0
 
         except Exception as e:
             logger.debug(f"Failed to fetch idle time via D-Bus: {e}")

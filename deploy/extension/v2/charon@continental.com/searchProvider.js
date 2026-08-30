@@ -1,3 +1,4 @@
+// searchProvider.js
 import Gio from 'gi://Gio';
 import St from 'gi://St';
 
@@ -14,36 +15,44 @@ export class CharonSearchProvider {
         );
     }
 
-    getInitialResultSet(terms, callback, cancellable) {
-        let query = terms.join(' ');
-        if (query.startsWith('c:') || query.startsWith('charon:')) {
-            callback(['charon-task']);
-        } else {
-            callback([]);
-        }
+    async getInitialResultSet(terms, cancellable) {
+        return new Promise((resolve) => {
+            if (cancellable && cancellable.is_cancelled()) {
+                return resolve([]);
+            }
+
+            const query = terms.join(' ');
+            if (query.startsWith('c:') || query.startsWith('charon:')) {
+                resolve(['charon-task']);
+            } else {
+                resolve([]);
+            }
+        });
     }
 
-    getSubsearchResultSet(previousResults, terms, callback, cancellable) {
-        // Evaluate terms directly without calling getInitialResultSet to prevent recursion
-        let query = terms.join(' ');
-        if (query.startsWith('c:') || query.startsWith('charon:')) {
-            callback(['charon-task']);
-        } else {
-            callback([]);
-        }
+    async getSubsearchResultSet(previousResults, terms, cancellable) {
+        // Delegate to the initial result logic to keep it DRY
+        return this.getInitialResultSet(terms, cancellable);
     }
 
-    getResultMetas(resultIds, callback, cancellable) {
-        let metas = resultIds.map(id => ({
-            id: id,
-            name: 'Ask Charon',
-            description: 'Send this command to the Charon daemon.',
-            createIcon: (size) => new St.Icon({
-                icon_name: 'system-run-symbolic',
-                icon_size: size
-            })
-        }));
-        callback(metas);
+    async getResultMetas(resultIds, cancellable) {
+        return new Promise((resolve) => {
+            if (cancellable && cancellable.is_cancelled()) {
+                return resolve([]);
+            }
+
+            const metas = resultIds.map(id => ({
+                id: id,
+                name: 'Ask Charon',
+                description: 'Send this command to the Charon daemon.',
+                createIcon: (size) => new St.Icon({
+                    icon_name: 'system-run-symbolic',
+                    icon_size: size
+                })
+            }));
+
+            resolve(metas);
+        });
     }
 
     filterResults(results, maxResults) {
@@ -52,7 +61,8 @@ export class CharonSearchProvider {
 
     activateResult(resultId, terms) {
         let query = terms.join(' ').replace(/^c:\s*|^charon:\s*/, '');
-        // Fixed: Called public method submitTask instead of non-existent _submitTask
+
+        // Strip out the prefix and send the pure task to the daemon
         if (this.extension && typeof this.extension.submitTask === 'function') {
             this.extension.submitTask(query);
         }

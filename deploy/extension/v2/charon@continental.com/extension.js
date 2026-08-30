@@ -131,9 +131,19 @@ export default class CharonExtension extends Extension {
     _getApiKey() { return this.settings ? (this.settings.get_string('api-key') || DEFAULT_CHARON_API_KEY) : DEFAULT_CHARON_API_KEY; }
     _getApiKeyHeader() { return this.settings ? (this.settings.get_string('api-key-header') || DEFAULT_API_KEY_HEADER) : DEFAULT_API_KEY_HEADER; }
 
+    // --- ISOLATED ACTIVE WINDOW SCRAPER ---
+    _getActiveWindowContext() {
+        let activeWindow = global.display.get_focus_window();
+        if (!activeWindow) return null;
+
+        return {
+            wmClass: activeWindow.get_wm_class() || 'unknown',
+            title: activeWindow.get_title() || 'unknown'
+        };
+    }
+
     submitTask(taskText, targetAgentOverride = null) {
         this.ui.updateStatus('Transmitting...', 'System');
-        let activeWindow = global.display.get_focus_window();
         let [x, y] = global.get_pointer();
 
         let contextObj = {
@@ -142,11 +152,11 @@ export default class CharonExtension extends Extension {
         };
 
         let windowContext = '';
-        if (activeWindow) {
-            let wmClass = activeWindow.get_wm_class() || 'unknown';
-            let title = activeWindow.get_title() || 'unknown';
-            contextObj.focused_app = wmClass;
-            windowContext = `\n\n[Context: User focus is on app '${wmClass}', window: '${title}']`;
+        let activeWinData = this._getActiveWindowContext();
+
+        if (activeWinData) {
+            contextObj.focused_app = activeWinData.wmClass;
+            windowContext = `\n\n[Context: User focus is on app '${activeWinData.wmClass}', window: '${activeWinData.title}']`;
         }
 
         let finalPrompt = taskText + windowContext;
@@ -369,7 +379,7 @@ export default class CharonExtension extends Extension {
             let cursorMoved = (x !== this._latestCursor.x || y !== this._latestCursor.y);
             if (cursorMoved) this._latestCursor = { x: x, y: y };
 
-            let wheatleyCenter = null;
+            let conciergeCenter = null;
             let windowPosition = null;
 
             for (let actor of global.get_window_actors()) {
@@ -378,14 +388,14 @@ export default class CharonExtension extends Extension {
                     this._attachOverlayWindowHooks(metaWin);
                     let rect = metaWin.get_frame_rect();
                     windowPosition = { x: Math.round(rect.x), y: Math.round(rect.y) };
-                    wheatleyCenter = { x: Math.round(rect.x + (rect.width / 2)), y: Math.round(rect.y + (rect.height / 2)) };
+                    conciergeCenter = { x: Math.round(rect.x + (rect.width / 2)), y: Math.round(rect.y + (rect.height / 2)) };
                     break;
                 }
             }
 
             if (cursorMoved) {
                 let payload = { event_type: 'pointer_telemetry', client_id: 'gnome_shell_extension', data: { action: 'motion', cursor: this._latestCursor } };
-                if (wheatleyCenter) payload.data.window_center = wheatleyCenter;
+                if (conciergeCenter) payload.data.window_center = conciergeCenter;
                 if (windowPosition) payload.data.window_position = windowPosition;
                 if (this.api && typeof this.api.sendTelemetry === 'function') this.api.sendTelemetry(payload);
             }
@@ -416,8 +426,9 @@ export default class CharonExtension extends Extension {
             Main.wm.addKeybinding('save-to-charon-shortcut', this.settings, Meta.KeyBindingFlags.IGNORE_AUTOREPEAT, Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW, () => {
                 St.Clipboard.get_default().get_text(St.ClipboardType.CLIPBOARD, (clip, text) => {
                     if (text) {
-                        this.submitTask(`Save this text to project memory:\n\n${text}`, 'The_Archivist');
-                        Main.notify('👔 Charon', 'Clipboard passed to Archivist.');
+                        // Stripped 'The_Archivist' enum. Replaced with generic submission for the harness to route.
+                        this.submitTask(`Save this text to project memory:\n\n${text}`);
+                        Main.notify('👔 Charon', 'Clipboard data sent to harness.');
                     }
                 });
             });
