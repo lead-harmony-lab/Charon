@@ -46,3 +46,12 @@ Thumbs.db
 /charon/gateway/static/dashboard_v2/node_modules/
 /charon/gateway/static/dashboard_v2/dist/
 /data/docs/manual/node_modules/
+/memory/
+
+# ==========================================
+# Build & Packaging Artifacts
+# ==========================================
+*.egg-info/
+*.egg
+build/
+dist/
