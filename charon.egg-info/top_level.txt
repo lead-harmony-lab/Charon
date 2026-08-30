@@ -1,9 +1,0 @@
-charon
-deploy
-docs
-htmlcov
-logs
-memory
-notebook_sources
-scripts
-tests
