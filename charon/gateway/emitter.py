@@ -1,10 +1,10 @@
 """
 charon/gateway/emitter.py
-System Version: v0.1.0 | File Revision: 2.0.0
+System Version: v0.1.0 | File Revision: 2.1.0
 
 Module: WebSocket Event Emitter.
 Handles targeted or broadcast WebSocket event transmissions with socket error recovery
-and direct support for live ThoughtRecord stream emissions.
+and direct support for live ThoughtRecord stream emissions and Concierge suggestions.
 """
 
 import logging
@@ -151,6 +151,17 @@ class EventEmitter:
                     "output": message,
                     "content": message,
                 },
+            )
+        )
+
+    async def emit_concierge(self, suggestion: Dict[str, Any]) -> None:
+        """Emit proactive concierge proposal event to connected UI clients."""
+        await self.emit_targeted(
+            WSEvent(
+                event_type="concierge_suggestion",
+                task_id=self.current_task_id,
+                agent_name="Concierge",
+                data=suggestion,
             )
         )
 

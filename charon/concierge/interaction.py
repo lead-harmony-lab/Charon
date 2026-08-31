@@ -390,7 +390,7 @@ class InteractionEngine:
             logger.error(f"[Interaction.Router] Classification failed, defaulting to agentic: {e}")
             return "agentic"
 
-    async def handle_conversational_bypass(self, prompt: str, context: dict) -> str:
+    async def handle_conversational_bypass(self, prompt: str, context: dict) -> Dict[str, Any]:
         """
         Processes non-agentic prompts directly, maintaining full desktop awareness
         without invoking the Coordinator execution loop.
@@ -408,10 +408,10 @@ class InteractionEngine:
                 self.broadcast(process_msg, context="chat_generation", modality=Modality.PROCESS,
                                metadata=active_metadata)
 
-        system_persona = (
-            f"{CONCIERGE_SYSTEM_PROMPT}\n\n"
-            "You are currently in Chat-Only Bypass Mode. Answer the user directly based on their prompt and current system context. "
-            "Do not offer to run system commands or execute code, as the orchestration engine is disengaged."
+        system_prompt = (
+            "You are Charon, a highly capable, polite, and adaptive AI Concierge. "
+            "Your role here is to directly and concisely answer the user's conversational query, "
+            "provide requested facts, or engage in pleasant dialogue. Do NOT propose background tasks."
         )
 
         active_window = context.get("active_window", "Unknown")
@@ -422,19 +422,20 @@ class InteractionEngine:
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": system_persona},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": enriched_prompt},
                 ],
                 temperature=self.temp_chat,
             )
-            response_text = response.choices[0].message.content.strip('"')
+
+            chat_message = response.choices[0].message.content.strip('"').strip()
 
             # 2. EMIT DIALOGUE SIGNAL (Feeds GTK4 Avatar)
             if self.broadcast:
                 if asyncio.iscoroutinefunction(self.broadcast):
-                    await self.broadcast(response_text, context="chat_reply", modality=Modality.DIALOGUE)
+                    await self.broadcast(chat_message, context="chat_reply", modality=Modality.DIALOGUE)
                 else:
-                    self.broadcast(response_text, context="chat_reply", modality=Modality.DIALOGUE)
+                    self.broadcast(chat_message, context="chat_reply", modality=Modality.DIALOGUE)
 
             # 3. RESET PROCESS SIGNAL
             if self.broadcast:
@@ -445,11 +446,17 @@ class InteractionEngine:
                 else:
                     self.broadcast("Ready", context="idle", modality=Modality.PROCESS, metadata=ready_metadata)
 
-            return response_text
+            return {
+                "result": chat_message,
+                "type": "chat_bypass"
+            }
 
         except Exception as e:
             logger.error(f"[Interaction.Bypass] Conversational generation failed: {e}")
-            return "My apologies, sir, but my bypass relays are experiencing interference."
+            return {
+                "result": "My apologies, sir, but my bypass relays are experiencing interference.",
+                "type": "chat_bypass"
+            }
 
     async def request_hil_authorization(self, task_id: str, intent_summary: str) -> bool:
         """

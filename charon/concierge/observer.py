@@ -137,7 +137,7 @@ class ConciergeObserver:
         if getattr(self, "ws_manager", None):
             try:
                 event = WSEvent(
-                    event_type="task_completed",
+                    event_type="task_complete",  # FIXED: Matches Pydantic Literal schema
                     task_id=safe_task_id,
                     agent_name="Concierge",
                     data={

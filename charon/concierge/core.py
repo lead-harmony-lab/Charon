@@ -203,7 +203,13 @@ class ConciergeService:
         else:
             logger.debug(f"[Concierge] Unhandled ingress payload from {client_id}: {payload}")
 
-    async def broadcast(self, message: str, context: str = "general", modality: Optional[Modality] = None) -> None:
+    async def broadcast(
+        self,
+        message: str,
+        context: str = "general",
+        modality: Optional[Modality] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
         Central multimodal emission channel.
         Routes to Text-Only or Text+TTS based on the voice_synthesis registry flag.
@@ -216,6 +222,14 @@ class ConciergeService:
         active_modality = modality or Modality.DIALOGUE
         audio_enabled = self.registry.get("abilities", {}).get("voice_synthesis", False)
 
+        # Merge caller-provided metadata with defaults
+        signal_metadata = {
+            "avatar_state": {"emotion": "speaking"},
+            "urgency": "medium"
+        }
+        if metadata:
+            signal_metadata.update(metadata)
+
         # 1. ALWAYS dispatch the visual/text payload to UI clients
         try:
             signal = CharonSignal(
@@ -223,10 +237,7 @@ class ConciergeService:
                 content=message,
                 context=context,
                 timestamp=datetime.datetime.now().isoformat(),
-                metadata={
-                    "avatar_state": {"emotion": "speaking"},
-                    "urgency": "medium"
-                }
+                metadata=signal_metadata
             )
             await MultimodalRouter.dispatch(signal, self.ws_manager)
         except Exception as e:
