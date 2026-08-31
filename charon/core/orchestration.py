@@ -1,13 +1,13 @@
 """
 charon/core/orchestration.py
-System Version: v2.2.0 | File Revision: 2.7.1
+System Version: v2.3.0 | File Revision: 2.8.0
 
 Module: Main Orchestration Engine facade for Charon.
-Refactored for the Active Execution Envelope paradigm.
-Delegates strictly to the Coordinator for execution and the Concierge for UX proposals.
+Refactored for the Active Execution Envelope paradigm and Y-Junction Intent Routing.
+Delegates strictly to the Coordinator for execution and the Concierge for UX proposals / conversational bypass.
 Updated: Direct SkillLibrarian encapsulation, native async execution via _safe_execute,
-sensory context enrichment, circuit breaker safety interrupts, fail-safe state recovery,
-and passive Concierge ingress/egress observation hooks.
+sensory context enrichment, Y-junction semantic gateway (task override, chat bypass, HIL authorization),
+circuit breaker safety interrupts, fail-safe state recovery, and passive Concierge ingress/egress observation hooks.
 """
 
 import inspect
@@ -54,6 +54,9 @@ class OrchestrationEngine:
         self.ledger = ledger
         self.emitter = None
         self.concierge = concierge
+
+        if self.concierge and self.gatekeeper:
+            self.concierge.gatekeeper = self.gatekeeper
 
         self._verify_required_system_roles()
 
@@ -115,6 +118,8 @@ class OrchestrationEngine:
         self.emitter = emitter
         if concierge:
             self.concierge = concierge
+            if self.gatekeeper:
+                self.concierge.gatekeeper = self.gatekeeper
         if state_manager:
             self.state_mgr = state_manager
         if ledger:
@@ -161,7 +166,7 @@ class OrchestrationEngine:
             logger.warning("[ENGINE] Received empty prompt, aborting request execution.")
             return "Error: Empty prompt received."
 
-        # Guard against NoneType defaults crashing down-stream merges
+        # Guard against NoneType defaults crashing downstream merges
         routing_hint = routing_hint or {}
 
         logger.info(
@@ -210,7 +215,7 @@ class OrchestrationEngine:
                 )
                 if emit_event_fn:
                     event_payload = {
-                        "event_type": "task_progress", # Fixed Pydantic Validation Error
+                        "event_type": "task_progress",
                         "task_id": task_id,
                         "agent_override": agent_override,
                         "status": "in_progress",
@@ -237,67 +242,134 @@ class OrchestrationEngine:
                     await _safe_execute(self.concierge.set_harness_state, "FAULTED", task_id=task_id)
                 return {"error": "System Safety Interrupt", "message": critical_alert}
 
+        # 4.5 The Y-Junction: Syntax Routing & Semantic Gateway
+        is_explicit_task = exec_prompt.lower().startswith("task: ")
+        route_to_engine = is_explicit_task
         result: Any = None
         completed_blackboard = None
 
-        try:
-            # 5. Topology & Catalog Audit
-            logger.debug("[ENGINE.PATHWAY] Fetching system topology from SkillLibrarian...")
-            system_topology = self.librarian.get_system_topology()
+        # Configure the threshold required to bypass Human-in-the-Loop authorization
+        MIN_CONFIDENCE_THRESHOLD = 0.85
 
-            metadata = {
-                "agent_override": agent_override,
-                "routing_hint": routing_hint,
-                "stream_cb": stream_cb,
-                "sensory_context": sensory_context,
-            }
-
-            registered_coordinator_agents = (
-                list(self.coordinator.agents.keys()) if hasattr(self.coordinator, "agents") else []
-            )
-            skill_catalog_preview = self.librarian.get_execution_tool_catalog(as_dict=False)
-
+        if is_explicit_task:
+            exec_prompt = exec_prompt[6:].strip()
             logger.info(
-                f"[ENGINE.PRE_PLANNER] Pre-execution audit:\n"
-                f"  - Task ID: {task_id}\n"
-                f"  - System Topology Agents Count: {len(system_topology)}\n"
-                f"  - System Topology Listing: {[t.get('agent_id') for t in system_topology if isinstance(t, dict)]}\n"
-                f"  - Registered Coordinator Roles: {registered_coordinator_agents}\n"
-                f"  - Librarian Skills Catalog Count: {len(skill_catalog_preview)}"
+                f"[ENGINE.ROUTER] Hard override detected ('task: '). Routing directly to Engine: '{exec_prompt[:50]}...'")
+        elif self.concierge and hasattr(self.concierge, "classify_intent"):
+            logger.debug("[ENGINE.ROUTER] No syntax override detected. Querying Concierge semantic gateway...")
+
+            intent = await _safe_execute(
+                self.concierge.classify_intent,
+                prompt=exec_prompt,
+                context=sensory_context
             )
 
-            # 6. Zero-Trust Execution Lifecycle Trigger
-            logger.info("[ENGINE.PATHWAY] Triggering Coordinator Zero-Trust Lifecycle...")
-            await _safe_execute(
-                self.coordinator.run_task_lifecycle,
-                task_id=task_id,
-                user_input=exec_prompt,
-                system_topology=system_topology,
-                metadata=metadata,
-            )
-            logger.info("[ENGINE.PATHWAY] Coordinator.run_task_lifecycle completed successfully.")
+            if intent == "chat":
+                logger.info("[ENGINE.ROUTER] Intent classified as conversational. Bypassing Engine.")
+                chat_response = await _safe_execute(
+                    self.concierge.handle_conversational_bypass,
+                    prompt=exec_prompt,
+                    context=sensory_context
+                )
+                result = {"result": chat_response, "type": "chat_bypass"}
+                route_to_engine = False
 
-            # 7. Result Extraction via TaskBlackboard
-            logger.debug(f"[ENGINE.PATHWAY] Fetching results from TaskBlackboard for task_id: {task_id}")
-            completed_blackboard = TaskBlackboard(STATE_DB_PATH, task_id)
-            raw_payload = completed_blackboard._get_results_payload()
-
-            if isinstance(raw_payload, dict) and "result" in raw_payload:
-                result = raw_payload["result"]
             else:
-                result = raw_payload
+                logger.info(
+                    "[ENGINE.ROUTER] Intent classified as agentic task. Evaluating autonomous confidence...")
 
-            logger.info(f"[ENGINE.PATHWAY] Final result resolved from blackboard: {str(result)[:100]}...")
+                # Check historical approval confidence to potentially bypass HIL
+                confidence = 0.0
+                if hasattr(self.concierge, "memory") and hasattr(self.concierge.memory,
+                                                                 "evaluate_routing_confidence"):
+                    confidence = await _safe_execute(
+                        self.concierge.memory.evaluate_routing_confidence,
+                        intent_summary=exec_prompt,
+                        sensory_context=sensory_context
+                    ) or 0.0
 
-        except Exception as engine_err:
-            logger.error(
-                f"[ENGINE.PATHWAY] Catastrophic failure in execution loop: {engine_err}",
-                exc_info=True,
-            )
-            result = {"error": "System Error", "message": str(engine_err)}
+                if confidence >= MIN_CONFIDENCE_THRESHOLD:
+                    logger.info(
+                        f"[ENGINE.ROUTER] Autonomous routing confidence ({confidence:.2f}) meets threshold. Bypassing HIL.")
+                    route_to_engine = True
+                else:
+                    logger.info(
+                        f"[ENGINE.ROUTER] Routing confidence ({confidence:.2f}) below threshold. Triggering HIL Gatekeeper...")
+                    auth_granted = await _safe_execute(
+                        self.concierge.request_hil_authorization,
+                        task_id=task_id,
+                        intent_summary=exec_prompt
+                    )
 
-        finally:
-            pass  # State recovery is now cleanly delegated entirely to the observe_egress hook below
+                    if auth_granted:
+                        logger.info("[ENGINE.ROUTER] HIL authorization GRANTED. Proceeding to Engine.")
+                        route_to_engine = True
+                    else:
+                        logger.warning("[ENGINE.ROUTER] HIL authorization DENIED. Aborting task.")
+                        result = {"error": "HIL_DENIED", "message": "User aborted task via Gatekeeper UI."}
+                        route_to_engine = False
+        else:
+            logger.warning(
+                "[ENGINE.ROUTER] Semantic gateway unavailable. Defaulting to engine execution for safety.")
+            route_to_engine = True
+
+        # Conditional Orchestration Execution Path
+        if route_to_engine:
+            try:
+                # 5. Topology & Catalog Audit
+                logger.debug("[ENGINE.PATHWAY] Fetching system topology from SkillLibrarian...")
+                system_topology = self.librarian.get_system_topology()
+
+                metadata = {
+                    "agent_override": agent_override,
+                    "routing_hint": routing_hint,
+                    "stream_cb": stream_cb,
+                    "sensory_context": sensory_context,
+                }
+
+                registered_coordinator_agents = (
+                    list(self.coordinator.agents.keys()) if hasattr(self.coordinator, "agents") else []
+                )
+                skill_catalog_preview = self.librarian.get_execution_tool_catalog(as_dict=False)
+
+                logger.info(
+                    f"[ENGINE.PRE_PLANNER] Pre-execution audit:\n"
+                    f"  - Task ID: {task_id}\n"
+                    f"  - System Topology Agents Count: {len(system_topology)}\n"
+                    f"  - System Topology Listing: {[t.get('agent_id') for t in system_topology if isinstance(t, dict)]}\n"
+                    f"  - Registered Coordinator Roles: {registered_coordinator_agents}\n"
+                    f"  - Librarian Skills Catalog Count: {len(skill_catalog_preview)}"
+                )
+
+                # 6. Zero-Trust Execution Lifecycle Trigger
+                logger.info("[ENGINE.PATHWAY] Triggering Coordinator Zero-Trust Lifecycle...")
+                await _safe_execute(
+                    self.coordinator.run_task_lifecycle,
+                    task_id=task_id,
+                    user_input=exec_prompt,
+                    system_topology=system_topology,
+                    metadata=metadata,
+                )
+                logger.info("[ENGINE.PATHWAY] Coordinator.run_task_lifecycle completed successfully.")
+
+                # 7. Result Extraction via TaskBlackboard
+                logger.debug(f"[ENGINE.PATHWAY] Fetching results from TaskBlackboard for task_id: {task_id}")
+                completed_blackboard = TaskBlackboard(STATE_DB_PATH, task_id)
+                raw_payload = completed_blackboard._get_results_payload()
+
+                if isinstance(raw_payload, dict) and "result" in raw_payload:
+                    result = raw_payload["result"]
+                else:
+                    result = raw_payload
+
+                logger.info(f"[ENGINE.PATHWAY] Final result resolved from blackboard: {str(result)[:100]}...")
+
+            except Exception as engine_err:
+                logger.error(
+                    f"[ENGINE.PATHWAY] Catastrophic failure in execution loop: {engine_err}",
+                    exc_info=True,
+                )
+                result = {"error": "System Error", "message": str(engine_err)}
 
         # 8. Native Output Broadcast
         if result and self.emitter:

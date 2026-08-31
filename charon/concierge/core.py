@@ -164,6 +164,8 @@ class ConciergeService:
         self.generate_greeting = self.interactions.generate_greeting
         self.get_next_step = self.interactions.get_next_step
         self.wrap_payload = self.interactions.wrap_payload
+        self.classify_intent = self.interactions.classify_intent
+        self.handle_conversational_bypass = self.interactions.handle_conversational_bypass
 
     def bind_ws_manager(self, manager: Any):
         """Injects the unified live WebSocket manager into active subsystems."""
@@ -172,6 +174,34 @@ class ConciergeService:
         self.interactions.ws_manager = manager
         self.observer.ws_manager = manager
         self.autonomics.ws_manager = manager
+
+    async def handle_client_payload(self, client_id: str, payload: dict) -> None:
+        """
+        Ingress hook for incoming WebSocket payloads from UI clients.
+        Routes HIL (Human-in-the-Loop) authorization responses and other direct client signals.
+        """
+        event_type = payload.get("event_type") or payload.get("action")
+
+        if event_type == "hil_auth_response":
+            task_id = payload.get("task_id")
+            granted = payload.get("granted", False)
+
+            if not task_id:
+                logger.warning(f"[{client_id}] Malformed HIL response received: Missing task_id.")
+                return
+
+            logger.info(f"[Concierge] HIL authorization reply received for task {task_id}: {granted}")
+            # Unblock the suspended interaction engine thread
+            self.interactions.resolve_hil_authorization(task_id, granted)
+
+        elif event_type == "user_message":
+            user_text = payload.get("text", "")
+            # Example routing for standard text inputs from the UI
+            if user_text:
+                asyncio.create_task(self.handle_user_message(user_text))
+
+        else:
+            logger.debug(f"[Concierge] Unhandled ingress payload from {client_id}: {payload}")
 
     async def broadcast(self, message: str, context: str = "general", modality: Optional[Modality] = None) -> None:
         """
@@ -344,3 +374,13 @@ class ConciergeService:
             asyncio.create_task(
                 self.emit_process("Registry parameters hot-reloaded.", context="config", status="active")
             )
+
+    async def request_hil_authorization(self, task_id: str, intent_summary: str) -> bool:
+        """
+        Proxy method to request Human-in-the-Loop authorization.
+        Delegates to the InteractionEngine which handles broadcasting and thread suspension.
+        """
+        logger.info(f"[Concierge] Proxying HIL authorization request for task: {task_id}")
+
+        # Directly await the InteractionEngine, which manages the asyncio.Event lock internally
+        return await self.interactions.request_hil_authorization(task_id, intent_summary)

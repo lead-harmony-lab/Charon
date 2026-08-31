@@ -18,7 +18,7 @@ export class CharonUI {
         this._lastTaskState = 'Idle';
         this._lastResponseText = '';
         this._avatarSubprocess = null;
-        this._isDestroying = false; // Prevents lock-screen from overwriting saved avatar state
+        this._isDestroying = false;
 
         this.indicator = new PanelMenu.Button(0.0, 'Charon Concierge', false);
         this.statusLabel = new St.Label({
@@ -61,17 +61,13 @@ export class CharonUI {
         this.indicator.menu.addMenuItem(this.overseerDetails);
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // --- Avatar Action (Fake Toggle) ---
         let currentSettings = this.ext.readOverlaySettings();
         let shouldShowAvatar = currentSettings.show_avatar === true;
 
-        // Use a BaseMenuItem so we can build a custom layout inside it
         this.avatarAction = new PopupMenu.PopupBaseMenuItem();
-
         let avatarActionBox = new St.BoxLayout({ x_expand: true, vertical: false });
         let avatarActionLabel = new St.Label({ text: 'Display Avatar', y_align: Clutter.ActorAlign.CENTER, x_expand: true });
 
-        // Create the pill that will look like a toggle state
         this.avatarStatusPill = new St.Label({
             text: '',
             y_align: Clutter.ActorAlign.CENTER,
@@ -100,7 +96,6 @@ export class CharonUI {
         this.indicator.menu.addMenuItem(this.avatarAction);
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Response Card
         let responseCardItem = new PopupMenu.PopupBaseMenuItem({ reactive: false });
         let cardBox = new St.BoxLayout({
             vertical: true,
@@ -116,7 +111,6 @@ export class CharonUI {
         this.responseTextLabel.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
         cardBox.add_child(this.responseTextLabel);
 
-        // Action Buttons
         let btnRow = new St.BoxLayout({ vertical: false, x_expand: true, style: 'margin-top: 8px;' });
         let copyBtn = new St.Button({ label: '📋 Copy Response', style_class: 'button', can_focus: true, x_expand: true, style: 'padding: 4px 8px; font-size: 0.8em; margin-right: 4px;' });
         copyBtn.connect('clicked', () => this._copyResponseToClipboard());
@@ -132,7 +126,6 @@ export class CharonUI {
         this.indicator.menu.addMenuItem(responseCardItem);
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Logs & Prompt Entry
         this.logSection = new PopupMenu.PopupMenuSection();
         this.indicator.menu.addMenuItem(this.logSection);
         this.indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -155,7 +148,6 @@ export class CharonUI {
         pingItem.connect('activate', () => this.ext.connectDaemon());
         this.indicator.menu.addMenuItem(pingItem);
 
-        // --- Auto-Launch Avatar if previously enabled ---
         if (shouldShowAvatar) {
             GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
                 this._toggleAvatar(true);
@@ -169,11 +161,9 @@ export class CharonUI {
 
         if (isActive) {
             this.avatarStatusPill.set_text('ON');
-            // Active state: GNOME Blue pill with white text
             this.avatarStatusPill.style = 'background-color: #3584e4; color: #ffffff; border-radius: 12px; padding: 2px 12px; font-weight: bold; font-size: 0.85em;';
         } else {
             this.avatarStatusPill.set_text('OFF');
-            // Inactive state: Faded pill matching default dark mode aesthetics
             this.avatarStatusPill.style = 'background-color: rgba(255, 255, 255, 0.1); color: #aaaaaa; border-radius: 12px; padding: 2px 10px; font-weight: bold; font-size: 0.85em;';
         }
     }
@@ -187,7 +177,6 @@ export class CharonUI {
 
             try {
                 let homeDir = GLib.get_home_dir();
-                // Check environment variable first, then fallback to hardcoded path
                 let venvPython = GLib.getenv('CHARON_VENV_PATH') || `${homeDir}/Projects/Tools/Charon/.venv/bin/python`;
 
                 this._avatarSubprocess = new Gio.Subprocess({
@@ -200,17 +189,13 @@ export class CharonUI {
                 });
                 this._avatarSubprocess.init(null);
 
-                // Watch for process exit to auto-reset toggle state
                 this._avatarSubprocess.wait_check_async(null, (proc, res) => {
                     try {
                         proc.wait_check_finish(res);
-                    } catch (e) {
-                        // Handled exit/termination
-                    }
+                    } catch (e) {}
                     this._avatarSubprocess = null;
                     this._updateAvatarActionUI(false);
 
-                    // Sync the settings file if the process crashes/closes externally
                     if (!this._isDestroying) {
                         let data = this.ext.readOverlaySettings();
                         data.show_avatar = false;
@@ -227,22 +212,22 @@ export class CharonUI {
             if (this._avatarSubprocess) {
                 try {
                     this._avatarSubprocess.force_exit();
-                } catch (e) {
-                    // Process already exited
-                }
+                } catch (e) {}
                 this._avatarSubprocess = null;
             }
         }
     }
 
     _getAgentIcon(agentName) {
-        const AGENT_ICONS = {
-            'System': '⚙️', 'Overseer': '👁️', 'Gatekeeper': '🛡️',
-            'Concierge': '👔', 'Coordinator': '👔', 'The_Archivist': '📚',
-            'The_Machinist': '🛠️', 'The_Scout': '📡', 'The_Steward': '🎛️',
-            'The_Planner': '📋', 'The_Quartermaster': '📦'
+        // Retains System and core roles for the connection state lifecycle.
+        // Dynamic LLM roles will fallback to the generic robot icon.
+        const CORE_ICONS = {
+            'System': '⚙️',
+            'Overseer': '👁️',
+            'Gatekeeper': '🛡️',
+            'Concierge': '👔'
         };
-        return AGENT_ICONS[agentName] || '🤖';
+        return CORE_ICONS[agentName] || '🤖';
     }
 
     updateStatus(text, agentName = 'Concierge') {
@@ -277,7 +262,6 @@ export class CharonUI {
 
         switch (eventType) {
             case 'desktop_ipc':
-                // Route the inner payload string/object to the dedicated IPC handler
                 this._handleDesktopIPC(payload.payload, payload.client_id);
                 break;
 
@@ -309,24 +293,17 @@ export class CharonUI {
         }
     }
 
-    /**
-     * Executes commands sent from the Dashboard via the Daemon.
-     */
     _handleDesktopIPC(ipcPayload, senderId) {
         if (!ipcPayload) return;
 
-        // Route based on the "target" system specified in the JSON
         if (ipcPayload.target === 'hud') {
-
             if (ipcPayload.command === 'show_notification') {
                 const title = ipcPayload.title || '👔 Charon IPC';
                 const message = ipcPayload.message || 'Empty message received.';
                 Main.notify(title, message);
                 console.debug(`[Charon UI] Notification displayed. Sent by: ${senderId}`);
             }
-
             else if (ipcPayload.command === 'toggle_avatar') {
-                // Programmatically flip the state, sync UI, and launch/kill the subprocess
                 let isCurrentlyShowing = this.ext.readOverlaySettings().show_avatar === true;
                 let newState = !isCurrentlyShowing;
 
@@ -339,7 +316,6 @@ export class CharonUI {
                 this._updateAvatarActionUI(newState);
                 this._toggleAvatar(newState);
             }
-
             else {
                 console.warn(`[Charon UI] Unknown HUD command: ${ipcPayload.command}`);
             }
@@ -429,14 +405,15 @@ export class CharonUI {
         try {
             let [filePath] = GLib.filename_from_uri(fileUri.trim());
             if (filePath) {
-                let targetAgent = null;
                 let actionIntent = 'Analyze this file.';
+
                 if (filePath.endsWith('.stl') || filePath.endsWith('.step')) {
-                    targetAgent = 'The_Machinist'; actionIntent = 'Slice this model and prep the printer.';
+                    actionIntent = 'Slice this 3D model and prepare the printer.';
                 } else if (filePath.endsWith('.pdf')) {
-                    targetAgent = 'The_Archivist'; actionIntent = 'Index this datasheet into memory.';
+                    actionIntent = 'Index this document into project memory.';
                 }
-                this.ext.submitTask(`${actionIntent} Target file: ${filePath}`, targetAgent);
+
+                this.ext.submitTask(`${actionIntent}\nTarget file: ${filePath}`);
             }
         } catch (e) {
             console.error(`[Charon] Failed to parse dropped URI: ${e.message}`);
@@ -462,7 +439,7 @@ export class CharonUI {
     }
 
     destroy() {
-        this._isDestroying = true; // Signal that we are tearing down, don't save 'false' state to disk
+        this._isDestroying = true;
         this._toggleAvatar(false);
 
         if (this.indicator) {

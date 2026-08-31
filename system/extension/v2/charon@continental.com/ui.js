@@ -9,6 +9,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
+import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 
 export class CharonUI {
     constructor(extension) {
@@ -219,8 +220,6 @@ export class CharonUI {
     }
 
     _getAgentIcon(agentName) {
-        // Retains System and core roles for the connection state lifecycle.
-        // Dynamic LLM roles will fallback to the generic robot icon.
         const CORE_ICONS = {
             'System': '⚙️',
             'Overseer': '👁️',
@@ -267,8 +266,11 @@ export class CharonUI {
 
             case 'overseer_report': this._updateOverseerTelemetry(data); break;
             case 'system_alert': this._handleSystemAlert(data); break;
+            case 'gatekeeper_request':
             case 'gatekeeper_intercept':
-            case 'GatekeeperIntercept': this._handleGatekeeperIntercept(data); break;
+            case 'GatekeeperIntercept':
+                this._handleGatekeeperIntercept(data);
+                break;
             case 'telemetry_trace': this._handleTelemetryTrace(data); break;
             case 'task_progress':
             case 'task_heartbeat':
@@ -367,22 +369,47 @@ export class CharonUI {
 
     _handleGatekeeperIntercept(data) {
         this.updateStatus('Approval Needed', 'Gatekeeper');
+
         const approvalId = data.approval_id || 'unknown_id';
-        const actionText = data.action || data.manifest || 'Restricted Operation';
+        const actionText = data.intent_summary || data.action || data.manifest || 'Restricted Operation';
 
-        const source = new MessageTray.Source('Charon Gatekeeper', 'dialog-warning-symbolic');
-        Main.messageTray.add(source);
-        const notification = new MessageTray.Notification(source, '👔 Charon: Management Approval Required', `Gatekeeper intercepted:\n${actionText}`);
-        notification.setUrgency(MessageTray.Urgency.CRITICAL);
-        notification.addButton('approve-btn', 'Approve (Proceed)');
-        notification.addButton('deny-btn', 'Rescind');
+        let dialog = new ModalDialog.ModalDialog();
 
-        notification.connect('action-invoked', (notif, actionId) => {
-            let decision = actionId === 'approve-btn' ? 'proceed' : 'rescind';
-            this.ext.api.respondGatekeeperAsync(approvalId, decision, 'Resolved via GNOME');
-            this.updateStatus('Decision Sent', 'Gatekeeper');
+        let title = new St.Label({
+            text: '👔 Charon: Management Approval Required',
+            style: 'font-weight: bold; font-size: 1.2em; margin-bottom: 12px; color: #e01b24;'
         });
-        source.addNotification(notification);
+
+        let description = new St.Label({
+            text: `Gatekeeper intercepted a restricted operation:\n\n${actionText}`,
+            style: 'margin-bottom: 24px;'
+        });
+        description.clutter_text.line_wrap = true;
+
+        dialog.contentLayout.add_child(title);
+        dialog.contentLayout.add_child(description);
+
+        dialog.setButtons([
+            {
+                label: 'Rescind',
+                action: () => {
+                    this.ext.api.respondGatekeeperAsync(approvalId, 'rescind', 'Resolved via GNOME ModalDialog');
+                    this.updateStatus('Decision Sent', 'Gatekeeper');
+                    dialog.close();
+                },
+                key: Clutter.KEY_Escape
+            },
+            {
+                label: 'Approve (Proceed)',
+                action: () => {
+                    this.ext.api.respondGatekeeperAsync(approvalId, 'proceed', 'Resolved via GNOME ModalDialog');
+                    this.updateStatus('Decision Sent', 'Gatekeeper');
+                    dialog.close();
+                }
+            }
+        ]);
+
+        dialog.open();
     }
 
     _handleTaskComplete(data, payload) {

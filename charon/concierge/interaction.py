@@ -355,3 +355,162 @@ class InteractionEngine:
                     self.broadcast("Ready", context="error", modality=Modality.PROCESS, metadata=error_metadata)
 
             return "My apologies, sir, but my communication relays are currently experiencing interference."
+
+    async def classify_intent(self, prompt: str, context: dict) -> str:
+        """
+        Fast semantic classification to determine if the prompt requires the heavy execution engine.
+        """
+        logger.debug(f"[Interaction.Router] Classifying intent for prompt: '{prompt[:40]}...'")
+
+        system_rules = (
+            "You are a strict routing gateway. Read the user prompt and desktop context. "
+            "If the user asks a general question, requests a text summary, or makes casual conversation, output EXACTLY the word 'chat'. "
+            "If the user explicitly asks to modify the system, write a script, control hardware, or execute a multi-step workflow, output EXACTLY the word 'agentic'. "
+            "Do not output any other text."
+        )
+
+        active_window = context.get("active_window", "Unknown")
+        desktop_activity = context.get("desktop_activity", "None")
+        user_payload = f"Active Window: {active_window}\nRecent Activity: {desktop_activity}\nPrompt: {prompt}"
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_rules},
+                    {"role": "user", "content": user_payload},
+                ],
+                max_tokens=5,
+                temperature=0.1,
+            )
+            clean_response = response.choices[0].message.content.strip().lower()
+            return "chat" if "chat" in clean_response else "agentic"
+
+        except Exception as e:
+            logger.error(f"[Interaction.Router] Classification failed, defaulting to agentic: {e}")
+            return "agentic"
+
+    async def handle_conversational_bypass(self, prompt: str, context: dict) -> str:
+        """
+        Processes non-agentic prompts directly, maintaining full desktop awareness
+        without invoking the Coordinator execution loop.
+        """
+        logger.info("[Interaction.Bypass] Executing direct conversational response.")
+
+        # 1. EMIT PROCESS SIGNAL (Bypass Mode)
+        if self.broadcast:
+            active_metadata = {"event_type": "agent_status", "status": "active"}
+            process_msg = "Bypassing Engine (Chat Mode)..."
+            if asyncio.iscoroutinefunction(self.broadcast):
+                await self.broadcast(process_msg, context="chat_generation", modality=Modality.PROCESS,
+                                     metadata=active_metadata)
+            else:
+                self.broadcast(process_msg, context="chat_generation", modality=Modality.PROCESS,
+                               metadata=active_metadata)
+
+        system_persona = (
+            f"{CONCIERGE_SYSTEM_PROMPT}\n\n"
+            "You are currently in Chat-Only Bypass Mode. Answer the user directly based on their prompt and current system context. "
+            "Do not offer to run system commands or execute code, as the orchestration engine is disengaged."
+        )
+
+        active_window = context.get("active_window", "Unknown")
+        desktop_activity = context.get("desktop_activity", "None")
+        enriched_prompt = f"Active Window: {active_window}\nRecent Activity: {desktop_activity}\n\nUser: {prompt}"
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_persona},
+                    {"role": "user", "content": enriched_prompt},
+                ],
+                temperature=self.temp_chat,
+            )
+            response_text = response.choices[0].message.content.strip('"')
+
+            # 2. EMIT DIALOGUE SIGNAL (Feeds GTK4 Avatar)
+            if self.broadcast:
+                if asyncio.iscoroutinefunction(self.broadcast):
+                    await self.broadcast(response_text, context="chat_reply", modality=Modality.DIALOGUE)
+                else:
+                    self.broadcast(response_text, context="chat_reply", modality=Modality.DIALOGUE)
+
+            # 3. RESET PROCESS SIGNAL
+            if self.broadcast:
+                ready_metadata = {"event_type": "agent_status", "status": "ready"}
+                if asyncio.iscoroutinefunction(self.broadcast):
+                    await self.broadcast("Ready", context="idle", modality=Modality.PROCESS,
+                                         metadata=ready_metadata)
+                else:
+                    self.broadcast("Ready", context="idle", modality=Modality.PROCESS, metadata=ready_metadata)
+
+            return response_text
+
+        except Exception as e:
+            logger.error(f"[Interaction.Bypass] Conversational generation failed: {e}")
+            return "My apologies, sir, but my bypass relays are experiencing interference."
+
+    async def request_hil_authorization(self, task_id: str, intent_summary: str) -> bool:
+        """
+        Halts the execution thread and emits a WebSocket payload via broadcast.
+        Awaits user confirmation via an asynchronous event gate.
+        """
+        logger.info(f"[Interaction.HIL] Suspending task {task_id} for Gatekeeper authorization.")
+
+        if not hasattr(self, "_pending_auths"):
+            self._pending_auths = {}
+
+        auth_event = asyncio.Event()
+        self._pending_auths[task_id] = {
+            "event": auth_event,
+            "granted": False
+        }
+
+        # Emit the UI payload to Mutter/GNOME Shell using existing broadcast pipeline
+        if self.broadcast:
+            hil_metadata = {
+                "event_type": "gatekeeper_request",  # Matches ui.js router
+                "approval_id": task_id,              # Matches payload extraction
+                "action": intent_summary,            # Matches payload extraction
+                "avatar_state": "inquiring"
+            }
+            msg = "Awaiting authorization..."
+
+            if asyncio.iscoroutinefunction(self.broadcast):
+                await self.broadcast(msg, context="hil_gatekeeper", modality=Modality.PROCESS,
+                                     metadata=hil_metadata)
+            else:
+                self.broadcast(msg, context="hil_gatekeeper", modality=Modality.PROCESS, metadata=hil_metadata)
+        else:
+            logger.error("[Interaction.HIL] No broadcast callback bound. Cannot request HIL auth.")
+            del self._pending_auths[task_id]
+            return False
+
+        # Yield execution until the listener triggers the event
+        logger.debug(f"[Interaction.HIL] Task {task_id} sleeping, awaiting HIL socket response...")
+        await auth_event.wait()
+
+        # Extract result and cleanup
+        granted = self._pending_auths[task_id]["granted"]
+        del self._pending_auths[task_id]
+
+        logger.info(f"[Interaction.HIL] Task {task_id} waking up. Authorization granted: {granted}")
+        return granted
+
+    def resolve_hil_authorization(self, approval_id: str, decision: Any):
+        """
+        Sync method called by the WebSocket ingress handler when the GNOME UI replies.
+        Unblocks the suspended request_hil_authorization coroutine.
+        """
+        # Parse standard string responses from ui.js or fallback to boolean
+        if isinstance(decision, str):
+            granted = decision.lower() in ("proceed", "approve", "allow", "yes", "true")
+        else:
+            granted = bool(decision)
+
+        if hasattr(self, "_pending_auths") and approval_id in self._pending_auths:
+            self._pending_auths[approval_id]["granted"] = granted
+            self._pending_auths[approval_id]["event"].set()
+        else:
+            logger.warning(f"[Interaction.HIL] Received auth for unknown or expired task: {approval_id}")
